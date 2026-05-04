@@ -23,3 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 "src/Brand/readme.md/*.pdf" 
+.env 
