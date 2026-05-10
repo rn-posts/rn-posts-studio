@@ -10,11 +10,13 @@ import os, io, re, uuid, random, json, base64, textwrap, time
 import requests, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 app = Flask(__name__)
+CORS(app)
 
 # ── Cloudinary ────────────────────────────────────────────────────────────────
 cloudinary.config(
