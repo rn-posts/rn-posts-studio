@@ -54,8 +54,8 @@ LARANJA  = (249, 171, 11)    # #F9AB0B — destaque/alvorecer
 AMARELO  = (255, 221, 0)     # #FFDD00
 
 # ── Fontes — caminho relativo à raiz do repositório ───────────────────────────
-ROOT_DIR  = os.path.join(os.path.dirname(__file__), "..")
-FONTS_DIR = os.path.join(ROOT_DIR, "src", "Brand", "fonts")
+ROOT_DIR  = os.path.dirname(os.path.abspath(__file__))
+FONTS_DIR = os.path.join(ROOT_DIR, "..", "src", "Brand", "fonts")
 
 def _font(nome, tamanho):
     """Carrega fonte com fallback automático."""
@@ -106,15 +106,23 @@ def gerar_legenda_ia(tema: str) -> str:
         "Máximo 150 palavras. Inclua 5 hashtags relevantes no final. "
         "Retorne APENAS o texto da legenda, sem explicações ou markdown."
     )
-    try:
-        r = requests.post(GEMINI_URL, json={
-            "contents": [{"parts": [{"text": prompt}]}]
-        }, timeout=20)
-        r.raise_for_status()
-        legenda = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        return legenda.strip() + ASSINATURA
-    except Exception as e:
-        return f"Erro ao gerar legenda: {e}"
+    for tentativa in range(3):
+        try:
+            r = requests.post(GEMINI_URL, json={
+                "contents": [{"parts": [{"text": prompt}]}]
+            }, timeout=30)
+            if r.status_code == 429:
+                time.sleep(15 * (tentativa + 1))
+                continue
+            r.raise_for_status()
+            legenda = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return legenda.strip() + ASSINATURA
+        except Exception as e:
+            if tentativa < 2:
+                time.sleep(5)
+            else:
+                raise Exception(f"Gemini indisponivel: {e}")
+    raise Exception("Gemini indisponivel apos 3 tentativas")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. GEMINI — selecionar tags para imagem usando tema + legenda
@@ -146,7 +154,7 @@ def buscar_imagem(tags: dict) -> str | None:
     for tag in todas:
         try:
             result = cloudinary.api.resources_by_tag(
-                tag, type="upload", prefix=CLOUDINARY_BANCO, max_results=30
+                tag, type="upload", max_results=30
             )
             recursos = result.get("resources", [])
             if recursos:
@@ -156,7 +164,7 @@ def buscar_imagem(tags: dict) -> str | None:
     # fallback: qualquer imagem do banco
     try:
         result = cloudinary.api.resources(
-            type="upload", prefix=CLOUDINARY_BANCO, max_results=50
+            type="upload", max_results=50
         )
         recursos = result.get("resources", [])
         if recursos:
