@@ -6,7 +6,7 @@ Cores: Paleta oficial AlvoreSer
 Dimensões: 1080x1350 (4:5 Instagram)
 """
 
-import os, io, re, uuid, random, json, base64, textwrap, time
+import os, io, re, uuid, random, json, textwrap, time
 import requests, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -30,35 +30,32 @@ SPREADSHEET_ID       = "12FT6CQQDNLI9G7KM8wSfHevAKAuRoEi4OsPYy1aH-8A"
 SCOPES               = ["https://www.googleapis.com/auth/spreadsheets"]
 SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
+# ── IAs para geração de legenda ───────────────────────────────────────────────
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL     = (
+
+GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 )
 
 # ── Dimensões ─────────────────────────────────────────────────────────────────
 W, H = 1080, 1350
-CLOUDINARY_BANCO = "AlvoreSer_Banco"
 CLOUDINARY_POSTS = "AlvoreSer_Posts"
 
 # ── Paleta Oficial AlvoreSer ──────────────────────────────────────────────────
-MARINHO  = (2,   64,  89)    # #024059 — cor principal
-PETROLEO = (27,  121, 125)   # #1B797D
-TEAL     = (4,   157, 191)   # #049DBF
-VERDE_N  = (119, 153, 147)   # #779993
-BRANCO   = (244, 246, 248)   # #F4F6F8
-VERDE_V  = (122, 181, 0)     # #7AB500
-VERDE_C  = (146, 204, 29)    # #92CC1D
-LARANJA  = (249, 171, 11)    # #F9AB0B — destaque/alvorecer
-AMARELO  = (255, 221, 0)     # #FFDD00
+MARINHO  = (2,   64,  89)
+PETROLEO = (27,  121, 125)
+TEAL     = (4,   157, 191)
+BRANCO   = (244, 246, 248)
+LARANJA  = (249, 171, 11)
 
-# ── Fontes — caminho relativo à raiz do repositório ───────────────────────────
+# ── Fontes ────────────────────────────────────────────────────────────────────
 ROOT_DIR  = os.path.dirname(os.path.abspath(__file__))
 FONTS_DIR = os.path.join(ROOT_DIR, "..", "src", "Brand", "fonts")
 
 def _font(nome, tamanho):
-    """Carrega fonte com fallback automático."""
     try:
         return ImageFont.truetype(os.path.join(FONTS_DIR, nome), tamanho)
     except Exception:
@@ -67,12 +64,12 @@ def _font(nome, tamanho):
         except Exception:
             return ImageFont.load_default()
 
-def f_titulo(t):  return _font("AGILERA.otf",   t)   # títulos/tema
-def f_corpo(t):   return _font("MALGUN.ttf",    t)   # corpo legenda
-def f_bold(t):    return _font("MALGUNBD.ttf",  t)   # destaque legenda
-def f_light(t):   return _font("MALGUNSL.ttf",  t)   # rodapé/subtítulos
+def f_titulo(t): return _font("AGILERA.otf",  t)
+def f_corpo(t):  return _font("MALGUN.ttf",   t)
+def f_bold(t):   return _font("MALGUNBD.ttf", t)
+def f_light(t):  return _font("MALGUNSL.ttf", t)
 
-# ── Assinatura fixa ───────────────────────────────────────────────────────────
+# ── Assinatura ────────────────────────────────────────────────────────────────
 ASSINATURA = (
     "\n\n"
     "👨‍💼 Ronilson Nogueira\n"
@@ -81,7 +78,7 @@ ASSINATURA = (
     "CRP 04/57327"
 )
 
-# ── Tags para seleção inteligente de imagem ───────────────────────────────────
+# ── Tags para seleção de imagem ───────────────────────────────────────────────
 TAGS_CONTEUDO = [
     "pessoa_sozinha", "casal", "familia", "crianca", "adolescente",
     "adulto", "idoso", "grupo", "natureza_chuva", "natureza_sol",
@@ -94,79 +91,112 @@ TAGS_CLIMA = [
     "clima_energetico", "clima_acolhedor",
 ]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. GEMINI — gerar legenda
-# ─────────────────────────────────────────────────────────────────────────────
-def gerar_legenda_ia(tema: str) -> str:
-    prompt = (
-        f"Crie uma legenda para um post do Instagram sobre: '{tema}'. "
-        "É para o psicólogo Ronilson Nogueira, especialista em Autismo e TDAH, "
-        "da clínica AlvoreSer em Coronel Fabriciano/MG. "
-        "Tom: acolhedor, humano, reflexivo, não-clínico, para o público geral. "
-        "Máximo 150 palavras. Inclua 5 hashtags relevantes no final. "
-        "Retorne APENAS o texto da legenda, sem explicações ou markdown."
-    )
-    for tentativa in range(3):
-        try:
-            r = requests.post(GEMINI_URL, json={
-                "contents": [{"parts": [{"text": prompt}]}]
-            }, timeout=30)
-            if r.status_code == 429:
-                time.sleep(15 * (tentativa + 1))
-                continue
-            r.raise_for_status()
-            legenda = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            return legenda.strip() + ASSINATURA
-        except Exception as e:
-            if tentativa < 2:
-                time.sleep(5)
-            else:
-                raise Exception(f"Gemini indisponivel: {e}")
-    raise Exception("Gemini indisponivel apos 3 tentativas")
+# Mapeamento tema → tags (sem dependência de IA)
+MAPA_TAGS = {
+    "ansiedade":      {"conteudo": ["pessoa_sozinha", "adulto"],        "clima": ["clima_reflexivo", "clima_sereno"]},
+    "depressao":      {"conteudo": ["pessoa_sozinha"],                  "clima": ["clima_pesado", "clima_reflexivo"]},
+    "autismo":        {"conteudo": ["crianca", "familia", "adulto"],    "clima": ["clima_sereno", "clima_acolhedor"]},
+    "tdah":           {"conteudo": ["crianca", "adolescente", "adulto"],"clima": ["clima_energetico", "clima_neutro"]},
+    "borderline":     {"conteudo": ["pessoa_sozinha", "adulto"],        "clima": ["clima_reflexivo", "clima_pesado"]},
+    "burnout":        {"conteudo": ["adulto", "pessoa_sozinha"],        "clima": ["clima_pesado", "clima_reflexivo"]},
+    "relacionamento": {"conteudo": ["casal", "duas_pessoas"],           "clima": ["clima_acolhedor", "clima_sereno"]},
+    "familia":        {"conteudo": ["familia", "mae_filho"],            "clima": ["clima_acolhedor", "clima_alegre"]},
+    "luto":           {"conteudo": ["pessoa_sozinha"],                  "clima": ["clima_pesado", "clima_reflexivo"]},
+    "autoestima":     {"conteudo": ["pessoa_sozinha", "adulto"],        "clima": ["clima_esperancoso", "clima_sereno"]},
+    "trauma":         {"conteudo": ["pessoa_sozinha"],                  "clima": ["clima_pesado", "clima_reflexivo"]},
+    "terapia":        {"conteudo": ["pessoa_profissional"],             "clima": ["clima_sereno", "clima_acolhedor"]},
+    "natureza":       {"conteudo": ["natureza_sol", "natureza_mar"],    "clima": ["clima_sereno", "clima_esperancoso"]},
+    "meditacao":      {"conteudo": ["pessoa_sozinha"],                  "clima": ["clima_sereno", "clima_espiritualizado"]},
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. GEMINI — selecionar tags para imagem usando tema + legenda
+# 1. LEGENDA — cascata Groq → Gemini
 # ─────────────────────────────────────────────────────────────────────────────
-def selecionar_tags(tema: str, legenda: str) -> dict:
-    prompt = (
-        f"Tema do post de psicologia: '{tema}'\n"
-        f"Legenda: '{legenda[:400]}'\n\n"
-        "Escolha tags para selecionar uma imagem de fundo adequada.\n"
-        "Responda APENAS em JSON válido, sem markdown:\n"
-        '{"conteudo": ["tag1", "tag2"], "clima": ["tag3"]}\n\n'
-        f"Tags de conteúdo: {', '.join(TAGS_CONTEUDO)}\n"
-        f"Tags de clima: {', '.join(TAGS_CLIMA)}"
+PROMPT_LEGENDA = (
+    "Crie uma legenda para um post do Instagram sobre: '{tema}'. "
+    "É para o psicólogo Ronilson Nogueira, especialista em Autismo e TDAH, "
+    "da clínica AlvoreSer em Coronel Fabriciano/MG. "
+    "Tom: acolhedor, humano, reflexivo, não-clínico, para o público geral. "
+    "Máximo 150 palavras. Inclua 5 hashtags relevantes no final. "
+    "Retorne APENAS o texto da legenda, sem explicações ou markdown."
+)
+
+def _groq_legenda(tema: str) -> str:
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY não configurada")
+    r = requests.post(
+        GROQ_URL,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": "llama3-8b-8192",
+            "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
+            "max_tokens": 400,
+        },
+        timeout=20,
     )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+def _gemini_legenda(tema: str) -> str:
+    if not GEMINI_API_KEY:
+        raise Exception("GEMINI_API_KEY não configurada")
+    r = requests.post(
+        GEMINI_URL,
+        json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}]},
+        timeout=25,
+    )
+    if r.status_code == 429:
+        raise Exception("Gemini: limite de requisições atingido (429)")
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+def gerar_legenda_ia(tema: str) -> str:
+    erros = []
+
+    # 1. Groq
     try:
-        r = requests.post(GEMINI_URL, json={
-            "contents": [{"parts": [{"text": prompt}]}]
-        }, timeout=15)
-        r.raise_for_status()
-        texto = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        texto = texto.strip().replace("```json","").replace("```","").strip()
-        return json.loads(texto)
-    except Exception:
-        return {"conteudo": ["pessoa_sozinha"], "clima": ["clima_reflexivo"]}
+        legenda = _groq_legenda(tema)
+        return legenda + ASSINATURA
+    except Exception as e:
+        erros.append(f"Groq: {e}")
+
+    # 2. Gemini
+    try:
+        legenda = _gemini_legenda(tema)
+        return legenda + ASSINATURA
+    except Exception as e:
+        erros.append(f"Gemini: {e}")
+
+    raise Exception("Todas as IAs falharam — " + " | ".join(erros))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. SELEÇÃO DE TAGS — por palavras-chave (sem IA)
+# ─────────────────────────────────────────────────────────────────────────────
+def selecionar_tags(tema: str) -> dict:
+    tema_lower = tema.lower()
+    for chave, tags in MAPA_TAGS.items():
+        if chave in tema_lower:
+            return tags
+    # fallback aleatório
+    return {
+        "conteudo": random.sample(TAGS_CONTEUDO, 2),
+        "clima": random.sample(TAGS_CLIMA, 2),
+    }
 
 def buscar_imagem(tags: dict) -> str | None:
     todas = tags.get("conteudo", []) + tags.get("clima", [])
     random.shuffle(todas)
     for tag in todas:
         try:
-            result = cloudinary.api.resources_by_tag(
-                tag, type="upload", max_results=30
-            )
-            recursos = result.get("resources", [])
+            result = cloudinary.api.resources_by_tag(tag, type="upload", max_results=30)
+            recursos = [r for r in result.get("resources", []) if CLOUDINARY_POSTS not in r.get("public_id","")]
             if recursos:
                 return random.choice(recursos).get("secure_url")
         except Exception:
             continue
-    # fallback: qualquer imagem do banco
     try:
-        result = cloudinary.api.resources(
-            type="upload", max_results=50
-        )
-        recursos = result.get("resources", [])
+        result = cloudinary.api.resources(type="upload", max_results=50)
+        recursos = [r for r in result.get("resources", []) if CLOUDINARY_POSTS not in r.get("public_id","")]
         if recursos:
             return random.choice(recursos).get("secure_url")
     except Exception:
@@ -181,14 +211,12 @@ def preparar_fundo(url: str) -> Image.Image | None:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
         img = Image.open(io.BytesIO(r.content)).convert("RGB")
-        # Redimensiona e corta para 1080x810
         ratio = max(W / img.width, 810 / img.height)
         nw, nh = int(img.width * ratio), int(img.height * ratio)
         img = img.resize((nw, nh), Image.Resampling.LANCZOS)
         left = (nw - W) // 2
         top  = (nh - 810) // 2
         img  = img.crop((left, top, left + W, top + 810))
-        # Overlay marinho semi-transparente para legibilidade do texto
         overlay = Image.new("RGBA", (W, 810), (*MARINHO, 170))
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         return img
@@ -203,7 +231,6 @@ def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
     img  = Image.new("RGB", (W, H), BRANCO)
     draw = ImageDraw.Draw(img)
 
-    # ── Área superior (810px) — imagem ou cor sólida ──────────────────────────
     if imagem_url:
         fundo = preparar_fundo(imagem_url)
         if fundo:
@@ -214,40 +241,27 @@ def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
         draw.rectangle([0, 0, W, 810], fill=MARINHO)
 
     draw = ImageDraw.Draw(img)
-
-    # Linha lateral laranja (identidade AlvoreSer)
     draw.rectangle([0, 0, 12, 810], fill=LARANJA)
-
-    # Faixa laranja divisora (conceito alvorecer)
     draw.rectangle([0, 800, W, 822], fill=LARANJA)
-
-    # Elemento decorativo — círculo teal canto superior direito
     draw.ellipse([W - 280, -100, W + 60, 240], fill=PETROLEO)
     draw.ellipse([W - 230, -55,  W + 10, 185], fill=MARINHO)
 
-    # ── Tema — fonte AGILERA ──────────────────────────────────────────────────
     ft = f_titulo(88)
     linhas_tema = textwrap.wrap(tema.upper(), width=14)[:3]
     y_tema = 90
     for linha in linhas_tema:
-        # Sombra sutil
         draw.text((53, y_tema + 3), linha, font=ft, fill=(0, 0, 0))
         draw.text((50, y_tema),     linha, font=ft, fill=BRANCO)
         y_tema += 108
 
-    # Tag AlvoreSer — fonte MALGUNSL
     fl = f_light(26)
     tag_y = y_tema + 18
     draw.rounded_rectangle([50, tag_y, 400, tag_y + 46], radius=23, fill=LARANJA)
     draw.text((70, tag_y + 11), "AlvoreSer · Saúde Mental", font=fl, fill=MARINHO)
 
-    # ── Área inferior (540px) — legenda ──────────────────────────────────────
     draw.rectangle([0, 822, W, H - 90], fill=BRANCO)
-
-    # Linha teal lateral na área de legenda
     draw.rectangle([36, 838, 46, H - 100], fill=TEAL)
 
-    # Legenda — remove assinatura e hashtags do card visual
     legenda_card = legenda.split("👨")[0].strip()
     legenda_card = re.sub(r'#\w+', '', legenda_card).strip()
 
@@ -258,19 +272,15 @@ def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
         draw.text((62, y), linha, font=fonte, fill=MARINHO)
         y += 50
 
-    # ── Rodapé ────────────────────────────────────────────────────────────────
     draw.rectangle([0, H - 90, W, H], fill=MARINHO)
-    draw.text((60, H - 70), "Ronilson Nogueira",
-              font=f_bold(28), fill=BRANCO)
-    draw.text((60, H - 38), "@alvoreser.psi  |  Psicólogo · CRP 04/57327",
-              font=f_light(22), fill=TEAL)
-    # Ponto laranja decorativo
+    draw.text((60, H - 70), "Ronilson Nogueira", font=f_bold(28), fill=BRANCO)
+    draw.text((60, H - 38), "@alvoreser.psi  |  Psicólogo · CRP 04/57327", font=f_light(22), fill=TEAL)
     draw.ellipse([W - 72, H - 72, W - 20, H - 20], fill=LARANJA)
 
     return img
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. UPLOAD DO CARD NO CLOUDINARY
+# 5. UPLOAD DO CARD
 # ─────────────────────────────────────────────────────────────────────────────
 def upload_card(img: Image.Image, public_id: str) -> str:
     buffer = io.BytesIO()
@@ -300,14 +310,8 @@ def escrever_planilha(tema: str, legenda: str, url: str) -> int:
     service = get_sheets()
     agora   = datetime.now().strftime("%Y-%m-%d %H:%M")
     linha   = [
-        agora,                        # A — Data/Hora
-        tema,                         # B — Tema/Insight
-        tema,                         # C — Título
-        legenda,                      # D — Legenda Sugerida
-        "Profissional e acolhedor",   # E — Tom de Voz
-        "✅ Pronta",                  # F — Status da Arte
-        "Aguardando Postagem",        # G — Status da Postagem
-        url,                          # H — Link da Imagem Final
+        agora, tema, tema, legenda,
+        "Profissional e acolhedor", "✅ Pronta", "Aguardando Postagem", url,
     ]
     result = service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
@@ -347,7 +351,10 @@ def rota_gerar_legenda():
     tema = data.get("tema", "").strip()
     if not tema:
         return jsonify({"erro": "Tema obrigatório"}), 400
-    return jsonify({"legenda": gerar_legenda_ia(tema)})
+    try:
+        return jsonify({"legenda": gerar_legenda_ia(tema)})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
 
 @app.route("/gerar-card", methods=["POST"])
 def rota_gerar_card():
@@ -358,49 +365,56 @@ def rota_gerar_card():
     if not tema:
         return jsonify({"erro": "Tema obrigatório"}), 400
 
-    try:
-        # 1. Gera legenda se não veio editada do painel
-        if not legenda:
+    erros_legenda = None
+
+    # 1. Legenda — independente do card
+    if not legenda:
+        try:
             legenda = gerar_legenda_ia(tema)
+        except Exception as e:
+            erros_legenda = str(e)
+            legenda = ""
 
-        # 2. Garante assinatura no final
-        if "CRP 04/57327" not in legenda:
-            legenda = legenda.rstrip() + ASSINATURA
+    if legenda and "CRP 04/57327" not in legenda:
+        legenda = legenda.rstrip() + ASSINATURA
 
-        # 3. Seleciona tags usando tema + legenda completa
-        tags = selecionar_tags(tema, legenda)
+    # 2. Tags e imagem — sem dependência de IA
+    tags       = selecionar_tags(tema)
+    imagem_url = buscar_imagem(tags)
 
-        # 4. Busca imagem compatível no Cloudinary
-        imagem_url = buscar_imagem(tags)
-
-        # 5. Gera card com fontes e cores AlvoreSer
-        card = gerar_card(tema, legenda, imagem_url)
-
-        # 6. Sobe card no Cloudinary
+    # 3. Gera card — sempre executa independente da legenda
+    try:
+        card     = gerar_card(tema, legenda, imagem_url)
         uid      = f"post_{uuid.uuid4().hex[:8]}"
         card_url = upload_card(card, uid)
         if not card_url:
             return jsonify({"erro": "Falha no upload do card"}), 500
-
-        # 7. Escreve linha completa na planilha
-        linha = escrever_planilha(tema, legenda, card_url)
-
-        return jsonify({
-            "cloudinary_url": card_url,
-            "legenda": legenda,
-            "tags_usadas": tags,
-            "imagem_fundo": imagem_url,
-            "linha_planilha": linha,
-            "status": "Aguardando Postagem",
-        })
-
     except Exception as e:
-        print(f"Erro gerar-card: {e}")
-        return jsonify({"erro": str(e)}), 500
+        return jsonify({"erro": f"Erro ao gerar card: {e}"}), 500
+
+    # 4. Planilha
+    linha = 0
+    try:
+        linha = escrever_planilha(tema, legenda, card_url)
+    except Exception as e:
+        print(f"Erro planilha: {e}")
+
+    resposta = {
+        "cloudinary_url": card_url,
+        "legenda": legenda,
+        "tags_usadas": tags,
+        "imagem_fundo": imagem_url,
+        "linha_planilha": linha,
+        "status": "Aguardando Postagem",
+    }
+
+    if erros_legenda:
+        resposta["aviso_legenda"] = erros_legenda
+
+    return jsonify(resposta)
 
 @app.route("/atualizar-status", methods=["POST"])
 def rota_atualizar_status():
-    """Chamada pelo Make após postar. Atualiza coluna G."""
     data   = request.get_json() or {}
     linha  = data.get("linha")
     status = data.get("status", "Postado ✅")
