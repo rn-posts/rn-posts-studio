@@ -50,6 +50,27 @@ PETROLEO = (27,  121, 125)
 TEAL     = (4,   157, 191)
 BRANCO   = (244, 246, 248)
 LARANJA  = (249, 171, 11)
+VERDE_NEUTRO  = (119, 153, 147)
+VERDE_VIVO    = (122, 181, 0)
+AMARELO       = (255, 221, 0)
+
+# ── Cor do título por clima do tema ──────────────────────────────────────────
+TEMAS_PESADOS   = ["depressao", "luto", "trauma", "burnout", "borderline"]
+TEMAS_ENERGIA   = ["tdah", "autoestima", "motivacao"]
+TEMAS_EQUILIBRIO= ["autismo", "terapia", "familia", "relacionamento", "ansiedade", "meditacao"]
+
+def cor_titulo(tema: str) -> tuple:
+    t = tema.lower()
+    for p in TEMAS_PESADOS:
+        if p in t:
+            return BRANCO
+    for e in TEMAS_ENERGIA:
+        if e in t:
+            return LARANJA
+    for eq in TEMAS_EQUILIBRIO:
+        if eq in t:
+            return TEAL
+    return LARANJA
 
 # ── Fontes ────────────────────────────────────────────────────────────────────
 ROOT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -64,10 +85,10 @@ def _font(nome, tamanho):
         except Exception:
             return ImageFont.load_default()
 
-def f_titulo(t): return _font("AGILERA.otf",  t)
-def f_corpo(t):  return _font("MALGUN.ttf",   t)
-def f_bold(t):   return _font("MALGUNBD.ttf", t)
-def f_light(t):  return _font("MALGUNSL.ttf", t)
+def f_titulo(t): return _font("AGILERA.OTF",  t)
+def f_corpo(t):  return _font("MALGUN.TTF",   t)
+def f_bold(t):   return _font("MALGUNBD.TTF", t)
+def f_light(t):  return _font("MALGUNSL.TTF", t)
 
 # ── Assinatura ────────────────────────────────────────────────────────────────
 ASSINATURA = (
@@ -117,7 +138,7 @@ PROMPT_LEGENDA = (
     "É para o psicólogo Ronilson Nogueira, especialista em Autismo e TDAH, "
     "da clínica AlvoreSer em Coronel Fabriciano/MG. "
     "Tom: acolhedor, humano, reflexivo, não-clínico, para o público geral. "
-    "Máximo 150 palavras. Inclua 5 hashtags relevantes no final. "
+    "Máximo 150 palavras. NÃO inclua hashtags. "
     "Retorne APENAS o texto da legenda, sem explicações ou markdown."
 )
 
@@ -204,21 +225,103 @@ def buscar_imagem(tags: dict) -> str | None:
     return None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. PREPARAR FUNDO
+# 3. ANÁLISE DE IMAGEM — luminosidade e sombra dinâmica
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Paleta completa para sombra — apenas cores da identidade visual
+PALETA_SOMBRA = [
+    (2,   64,  89),   # MARINHO
+    (27,  121, 125),  # PETROLEO
+    (4,   157, 191),  # TEAL
+    (119, 153, 147),  # VERDE_NEUTRO
+    (122, 181, 0),    # VERDE_VIVO
+]
+
+def luminosidade_regiao(img: Image.Image, y_inicio: int, y_fim: int) -> float:
+    """Retorna luminosidade média (0=escuro, 255=claro) de uma faixa horizontal."""
+    region = img.crop((0, y_inicio, W, y_fim)).convert("L")
+    pixels = list(region.getdata())
+    return sum(pixels) / len(pixels)
+
+def melhor_posicao_titulo(img: Image.Image, n_linhas: int) -> int:
+    """Encontra a faixa da imagem com maior contraste disponível para o título."""
+    altura_bloco = n_linhas * 108 + 60
+    # Divide a imagem em 3 zonas: topo, meio, base
+    zonas = [
+        (50,  50 + altura_bloco),
+        ((H - altura_bloco) // 2, (H + altura_bloco) // 2),
+        (H - altura_bloco - 50, H - 50),
+    ]
+    # Prefere zona mais escura (texto claro lê melhor) ou mais clara (texto escuro)
+    # Escolhe a zona com luminosidade mais extrema (mais escura ou mais clara)
+    melhor_y = 90
+    melhor_score = -1
+    for y_ini, y_fim in zonas:
+        if y_fim > H:
+            continue
+        lum = luminosidade_regiao(img, y_ini, y_fim)
+        # Score: quanto mais extremo (escuro ou claro), melhor
+        score = abs(lum - 128)
+        if score > melhor_score:
+            melhor_score = score
+            melhor_y = y_ini
+    return melhor_y
+
+# Paleta completa de sombras — todas as 9 cores da identidade visual
+PALETA_SOMBRA = [
+    ("marinho",       (2,   64,  89)),
+    ("petroleo",      (27,  121, 125)),
+    ("teal",          (4,   157, 191)),
+    ("verde_neutro",  (119, 153, 147)),
+    ("branco",        (244, 246, 248)),
+    ("verde_vivo",    (122, 181, 0)),
+    ("verde_citrico", (146, 204, 29)),
+    ("laranja",       (249, 171, 11)),
+    ("amarelo",       (255, 221, 0)),
+]
+
+def cor_dominante_regiao(img: Image.Image, y: int, n_linhas: int) -> tuple:
+    """Retorna a cor média RGB da região onde o título vai aparecer."""
+    altura = min(n_linhas * 108, H - y)
+    region = img.crop((0, y, W, y + altura)).resize((50, 20), Image.Resampling.LANCZOS)
+    pixels = list(region.convert("RGB").getdata())
+    r = sum(p[0] for p in pixels) // len(pixels)
+    g = sum(p[1] for p in pixels) // len(pixels)
+    b = sum(p[2] for p in pixels) // len(pixels)
+    return (r, g, b)
+
+def distancia_cor(c1: tuple, c2: tuple) -> float:
+    """Distância euclidiana entre duas cores RGB."""
+    return ((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2) ** 0.5
+
+def sombra_dinamica(img: Image.Image, y: int, n_linhas: int) -> tuple | None:
+    """Analisa a região do título, e escolhe a cor de sombra da paleta AlvoreSer
+    que mais contrasta com o fundo — variando entre as 9 cores disponíveis.
+    Retorna None apenas se a imagem já for extremamente escura (sombra desnecessária)."""
+    lum = luminosidade_regiao(img, y, min(y + n_linhas * 108, H))
+    # Imagem muito escura — título claro já lê bem, sem sombra
+    if lum < 40:
+        return None
+    cor_fundo = cor_dominante_regiao(img, y, n_linhas)
+    # Escolhe a cor da paleta com MAIOR distância da cor dominante do fundo
+    # para garantir contraste e variedade
+    candidatas = [(nome, cor) for nome, cor in PALETA_SOMBRA]
+    # Embaralha levemente para variar entre imagens com cores similares
+    random.shuffle(candidatas)
+    melhor_nome, melhor_cor = max(candidatas, key=lambda x: distancia_cor(cor_fundo, x[1]))
+    return melhor_cor
+
 def preparar_fundo(url: str) -> Image.Image | None:
     try:
         r = requests.get(url, timeout=20)
         r.raise_for_status()
         img = Image.open(io.BytesIO(r.content)).convert("RGB")
-        ratio = max(W / img.width, 810 / img.height)
+        ratio = max(W / img.width, H / img.height)
         nw, nh = int(img.width * ratio), int(img.height * ratio)
         img = img.resize((nw, nh), Image.Resampling.LANCZOS)
         left = (nw - W) // 2
-        top  = (nh - 810) // 2
-        img  = img.crop((left, top, left + W, top + 810))
-        overlay = Image.new("RGBA", (W, 810), (*MARINHO, 170))
-        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        top  = (nh - H) // 2
+        img  = img.crop((left, top, left + W, top + H))
         return img
     except Exception as e:
         print(f"Erro fundo: {e}")
@@ -228,54 +331,38 @@ def preparar_fundo(url: str) -> Image.Image | None:
 # 4. GERAR CARD 1080x1350
 # ─────────────────────────────────────────────────────────────────────────────
 def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
-    img  = Image.new("RGB", (W, H), BRANCO)
+    img  = Image.new("RGB", (W, H), MARINHO)
     draw = ImageDraw.Draw(img)
 
+    fundo = None
     if imagem_url:
         fundo = preparar_fundo(imagem_url)
         if fundo:
             img.paste(fundo, (0, 0))
-        else:
-            draw.rectangle([0, 0, W, 810], fill=MARINHO)
-    else:
-        draw.rectangle([0, 0, W, 810], fill=MARINHO)
 
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, 12, 810], fill=LARANJA)
-    draw.rectangle([0, 800, W, 822], fill=LARANJA)
-    draw.ellipse([W - 280, -100, W + 60, 240], fill=PETROLEO)
-    draw.ellipse([W - 230, -55,  W + 10, 185], fill=MARINHO)
+
+    # Cor do título baseada no tema / identidade visual
+    ct = cor_titulo(tema)
 
     ft = f_titulo(88)
     linhas_tema = textwrap.wrap(tema.upper(), width=14)[:3]
-    y_tema = 90
+    n_linhas = len(linhas_tema)
+
+    # Posição dinâmica: encontra melhor zona da imagem para o título
+    if fundo:
+        y_tema = melhor_posicao_titulo(fundo, n_linhas)
+        cor_sombra = sombra_dinamica(fundo, y_tema, n_linhas)
+    else:
+        y_tema = 90
+        cor_sombra = None
+
     for linha in linhas_tema:
-        draw.text((53, y_tema + 3), linha, font=ft, fill=(0, 0, 0))
-        draw.text((50, y_tema),     linha, font=ft, fill=BRANCO)
+        if cor_sombra:
+            # Sombra dinâmica com cor da paleta AlvoreSer
+            draw.text((54, y_tema + 4), linha, font=ft, fill=(*cor_sombra, 160))
+        draw.text((50, y_tema), linha, font=ft, fill=ct)
         y_tema += 108
-
-    fl = f_light(26)
-    tag_y = y_tema + 18
-    draw.rounded_rectangle([50, tag_y, 400, tag_y + 46], radius=23, fill=LARANJA)
-    draw.text((70, tag_y + 11), "AlvoreSer · Saúde Mental", font=fl, fill=MARINHO)
-
-    draw.rectangle([0, 822, W, H - 90], fill=BRANCO)
-    draw.rectangle([36, 838, 46, H - 100], fill=TEAL)
-
-    legenda_card = legenda.split("👨")[0].strip()
-    legenda_card = re.sub(r'#\w+', '', legenda_card).strip()
-
-    y = 845
-    linhas = textwrap.wrap(legenda_card, width=34)[:10]
-    for i, linha in enumerate(linhas):
-        fonte = f_bold(34) if i == 0 else f_corpo(34)
-        draw.text((62, y), linha, font=fonte, fill=MARINHO)
-        y += 50
-
-    draw.rectangle([0, H - 90, W, H], fill=MARINHO)
-    draw.text((60, H - 70), "Ronilson Nogueira", font=f_bold(28), fill=BRANCO)
-    draw.text((60, H - 38), "@alvoreser.psi  |  Psicólogo · CRP 04/57327", font=f_light(22), fill=TEAL)
-    draw.ellipse([W - 72, H - 72, W - 20, H - 20], fill=LARANJA)
 
     return img
 
