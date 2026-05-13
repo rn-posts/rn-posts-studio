@@ -37,7 +37,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 )
 
 # ── Dimensões ─────────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ def _groq_legenda(tema: str) -> str:
         GROQ_URL,
         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
         json={
-            "model": "llama3-8b-8192",
+            "model": "llama3-70b-8192",
             "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
             "max_tokens": 400,
         },
@@ -244,24 +244,23 @@ def luminosidade_regiao(img: Image.Image, y_inicio: int, y_fim: int) -> float:
     return sum(pixels) / len(pixels)
 
 def melhor_posicao_titulo(img: Image.Image, n_linhas: int) -> int:
-    """Encontra a faixa da imagem com maior contraste disponível para o título."""
+    """Encontra a faixa da imagem com maior contraste disponível para o título.
+    Prefere zonas mais escuras (melhor leitura para texto claro)."""
     altura_bloco = n_linhas * 108 + 60
-    # Divide a imagem em 3 zonas: topo, meio, base
+    # Zonas candidatas: base primeiro (mais profissional para Instagram), depois topo e meio
     zonas = [
-        (50,  50 + altura_bloco),
-        ((H - altura_bloco) // 2, (H + altura_bloco) // 2),
-        (H - altura_bloco - 50, H - 50),
+        (H - altura_bloco - 80, H - 80),           # base
+        (50, 50 + altura_bloco),                    # topo
+        ((H - altura_bloco) // 2, (H + altura_bloco) // 2),  # meio
     ]
-    # Prefere zona mais escura (texto claro lê melhor) ou mais clara (texto escuro)
-    # Escolhe a zona com luminosidade mais extrema (mais escura ou mais clara)
-    melhor_y = 90
+    melhor_y = H - altura_bloco - 80
     melhor_score = -1
     for y_ini, y_fim in zonas:
-        if y_fim > H:
+        if y_ini < 0 or y_fim > H:
             continue
         lum = luminosidade_regiao(img, y_ini, y_fim)
-        # Score: quanto mais extremo (escuro ou claro), melhor
-        score = abs(lum - 128)
+        # Prefere zonas escuras (lum baixa = score alto)
+        score = 255 - lum
         if score > melhor_score:
             melhor_score = score
             melhor_y = y_ini
@@ -359,8 +358,9 @@ def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
 
     for linha in linhas_tema:
         if cor_sombra:
-            # Sombra dinâmica com cor da paleta AlvoreSer
-            draw.text((54, y_tema + 4), linha, font=ft, fill=(*cor_sombra, 160))
+            # Sombra com blur simulado: múltiplos offsets para efeito de halo/glow profissional
+            for ox, oy in [(-3,3),(3,3),(0,4),(0,-3),(-3,-3),(3,-3),(4,0),(-4,0)]:
+                draw.text((50 + ox, y_tema + oy), linha, font=ft, fill=(*cor_sombra, 120))
         draw.text((50, y_tema), linha, font=ft, fill=ct)
         y_tema += 108
 
