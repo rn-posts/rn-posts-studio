@@ -37,7 +37,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 )
 
 # ── Dimensões ─────────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ PROMPT_LEGENDA = (
     "Retorne APENAS o texto da legenda, sem explicações ou markdown."
 )
 
-GROQ_MODELOS = ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"]
+GROQ_MODELOS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-4-scout"]
 
 def _groq_legenda(tema: str) -> str:
     if not GROQ_API_KEY:
