@@ -142,21 +142,30 @@ PROMPT_LEGENDA = (
     "Retorne APENAS o texto da legenda, sem explicações ou markdown."
 )
 
+GROQ_MODELOS = ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"]
+
 def _groq_legenda(tema: str) -> str:
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY não configurada")
-    r = requests.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={
-            "model": "llama3-70b-8192",
-            "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
-            "max_tokens": 400,
-        },
-        timeout=20,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
+    ultimo_erro = None
+    for modelo in GROQ_MODELOS:
+        try:
+            r = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": modelo,
+                    "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
+                    "max_tokens": 400,
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            ultimo_erro = e
+            continue
+    raise Exception(f"Groq falhou em todos os modelos: {ultimo_erro}")
 
 def _gemini_legenda(tema: str) -> str:
     if not GEMINI_API_KEY:
@@ -243,24 +252,34 @@ def luminosidade_regiao(img: Image.Image, y_inicio: int, y_fim: int) -> float:
     pixels = list(region.getdata())
     return sum(pixels) / len(pixels)
 
+def aplicar_halo(draw, texto, fonte, x, y, cor_halo, raio=8):
+    """Halo profissional: camadas concentíricas de opacidade decrescente ao redor do texto.
+    Simula blur real usando múltiplos offsets em distâncias variadas."""
+    for dist in range(raio, 0, -1):
+        alpha = int(180 * (1 - dist / raio))  # mais opaco perto, transparente longe
+        for angle in range(0, 360, 30):       # 12 direções ao redor
+            import math
+            ox = int(dist * math.cos(math.radians(angle)))
+            oy = int(dist * math.sin(math.radians(angle)))
+            draw.text((x + ox, y + oy), texto, font=fonte, fill=(*cor_halo, alpha))
+
 def melhor_posicao_titulo(img: Image.Image, n_linhas: int) -> int:
-    """Encontra a faixa da imagem com maior contraste disponível para o título.
-    Prefere zonas mais escuras (melhor leitura para texto claro)."""
+    """Encontra a faixa com maior contraste para o título.
+    Para imagens claras, prefere a base. Para escuras, prefere o topo."""
     altura_bloco = n_linhas * 108 + 60
-    # Zonas candidatas: base primeiro (mais profissional para Instagram), depois topo e meio
     zonas = [
-        (H - altura_bloco - 80, H - 80),           # base
-        (50, 50 + altura_bloco),                    # topo
-        ((H - altura_bloco) // 2, (H + altura_bloco) // 2),  # meio
+        (H - altura_bloco - 100, H - 100),
+        (80, 80 + altura_bloco),
+        ((H - altura_bloco) // 2, (H + altura_bloco) // 2),
     ]
-    melhor_y = H - altura_bloco - 80
+    melhor_y = 80
     melhor_score = -1
     for y_ini, y_fim in zonas:
         if y_ini < 0 or y_fim > H:
             continue
         lum = luminosidade_regiao(img, y_ini, y_fim)
-        # Prefere zonas escuras (lum baixa = score alto)
-        score = 255 - lum
+        # Score composto: prioriza zonas escuras mas considera extremos (muito claro também lida)
+        score = max(255 - lum, lum - 180) if lum > 180 else 255 - lum
         if score > melhor_score:
             melhor_score = score
             melhor_y = y_ini
@@ -294,21 +313,15 @@ def distancia_cor(c1: tuple, c2: tuple) -> float:
     return ((c1[0]-c2[0])**2 + (c1[1]-c2[1])**2 + (c1[2]-c2[2])**2) ** 0.5
 
 def sombra_dinamica(img: Image.Image, y: int, n_linhas: int) -> tuple | None:
-    """Analisa a região do título, e escolhe a cor de sombra da paleta AlvoreSer
-    que mais contrasta com o fundo — variando entre as 9 cores disponíveis.
-    Retorna None apenas se a imagem já for extremamente escura (sombra desnecessária)."""
+    """Escolhe a cor de sombra da paleta que mais contrasta com o fundo.
+    Sem embaralhamento — sempre a de maior distância real."""
     lum = luminosidade_regiao(img, y, min(y + n_linhas * 108, H))
-    # Imagem muito escura — título claro já lê bem, sem sombra
     if lum < 40:
         return None
     cor_fundo = cor_dominante_regiao(img, y, n_linhas)
-    # Escolhe a cor da paleta com MAIOR distância da cor dominante do fundo
-    # para garantir contraste e variedade
-    candidatas = [(nome, cor) for nome, cor in PALETA_SOMBRA]
-    # Embaralha levemente para variar entre imagens com cores similares
-    random.shuffle(candidatas)
-    melhor_nome, melhor_cor = max(candidatas, key=lambda x: distancia_cor(cor_fundo, x[1]))
-    return melhor_cor
+    # Sem shuffle — escolhe sempre a cor com maior distância real do fundo
+    melhor_cor = max(PALETA_SOMBRA, key=lambda x: distancia_cor(cor_fundo, x[1]))
+    return melhor_cor[1]
 
 def preparar_fundo(url: str) -> Image.Image | None:
     try:
@@ -358,9 +371,7 @@ def gerar_card(tema: str, legenda: str, imagem_url: str | None) -> Image.Image:
 
     for linha in linhas_tema:
         if cor_sombra:
-            # Sombra com blur simulado: múltiplos offsets para efeito de halo/glow profissional
-            for ox, oy in [(-3,3),(3,3),(0,4),(0,-3),(-3,-3),(3,-3),(4,0),(-4,0)]:
-                draw.text((50 + ox, y_tema + oy), linha, font=ft, fill=(*cor_sombra, 120))
+            aplicar_halo(draw, linha, ft, 50, y_tema, cor_sombra, raio=10)
         draw.text((50, y_tema), linha, font=ft, fill=ct)
         y_tema += 108
 
