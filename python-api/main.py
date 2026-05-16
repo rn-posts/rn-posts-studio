@@ -46,7 +46,23 @@ GROQ_URL             = "https://api.groq.com/openai/v1/chat/completions"
 
 W, H             = 1080, 1350
 CLOUDINARY_POSTS = "AlvoreSer_Posts"
-PASTA_RONILSON   = "Ronilson"
+PASTA_RONILSON   = "Banco de Imagens/Ronilson"
+BANCO_BASE       = "Banco de Imagens"
+
+# Mapa de pastas do Cloudinary por tema
+MAPA_PASTAS = {
+    "autismo":        "Banco de Imagens/Autismo",
+    "ansiedade":      "Banco de Imagens/Ansiedade e Estresse",
+    "estresse":       "Banco de Imagens/Ansiedade e Estresse",
+    "depressao":      "Banco de Imagens/Depressão",
+    "depressão":      "Banco de Imagens/Depressão",
+    "borderline":     "Banco de Imagens/Borderline",
+    "tdah":           "Banco de Imagens/TDAH",
+    "terapia":        "Banco de Imagens/Convite e Terapia",
+    "acolhimento":    "Banco de Imagens/Acolhimento",
+    "recomeco":       "Banco de Imagens/Recomeço e Transformação",
+    "transformacao":  "Banco de Imagens/Recomeço e Transformação",
+}
 SZ_TOP=135; SZ_BOTTOM=1215; SZ_LEFT=125; SZ_RIGHT=955
 
 MARINHO=(2,64,89); PETROLEO=(27,121,125); TEAL=(4,157,191)
@@ -150,25 +166,41 @@ def selecionar_tags(tema):
         if k in t: return v
     return {"conteudo":random.sample(TAGS_CONTEUDO,2),"clima":random.sample(TAGS_CLIMA,2)}
 
-def buscar_imagem(tags):
-    todas=tags.get("conteudo",[])+tags.get("clima",[])
-    random.shuffle(todas)
-    for tag in todas:
-        try:
-            res=cloudinary.api.resources_by_tag(tag,type="upload",max_results=30)
-            rec=[r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
-            if rec:
-                c=random.choice(rec)
-                return c.get("secure_url"),c.get("public_id","")
-        except: continue
+def buscar_imagem(tags, tema=""):
+    """Busca imagem nas pastas corretas do Cloudinary por tema.
+    Prioriza pasta temática → Banco geral → fallback aleatório."""
+    t = tema.lower()
+
+    # 1. Tenta pasta temática direta
+    for chave, pasta in MAPA_PASTAS.items():
+        if chave in t:
+            try:
+                res = cloudinary.api.resources(
+                    type="upload", prefix=pasta+"/", max_results=50
+                )
+                rec = [r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
+                if rec:
+                    c = random.choice(rec)
+                    return c.get("secure_url"), c.get("public_id","")
+            except Exception as e:
+                print(f"[busca] pasta {pasta} erro: {e}")
+
+    # 2. Tenta todas as pastas do banco
     try:
-        res=cloudinary.api.resources(type="upload",max_results=50)
-        rec=[r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
-        if rec:
-            c=random.choice(rec)
-            return c.get("secure_url"),c.get("public_id","")
-    except: pass
-    return None,""
+        pastas = list(MAPA_PASTAS.values())
+        random.shuffle(pastas)
+        for pasta in pastas:
+            res = cloudinary.api.resources(
+                type="upload", prefix=pasta+"/", max_results=30
+            )
+            rec = [r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
+            if rec:
+                c = random.choice(rec)
+                return c.get("secure_url"), c.get("public_id","")
+    except Exception as e:
+        print(f"[busca] banco geral erro: {e}")
+
+    return None, ""
 
 def distancia_cor(c1,c2): return ((c1[0]-c2[0])**2+(c1[1]-c2[1])**2+(c1[2]-c2[2])**2)**0.5
 def luminosidade_regiao(img,y1,y2):
@@ -372,7 +404,7 @@ def rota_gerar_card():
         try: legenda=gerar_legenda_ia(tema)
         except Exception as e: erros_leg=str(e); legenda=""
     if legenda and "CRP 04/57327" not in legenda: legenda=legenda.rstrip()+ASSINATURA
-    tags=selecionar_tags(tema); url_img,pid=buscar_imagem(tags)
+    tags=selecionar_tags(tema); url_img,pid=buscar_imagem(tags, tema)
     try:
         card=gerar_card(tema,legenda,url_img,pid)
         uid=f"post_{uuid.uuid4().hex[:8]}"
