@@ -7,7 +7,5 @@ google-auth==2.37.0
 requests==2.32.3
 flask-cors==5.0.0
 google-auth-httplib2==0.2.0
-rembg==2.0.75
-onnxruntime==1.24.1
-numpy==1.26.4
-opencv-python-headless==4.10.0.84
+rembg[cpu]
+numpy
