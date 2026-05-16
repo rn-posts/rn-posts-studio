@@ -13,7 +13,15 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://marvelous-cat-8a8767.netlify.app", "http://localhost:5173", "http://localhost:3000"], supports_credentials=True)
+
+# Garante headers CORS em todas as respostas incluindo erros
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "https://marvelous-cat-8a8767.netlify.app"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    return response
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
