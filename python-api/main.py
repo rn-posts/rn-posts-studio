@@ -180,11 +180,20 @@ def cor_dominante_regiao(img,y,h):
 
 def eh_foto_ronilson(pid): return PASTA_RONILSON.lower() in pid.lower()
 def eh_fundo_solido(img):
+    """Detecta fundo sólido branco ou escuro com critério mais abrangente."""
     s=img.resize((100,125),Image.Resampling.LANCZOS).convert("RGB")
-    rv=[p[0] for p in s.getdata()]; m=sum(rv)/len(rv)
+    rv=[p[0] for p in s.getdata()]
+    gv=[p[1] for p in s.getdata()]
+    bv=[p[2] for p in s.getdata()]
+    m=sum(rv)/len(rv)
     var=sum((v-m)**2 for v in rv)/len(rv)
     lum=luminosidade_regiao(img,0,H)
-    return var<800 and (lum>220 or lum<30)
+    # Fundo branco: luminosidade alta E variância baixa
+    # Critério mais abrangente — detecta cinza claro também
+    eh_claro = lum > 190 and var < 1500
+    eh_escuro = lum < 40 and var < 800
+    print(f"[fundo] lum={lum:.1f} var={var:.1f} claro={eh_claro} escuro={eh_escuro}")
+    return eh_claro or eh_escuro
 
 def remover_fundo(img):
     buf=io.BytesIO(); img.save(buf,format="PNG")
@@ -255,12 +264,11 @@ def sombra_dinamica(img,y,n_lin):
     cf=cor_dominante_regiao(img,y,n_lin*108)
     return max(PALETA_SOMBRA,key=lambda x:distancia_cor(cf,x[1]))[1]
 
-def aplicar_halo(draw,texto,fonte,x,y,cor,raio=12):
-    for dist in range(raio,0,-1):
-        alpha=int(200*(1-dist/(raio+1)))
-        for ang in range(0,360,30):
-            ox=int(dist*math.cos(math.radians(ang))); oy=int(dist*math.sin(math.radians(ang)))
-            draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor,alpha))
+def aplicar_halo(draw,texto,fonte,x,y,cor,raio=4):
+    """Sombra limpa e profissional — offset simples em 4 direções.
+    Raio pequeno para não deformar a fonte."""
+    for ox,oy in [(2,2),(-2,2),(2,-2),(-2,-2),(0,3),(3,0),(-3,0),(0,-3)]:
+        draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor,180))
 
 def adicionar_elementos_brand(img,tema):
     draw=ImageDraw.Draw(img,"RGBA")
@@ -290,12 +298,17 @@ def preparar_fundo(url,pid="",tema=""):
         img=img.resize((nw,nh),Image.Resampling.LANCZOS)
         l=(nw-W)//2; t=(nh-H)//2; img=img.crop((l,t,l+W,t+H))
         if eh_foto_ronilson(pid):
+            print(f"[fundo] foto Ronilson detectada: {pid}")
             try:
                 fi=criar_fundo_identidade(tema,hash(tema.lower())%4)
                 img=compor_com_fundo(remover_fundo(img),fi)
-            except Exception as e: print(f"rembg falhou:{e}")
+                print("[fundo] rembg aplicado com sucesso")
+            except Exception as e: print(f"[fundo] rembg falhou:{e}")
         elif eh_fundo_solido(img):
+            print(f"[fundo] fundo solido detectado, aplicando gradiente")
             img=tratar_fundo_solido(img,tema)
+        else:
+            print(f"[fundo] imagem normal, sem tratamento")
         return img
     except Exception as e: print(f"Erro fundo:{e}"); return None
 
@@ -306,7 +319,7 @@ def gerar_card(tema,legenda,imagem_url,pid=""):
         if fundo: img.paste(fundo,(0,0))
     img=adicionar_elementos_brand(img,tema)
     draw=ImageDraw.Draw(img,"RGBA"); ct=cor_titulo(tema); ft=f_titulo(88)
-    linhas=textwrap.wrap(tema.upper(),width=15)[:3]; nl=len(linhas)
+    linhas=textwrap.wrap(tema.upper(),width=12)[:3]; nl=len(linhas)
     if fundo: yt=melhor_posicao_titulo(fundo,nl); cs=sombra_dinamica(fundo,yt,nl)
     else: yt=SZ_TOP+40; cs=PETROLEO
     ya=yt
