@@ -8,9 +8,17 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
-from rembg import remove as rembg_remove
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+# rembg carregado de forma lazy — evita timeout no startup do Render
+_rembg_remove = None
+def get_rembg():
+    global _rembg_remove
+    if _rembg_remove is None:
+        from rembg import remove as _remove
+        _rembg_remove = _remove
+    return _rembg_remove
 
 app = Flask(__name__)
 CORS(app, origins=["https://marvelous-cat-8a8767.netlify.app", "http://localhost:5173", "http://localhost:3000"], supports_credentials=True)
@@ -180,7 +188,7 @@ def eh_fundo_solido(img):
 
 def remover_fundo(img):
     buf=io.BytesIO(); img.save(buf,format="PNG")
-    return Image.open(io.BytesIO(rembg_remove(buf.getvalue()))).convert("RGBA")
+    return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
 
 def criar_fundo_identidade(tema,estilo):
     t=tema.lower()
