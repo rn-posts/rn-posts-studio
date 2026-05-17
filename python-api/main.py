@@ -142,26 +142,47 @@ def gerar_legenda_ia(tema):
     raise Exception("Todas as IAs falharam — "+" | ".join(erros))
 
 def buscar_imagem(tema=""):
-    t=tema.lower()
-    for chave,pasta in MAPA_PASTAS.items():
+    """Busca imagem em qualquer pasta disponivel do banco.
+    Tenta pasta tematica primeiro, depois qualquer pasta com imagens."""
+    t = tema.lower()
+    todas_pastas = list(set(MAPA_PASTAS.values()))
+
+    # Pasta tematica primeiro
+    pasta_tema = None
+    for chave, pasta in MAPA_PASTAS.items():
         if chave in t:
-            try:
-                res=cloudinary.api.resources(type="upload",prefix=pasta+"/",max_results=50)
-                rec=[r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
-                if rec:
-                    c=random.choice(rec); print(f"[busca] {pasta}")
-                    return c.get("secure_url"),c.get("public_id","")
-            except Exception as e: print(f"[busca] erro {pasta}: {e}")
-    pastas=list(set(MAPA_PASTAS.values())); random.shuffle(pastas)
-    for pasta in pastas:
+            pasta_tema = pasta
+            break
+
+    if pasta_tema:
+        todas_pastas = [pasta_tema] + [p for p in todas_pastas if p != pasta_tema]
+
+    # Tenta cada pasta ate encontrar imagem
+    for pasta in todas_pastas:
         try:
-            res=cloudinary.api.resources(type="upload",prefix=pasta+"/",max_results=30)
-            rec=[r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","")]
+            res = cloudinary.api.resources(type="upload", prefix=pasta+"/", max_results=50)
+            rec = [r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","") and CLOUDINARY_PREVIEW not in r.get("public_id","")]
             if rec:
-                c=random.choice(rec); print(f"[busca] fallback {pasta}")
-                return c.get("secure_url"),c.get("public_id","")
-        except: continue
-    print("[busca] sem imagem"); return None,""
+                c = random.choice(rec)
+                print(f"[busca] encontrou em: {pasta}")
+                return c.get("secure_url"), c.get("public_id","")
+        except Exception as e:
+            print(f"[busca] erro em {pasta}: {e}")
+            continue
+
+    # Fallback absoluto — qualquer imagem do Cloudinary
+    try:
+        res = cloudinary.api.resources(type="upload", max_results=50)
+        rec = [r for r in res.get("resources",[]) if CLOUDINARY_POSTS not in r.get("public_id","") and CLOUDINARY_PREVIEW not in r.get("public_id","")]
+        if rec:
+            c = random.choice(rec)
+            print(f"[busca] fallback absoluto: {c.get('public_id')}")
+            return c.get("secure_url"), c.get("public_id","")
+    except Exception as e:
+        print(f"[busca] fallback absoluto erro: {e}")
+
+    print("[busca] sem imagem")
+    return None, ""
 
 # ── Utilitarios de cor ────────────────────────────────────────────────────────
 def distancia_cor(c1,c2): return ((c1[0]-c2[0])**2+(c1[1]-c2[1])**2+(c1[2]-c2[2])**2)**0.5
@@ -448,42 +469,39 @@ def adicionar_elementos_brand(img, cor_acento, estilo):
 # ── Tipografia — 7 estrategias visuais ───────────────────────────────────────
 def formatar_titulo(tema, estilo_idx, cor_principal, cor_destaque):
     palavras=tema.split(); e=estilo_idx%7; elementos=[]
+    # Tamanho adaptativo ao comprimento do tema
+    n = len(tema)
+    tam_base = 104 if n<=12 else 88 if n<=20 else 72 if n<=30 else 60
+    w_base   = 13  if n<=12 else 14 if n<=20 else 16 if n<=30 else 18
+
     if e==0:
-        # Todo maiusculo grande — Agilera — impacto maximo
-        linhas=textwrap.wrap(tema.upper(),width=11)[:3]
-        for l in linhas: elementos.append((l,f_titulo,104,cor_principal))
+        linhas=textwrap.wrap(tema.upper(),width=w_base)
+        for l in linhas: elementos.append((l,f_titulo,tam_base,cor_principal))
     elif e==1:
-        # Primeira palavra enorme + resto menor bold
         if len(palavras)>=2:
-            elementos.append((palavras[0].upper(),f_titulo,130,cor_principal))
-            for l in textwrap.wrap(" ".join(palavras[1:]).title(),width=14)[:2]:
-                elementos.append((l,f_bold,68,cor_destaque))
-        else: elementos.append((tema.upper(),f_titulo,120,cor_principal))
+            elementos.append((palavras[0].upper(),f_titulo,min(130,tam_base+16),cor_principal))
+            for l in textwrap.wrap(" ".join(palavras[1:]).title(),width=w_base+2):
+                elementos.append((l,f_bold,max(54,tam_base-22),cor_destaque))
+        else: elementos.append((tema.upper(),f_titulo,tam_base,cor_principal))
     elif e==2:
-        # Title case Agilera — ultima linha em cor destaque
-        linhas=textwrap.wrap(tema.title(),width=13)[:2]
+        linhas=textwrap.wrap(tema.title(),width=w_base)
         for i,l in enumerate(linhas):
-            elementos.append((l,f_titulo,96,cor_principal if i==0 else cor_destaque))
+            elementos.append((l,f_titulo,tam_base,cor_principal if i==0 else cor_destaque))
     elif e==3:
-        # Bold maiusculo + light minusculo — contraste de peso
-        for l in textwrap.wrap(tema.upper(),width=12)[:1]: elementos.append((l,f_bold,110,cor_principal))
-        for l in textwrap.wrap(tema.title(),width=16)[:2]: elementos.append((l,f_light,58,cor_destaque))
+        for l in textwrap.wrap(tema.upper(),width=w_base): elementos.append((l,f_bold,tam_base,cor_principal))
+        for l in textwrap.wrap(tema.title(),width=w_base+4): elementos.append((l,f_light,max(50,tam_base-28),cor_destaque))
     elif e==4:
-        # Elegante title case — acento na ultima linha
-        linhas=textwrap.wrap(tema.title(),width=14)[:3]
+        linhas=textwrap.wrap(tema.title(),width=w_base)
         for i,l in enumerate(linhas):
-            elementos.append((l,f_titulo,88,cor_destaque if i==len(linhas)-1 else cor_principal))
+            elementos.append((l,f_titulo,tam_base,cor_destaque if i==len(linhas)-1 else cor_principal))
     elif e==5:
-        # Duas fontes diferentes — Malgun corpo
         if len(palavras)>=3:
-            elementos.append((" ".join(palavras[:2]).title(),f_bold,82,cor_principal))
-            elementos.append((" ".join(palavras[2:]).title(),f_corpo,66,cor_destaque))
-        else: elementos.append((tema.title(),f_bold,88,cor_principal))
+            elementos.append((" ".join(palavras[:2]).title(),f_bold,tam_base,cor_principal))
+            elementos.append((" ".join(palavras[2:]).title(),f_corpo,max(54,tam_base-20),cor_destaque))
+        else: elementos.append((tema.title(),f_bold,tam_base,cor_principal))
     else:
-        # Titulo curto — impacto centralizado
-        if len(tema)<=12: elementos.append((tema.upper(),f_titulo,120,cor_principal))
-        else:
-            for l in textwrap.wrap(tema.upper(),width=10)[:3]: elementos.append((l,f_titulo,92,cor_principal))
+        linhas=textwrap.wrap(tema.upper(),width=w_base)
+        for l in linhas: elementos.append((l,f_titulo,tam_base,cor_principal))
     return elementos
 
 def aplicar_sombra_texto(draw, texto, fonte, x, y, lum_fundo, cor_sombra=None):
