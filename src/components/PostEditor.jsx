@@ -9,13 +9,14 @@ export default function PostEditor({ post, onClose, onNotify }) {
 
   const [tema,          setTema]          = useState(post?.tema || "");
   const [legenda,       setLegenda]       = useState(post?.legenda || "");
-  const [cloudinaryUrl, setCloudinaryUrl] = useState(post?.cloudinaryUrl || "");
+  const [previewUrl,    setPreviewUrl]    = useState(post?.cloudinaryUrl || "");
+  const [previewBase64, setPreviewBase64] = useState("");
   const [modo,          setModo]          = useState(post?.modo || "manual");
-  const [linhaSheet,    setLinhaSheet]    = useState(post?.linhaSheet || null);
+  const [dadosCard,     setDadosCard]     = useState(null); // dados completos do card gerado
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
-  const [loadingSalvar,  setLoadingSalvar]  = useState(false);
+  const [loadingAprovar, setLoadingAprovar] = useState(false);
 
   // ── Gerar só legenda ────────────────────────────────────────────────────────
   const handleGerarLegenda = async () => {
@@ -38,24 +39,26 @@ export default function PostEditor({ post, onClose, onNotify }) {
     }
   };
 
-  // ── Gerar card completo (legenda + imagem + card + planilha) ────────────────
+  // ── Gerar card — APENAS preview, sem salvar em lugar nenhum ────────────────
   const handleGerarCard = async () => {
     if (!tema.trim()) { onNotify("Informe o tema.", "error"); return; }
     setLoadingCard(true);
+    setDadosCard(null);
+    setPreviewUrl("");
     try {
-      const res  = await fetch(`${RENDER_URL}/gerar-card`, {
+      const res = await fetch(`${RENDER_URL}/preview-card`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Envia legenda se já foi gerada/editada, senão o Render gera
         body: JSON.stringify({ tema, legenda: legenda || "" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
 
-      setCloudinaryUrl(data.cloudinary_url);
+      // Guarda dados do card para usar na aprovação
+      setDadosCard(data);
+      setPreviewUrl(data.preview_url);
       setLegenda(data.legenda);
-      setLinhaSheet(data.linha_planilha);
-      onNotify("Card gerado e adicionado à planilha ✓");
+      onNotify("Card gerado — revise e aprove ✓");
     } catch (e) {
       onNotify(e.message, "error");
     } finally {
@@ -63,16 +66,35 @@ export default function PostEditor({ post, onClose, onNotify }) {
     }
   };
 
-  // ── Salvar no Firestore ─────────────────────────────────────────────────────
-  const handleSalvar = async () => {
-    if (!cloudinaryUrl) { onNotify("Gere o card antes de salvar.", "error"); return; }
-    setLoadingSalvar(true);
+  // ── Aprovar card — agora sim salva no Cloudinary, planilha e Firestore ──────
+  const handleAprovar = async () => {
+    if (!dadosCard) { onNotify("Gere o card antes de aprovar.", "error"); return; }
+    setLoadingAprovar(true);
     try {
+      const res = await fetch(`${RENDER_URL}/aprovar-card`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          card_id: dadosCard.card_id,
+          tema,
+          legenda,
+          modo,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.erro || "Erro ao aprovar card");
+
+      // Salva no Firestore
       const payload = {
-        tema, legenda, cloudinaryUrl, modo, linhaSheet,
+        tema,
+        legenda,
+        cloudinaryUrl: data.cloudinary_url,
+        modo,
+        linhaSheet: data.linha_planilha,
         status: modo === "automatico" ? "aprovado" : "pendente",
         atualizadoEm: serverTimestamp(),
       };
+
       if (isEdit) {
         await updateDoc(doc(db, "posts", post.id), payload);
         onNotify("Post atualizado ✓");
@@ -80,14 +102,21 @@ export default function PostEditor({ post, onClose, onNotify }) {
         await addDoc(collection(db, "posts"), {
           ...payload, criadoEm: serverTimestamp(),
         });
-        onNotify("Post adicionado à fila ✓");
+        onNotify("Post aprovado e adicionado à fila ✓");
       }
       onClose();
     } catch (e) {
-      onNotify("Erro ao salvar: " + e.message, "error");
+      onNotify(e.message, "error");
     } finally {
-      setLoadingSalvar(false);
+      setLoadingAprovar(false);
     }
+  };
+
+  // ── Descartar card gerado ───────────────────────────────────────────────────
+  const handleDescartar = () => {
+    setDadosCard(null);
+    setPreviewUrl("");
+    onNotify("Card descartado.");
   };
 
   return (
@@ -118,7 +147,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
             className="btn btn--outline"
             onClick={handleGerarLegenda}
             disabled={loadingLegenda || loadingCard}
-            title="Gera apenas a legenda sem criar o card"
           >
             {loadingLegenda
               ? <><span className="spinner" style={{ borderTopColor: "var(--verde-medio)" }} /> Gerando...</>
@@ -129,18 +157,22 @@ export default function PostEditor({ post, onClose, onNotify }) {
             className="btn btn--primary"
             onClick={handleGerarCard}
             disabled={loadingCard || loadingLegenda}
-            title="Gera legenda + imagem + card + adiciona à planilha"
           >
             {loadingCard
               ? <><span className="spinner" /> Gerando card...</>
-              : "⚡ Gerar Card"}
+              : dadosCard ? "🔄 Gerar outro" : "⚡ Gerar Card"}
           </button>
         </div>
 
-        {/* Preview do card */}
-        {cloudinaryUrl && (
+        {/* Preview do card — só visualização, ainda não salvo */}
+        {previewUrl && (
           <div className="field">
-            <label>Card Gerado — 1080×1350</label>
+            <label>
+              Card Gerado — 1080×1350
+              <span style={{ fontSize: "0.72rem", color: "var(--aviso)", marginLeft: "0.5rem", fontWeight: 600 }}>
+                ⏳ Aguardando aprovação
+              </span>
+            </label>
             <div style={{
               maxWidth: 270,
               borderRadius: 12,
@@ -149,29 +181,17 @@ export default function PostEditor({ post, onClose, onNotify }) {
               boxShadow: "var(--sombra-media)",
               border: "2px solid var(--creme-escuro)"
             }}>
-              <img
-                src={cloudinaryUrl}
-                alt="card gerado"
-                style={{ width: "100%", display: "block" }}
-              />
+              <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
             </div>
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-              <a
-                href={cloudinaryUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="btn btn--outline"
-                style={{ fontSize: "0.8rem" }}
-              >
+              <a href={previewUrl} target="_blank" rel="noreferrer" className="btn btn--outline" style={{ fontSize: "0.8rem" }}>
                 Ver tamanho real ↗
               </a>
-              <button
-                className="btn btn--outline"
-                style={{ fontSize: "0.8rem" }}
-                onClick={handleGerarCard}
-                disabled={loadingCard}
-              >
+              <button className="btn btn--outline" style={{ fontSize: "0.8rem" }} onClick={handleGerarCard} disabled={loadingCard}>
                 🔄 Gerar outro
+              </button>
+              <button className="btn btn--outline" style={{ fontSize: "0.8rem", color: "var(--erro)" }} onClick={handleDescartar}>
+                🗑 Descartar
               </button>
             </div>
           </div>
@@ -183,7 +203,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
             Legenda
             {legenda && (
               <span style={{ fontSize: "0.72rem", color: "var(--texto-suave)", marginLeft: "0.5rem" }}>
-                — editável antes de salvar
+                — editável antes de aprovar
               </span>
             )}
           </label>
@@ -195,7 +215,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           />
           <p className="field__hint">
             A assinatura (Ronilson Nogueira · CRP 04/57327) é incluída automaticamente.
-            Se editar a legenda e gerar o card novamente, a versão editada será usada.
           </p>
         </div>
 
@@ -203,38 +222,34 @@ export default function PostEditor({ post, onClose, onNotify }) {
         <div className="field">
           <label>Modo de Publicação</label>
           <div className="mode-toggle">
-            <button
-              className={modo === "manual" ? "active" : ""}
-              onClick={() => setModo("manual")}
-            >
+            <button className={modo === "manual" ? "active" : ""} onClick={() => setModo("manual")}>
               🖐 Manual
             </button>
-            <button
-              className={modo === "automatico" ? "active" : ""}
-              onClick={() => setModo("automatico")}
-            >
+            <button className={modo === "automatico" ? "active" : ""} onClick={() => setModo("automatico")}>
               ⚡ Automático
             </button>
           </div>
           <p className="field__hint">
             {modo === "manual"
               ? "O post aguarda sua aprovação na fila antes de ser enviado ao Make."
-              : "O post é enviado automaticamente ao Make assim que salvo."}
+              : "O post é enviado automaticamente ao Make assim que aprovado."}
           </p>
         </div>
 
-        {/* Ações */}
-        <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.75rem" }}>
-          <button
-            className="btn btn--primary"
-            onClick={handleSalvar}
-            disabled={loadingSalvar || !cloudinaryUrl}
-            title={!cloudinaryUrl ? "Gere o card primeiro" : ""}
-          >
-            {loadingSalvar
-              ? <><span className="spinner" /> Salvando...</>
-              : isEdit ? "Salvar alterações" : "Adicionar à fila"}
-          </button>
+        {/* Ações — Aprovar só aparece se card foi gerado */}
+        <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
+          {dadosCard && (
+            <button
+              className="btn btn--primary"
+              onClick={handleAprovar}
+              disabled={loadingAprovar}
+              style={{ background: "var(--sucesso, #2E7D32)" }}
+            >
+              {loadingAprovar
+                ? <><span className="spinner" /> Aprovando...</>
+                : "✅ Aprovar e salvar"}
+            </button>
+          )}
           <button className="btn btn--outline" onClick={onClose}>
             Cancelar
           </button>

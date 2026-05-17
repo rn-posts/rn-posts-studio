@@ -1,6 +1,7 @@
 """
 python-api/main.py — API Flask completa — Render
 Identidade Visual AlvoreSer — 9 cores dominam tudo
+Design de excelencia: desfoque seletivo, vinheta, profundidade, texturas, tipografia variada
 """
 import os, io, uuid, random, json, textwrap, time, math
 import numpy as np
@@ -8,7 +9,7 @@ import requests, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageChops
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -44,17 +45,22 @@ GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 GROQ_URL             = "https://api.groq.com/openai/v1/chat/completions"
 
 W, H = 1080, 1350
-CLOUDINARY_POSTS = "AlvoreSer_Posts"
-PASTA_RONILSON   = "banco de imagens/ronilson"
+CLOUDINARY_POSTS    = "AlvoreSer_Posts"
+CLOUDINARY_PREVIEW  = "AlvoreSer_Preview"
+PASTA_RONILSON      = "banco de imagens/ronilson"
 
 SZ_TOP=135; SZ_BOTTOM=1215; SZ_LEFT=125; SZ_RIGHT=955
 
+# 9 cores da identidade + preto/branco para texto
 MARINHO=(2,64,89); PETROLEO=(27,121,125); TEAL=(4,157,191)
 BRANCO=(244,246,248); LARANJA=(249,171,11); VERDE_NEUTRO=(119,153,147)
 VERDE_VIVO=(122,181,0); VERDE_CITRICO=(146,204,29); AMARELO=(255,221,0)
 PRETO=(20,20,20)
 
 PALETA_9=[MARINHO,PETROLEO,TEAL,VERDE_NEUTRO,BRANCO,LARANJA,VERDE_VIVO,VERDE_CITRICO,AMARELO]
+
+# Cache de cards pendentes de aprovacao {card_id: dados}
+_cards_pendentes = {}
 
 MAPA_PASTAS={
     "autismo":       "Banco de Imagens/Autismo",
@@ -157,31 +163,33 @@ def buscar_imagem(tema=""):
         except: continue
     print("[busca] sem imagem"); return None,""
 
+# ── Utilitarios de cor ────────────────────────────────────────────────────────
 def distancia_cor(c1,c2): return ((c1[0]-c2[0])**2+(c1[1]-c2[1])**2+(c1[2]-c2[2])**2)**0.5
 
 def luminosidade_regiao(img,y1,y2):
+    y2=min(y2,img.size[1]); y1=max(y1,0)
+    if y1>=y2: return 128
     p=list(img.crop((0,y1,W,y2)).convert("L").getdata())
     return sum(p)/len(p)
 
 def cor_dominante_regiao(img,y,h):
-    p=list(img.crop((0,y,W,min(y+h,H))).resize((50,20),Image.Resampling.LANCZOS).convert("RGB").getdata())
+    p=list(img.crop((0,y,W,min(y+h,img.size[1]))).resize((50,20),Image.Resampling.LANCZOS).convert("RGB").getdata())
     return (sum(x[0] for x in p)//len(p),sum(x[1] for x in p)//len(p),sum(x[2] for x in p)//len(p))
 
 def cores_harmonicas_da_paleta(img):
-    """Analisa imagem e retorna 3 cores da paleta que mais harmonizam."""
     cf=cor_dominante_regiao(img,0,img.size[1])
     ordenadas=sorted(PALETA_9,key=lambda c:distancia_cor(cf,c),reverse=True)
-    cor_principal=ordenadas[0]; cor_destaque=ordenadas[1]
-    cor_acento=ordenadas[2]
+    cor_principal=ordenadas[0]; cor_destaque=ordenadas[1]; cor_acento=ordenadas[2]
     for c in ordenadas[2:]:
         if distancia_cor(c,cor_principal)>80 and distancia_cor(c,cor_destaque)>80:
             cor_acento=c; break
     lum=sum(cf)/3
-    if lum<60:
-        cor_principal=BRANCO
+    if lum<60: cor_principal=BRANCO
     return cor_principal,cor_destaque,cor_acento
 
 def complexidade_zona(arr,y1,y2):
+    y2=min(y2,arr.shape[0]); y1=max(y1,0)
+    if y1>=y2: return 999
     z=arr[y1:y2,:].astype(float)
     return (np.abs(np.diff(z,axis=0)).mean()+np.abs(np.diff(z,axis=1)).mean())/2
 
@@ -195,6 +203,131 @@ def melhor_posicao_titulo(img,altura_bloco):
         if y<SZ_TOP+terco or y>SZ_BOTTOM-terco-altura_bloco: c*=0.80
         if c<menor: menor=c; melhor=y
     return melhor
+
+# ── Tecnicas de design de excelencia ─────────────────────────────────────────
+
+def aplicar_vinheta(img, intensidade=0.55):
+    """Vinheta fotografica profissional — escurece bordas criando profundidade e foco."""
+    vinheta = Image.new("L", (W,H), 255)
+    draw = ImageDraw.Draw(vinheta)
+    cx,cy = W//2, H//2
+    passos = 180
+    for i in range(passos,0,-1):
+        t = i/passos
+        rx = int(cx * t * 1.05)
+        ry = int(cy * t * 1.05)
+        alpha = int(255 * (1 - (1-t)**1.8 * intensidade * 2.5))
+        alpha = max(0,min(255,alpha))
+        draw.ellipse([cx-rx,cy-ry,cx+rx,cy+ry],fill=alpha)
+    vinheta = vinheta.filter(ImageFilter.GaussianBlur(60))
+    r,g,b = img.split() if img.mode=="RGB" else img.convert("RGB").split()
+    r=ImageChops.multiply(r,vinheta)
+    g=ImageChops.multiply(g,vinheta)
+    b=ImageChops.multiply(b,vinheta)
+    return Image.merge("RGB",[r,g,b])
+
+def aplicar_desfoque_profundidade(img, zona_foco_y, zona_foco_h, intensidade=2.5):
+    """
+    Simula profundidade de campo fotografica:
+    - Zona de foco: nitida
+    - Fora do foco: desfoque gaussiano progressivo
+    Cria sensacao de camera profissional com abertura larga.
+    """
+    arr_original = np.array(img)
+    img_desfocada = img.filter(ImageFilter.GaussianBlur(intensidade))
+    arr_desfocado = np.array(img_desfocada)
+    mask = np.zeros((H,W),dtype=np.float32)
+    # Zona de foco nitida
+    y1 = max(0,zona_foco_y)
+    y2 = min(H,zona_foco_y+zona_foco_h)
+    for y in range(H):
+        if y1 <= y <= y2:
+            mask[y,:] = 0.0
+        elif y < y1:
+            dist = (y1-y)/max(y1,1)
+            mask[y,:] = min(1.0, dist*2.5)
+        else:
+            dist = (y-y2)/max(H-y2,1)
+            mask[y,:] = min(1.0, dist*2.5)
+    mask3 = np.stack([mask,mask,mask],axis=2)
+    resultado = (arr_original*(1-mask3) + arr_desfocado*mask3).astype(np.uint8)
+    return Image.fromarray(resultado)
+
+def aplicar_perspectiva_leve(img, direcao="esquerda"):
+    """
+    Simula leve perspectiva/angulo de camera — da sensacao de movimento e tridimensionalidade.
+    Usa transformacao de perspectiva manual com PIL.
+    """
+    src = img.convert("RGBA")
+    if direcao == "esquerda":
+        coef = 0.06
+        dados = src.transform(
+            (W,H), Image.Transform.QUAD,
+            (int(W*coef),int(H*coef), W-int(W*coef),0, W,H, 0,H-int(H*coef)),
+            Image.Resampling.BICUBIC
+        )
+    elif direcao == "direita":
+        coef = 0.06
+        dados = src.transform(
+            (W,H), Image.Transform.QUAD,
+            (0,0, W-int(W*coef),int(H*coef), W-int(W*coef),H-int(H*coef), int(W*coef),H),
+            Image.Resampling.BICUBIC
+        )
+    else:
+        return img
+    return dados.convert("RGB")
+
+def aplicar_contraste_dramatico(img, fator=1.25):
+    """Aumenta contraste e saturacao para imagem mais impactante visualmente."""
+    img = ImageEnhance.Contrast(img).enhance(fator)
+    img = ImageEnhance.Color(img).enhance(1.15)
+    img = ImageEnhance.Sharpness(img).enhance(1.3)
+    return img
+
+def aplicar_overlay_cromatico(img, cor, opacidade=40):
+    """Overlay sutil de uma cor da paleta sobre a imagem — harmoniza com identidade visual."""
+    overlay = Image.new("RGBA",(W,H),(*cor,opacidade))
+    return Image.alpha_composite(img.convert("RGBA"),overlay).convert("RGB")
+
+def aplicar_split_toning(img, cor_sombras, cor_luzes, intensidade=0.12):
+    """
+    Split toning fotografico profissional:
+    - Sombras recebem tom frio (azul/petróleo)
+    - Luzes recebem tom quente (laranja/amarelo)
+    Cria coerencia cromatica sofisticada.
+    """
+    arr = np.array(img.convert("RGB")).astype(np.float32)
+    lum = arr.mean(axis=2,keepdims=True)/255.0
+    sombra = np.array(cor_sombras[:3],dtype=np.float32)
+    luz    = np.array(cor_luzes[:3],  dtype=np.float32)
+    mask_sombra = (1-lum)**2
+    mask_luz    = lum**2
+    arr += (sombra - arr) * mask_sombra * intensidade
+    arr += (luz    - arr) * mask_luz    * intensidade
+    arr  = np.clip(arr,0,255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+def gerar_textura_organica(cor1, cor2, seed):
+    """Fundo com textura organica — ondas suaves como no padrao AlvoreSer."""
+    rng = random.Random(seed)
+    base = Image.new("RGB",(W,H))
+    draw = ImageDraw.Draw(base)
+    for y in range(H):
+        tv = y/H
+        # Onda suave usando seno
+        onda = math.sin(y/120 + rng.uniform(0,2*math.pi)) * 0.08
+        tv2  = max(0,min(1,tv + onda))
+        r = int(cor1[0]*(1-tv2)+cor2[0]*tv2)
+        g = int(cor1[1]*(1-tv2)+cor2[1]*tv2)
+        b = int(cor1[2]*(1-tv2)+cor2[2]*tv2)
+        # Variacao horizontal sutil
+        for x in range(0,W,4):
+            onda_x = math.sin(x/180 + y/240) * 0.04
+            r2 = max(0,min(255,int(r + onda_x*30)))
+            g2 = max(0,min(255,int(g + onda_x*20)))
+            b2 = max(0,min(255,int(b + onda_x*15)))
+            draw.line([(x,y),(x+4,y)],fill=(r2,g2,b2))
+    return base.filter(ImageFilter.GaussianBlur(1))
 
 def eh_foto_ronilson(pid): return PASTA_RONILSON in pid.lower()
 
@@ -211,68 +344,85 @@ def remover_fundo(img):
     buf=io.BytesIO(); img.save(buf,format="PNG")
     return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
 
-def criar_fundo_identidade(cor1,cor2,estilo):
-    base=Image.new("RGB",(W,H)); draw=ImageDraw.Draw(base); e=estilo%4
-    if e==0:
-        for y in range(H):
-            tv=y/H
-            draw.line([(0,y),(W,y)],fill=(int(cor1[0]*(1-tv)+cor2[0]*tv),int(cor1[1]*(1-tv)+cor2[1]*tv),int(cor1[2]*(1-tv)+cor2[2]*tv)))
-    elif e==1:
-        for y in range(H):
-            for x in range(0,W,3):
-                tv=(x/W+y/H)/2; n=random.randint(-8,8)
-                draw.line([(x,y),(x+3,y)],fill=(max(0,min(255,int(cor1[0]*(1-tv)+cor2[0]*tv)+n)),max(0,min(255,int(cor1[1]*(1-tv)+cor2[1]*tv)+n)),max(0,min(255,int(cor1[2]*(1-tv)+cor2[2]*tv)+n))))
-    elif e==2:
-        for y in range(H):
-            tv=y/H
-            draw.line([(0,y),(W,y)],fill=(int(cor1[0]*(1-tv)+cor2[0]*tv),int(cor1[1]*(1-tv)+cor2[1]*tv),int(cor1[2]*(1-tv)+cor2[2]*tv)))
-        cx,cy=W//2,H
-        for raio in range(200,1400,150): draw.ellipse([cx-raio,cy-raio,cx+raio,cy+raio],outline=BRANCO,width=1)
-    else:
-        arr=np.zeros((H,W,3),dtype=np.uint8); cx,cy=W//2,int(H*0.75)
-        for y in range(H):
-            for x in range(W):
-                d=math.sqrt((x-cx)**2+(y-cy)**2); tv=min(d/900,1.0)
-                arr[y,x]=[int(cor2[0]*(1-tv)+cor1[0]*tv),int(cor2[1]*(1-tv)+cor1[1]*tv),int(cor2[2]*(1-tv)+cor1[2]*tv)]
-        base=Image.fromarray(arr,"RGB")
-    return base
-
-def compor_com_fundo(pessoa_rgba,fundo):
+def compor_com_fundo(pessoa_rgba, fundo, cor_sombras, cor_luzes):
+    """Compoe pessoa sem fundo sobre fundo da identidade com sombra projetada."""
     pw,ph=pessoa_rgba.size; nw=int(pw*H/ph)
     pessoa_rgba=pessoa_rgba.resize((nw,H),Image.Resampling.LANCZOS)
-    res=fundo.convert("RGBA"); res.paste(pessoa_rgba,((W-nw)//2,0),pessoa_rgba)
-    return res.convert("RGB")
+    # Sombra projetada sutil
+    sombra = Image.new("RGBA",(W,H),(0,0,0,0))
+    sombra_pessoa = Image.new("RGBA",(nw,H),(0,0,0,0))
+    alpha = pessoa_rgba.split()[3]
+    sombra_mask = alpha.point(lambda x: int(x*0.35))
+    sombra_pessoa.paste(Image.new("RGB",(nw,H),(0,0,0)), mask=sombra_mask)
+    sombra.paste(sombra_pessoa, ((W-nw)//2+18, 18), sombra_pessoa)
+    sombra = sombra.filter(ImageFilter.GaussianBlur(22))
+    res = fundo.convert("RGBA")
+    res = Image.alpha_composite(res, sombra)
+    res.paste(pessoa_rgba, ((W-nw)//2,0), pessoa_rgba)
+    resultado = res.convert("RGB")
+    # Split toning para coerencia cromatica
+    resultado = aplicar_split_toning(resultado, cor_sombras, cor_luzes)
+    return resultado
 
-def tratar_fundo_solido(img,cor1,cor2):
-    base=Image.new("RGB",(W,H)); draw=ImageDraw.Draw(base)
-    for y in range(H):
-        tv=y/H
-        draw.line([(0,y),(W,y)],fill=(int(cor1[0]*(1-tv)+cor2[0]*tv),int(cor1[1]*(1-tv)+cor2[1]*tv),int(cor1[2]*(1-tv)+cor2[2]*tv)))
-    return Image.blend(base.convert("RGBA"),img.convert("RGBA"),alpha=0.55).convert("RGB")
-
-def preparar_fundo(url,pid="",cor1=MARINHO,cor2=PETROLEO):
+def preparar_fundo(url, pid="", cor1=MARINHO, cor2=PETROLEO, seed=0, tema=""):
     try:
         r=requests.get(url,timeout=20); r.raise_for_status()
         img=Image.open(io.BytesIO(r.content)).convert("RGB")
         ratio=max(W/img.width,H/img.height); nw,nh=int(img.width*ratio),int(img.height*ratio)
         img=img.resize((nw,nh),Image.Resampling.LANCZOS)
         l=(nw-W)//2; t=(nh-H)//2; img=img.crop((l,t,l+W,t+H))
+
         if eh_foto_ronilson(pid):
             print(f"[fundo] Ronilson: {pid}")
             try:
-                fi=criar_fundo_identidade(cor1,cor2,hash(pid)%4)
-                img=compor_com_fundo(remover_fundo(img),fi)
-                print("[fundo] rembg OK")
+                # Fundo com textura organica da identidade
+                fundo_idv = gerar_textura_organica(cor1,cor2,seed)
+                pessoa_rgba = remover_fundo(img)
+                img = compor_com_fundo(pessoa_rgba, fundo_idv, MARINHO, AMARELO)
+                print("[fundo] rembg + composicao OK")
             except Exception as e: print(f"[fundo] rembg falhou: {e}")
         elif eh_fundo_solido(img):
-            print("[fundo] solido, aplicando gradiente")
-            img=tratar_fundo_solido(img,cor1,cor2)
+            print("[fundo] solido, textura organica")
+            fundo_idv = gerar_textura_organica(cor1,cor2,seed)
+            img = Image.blend(fundo_idv.convert("RGBA"),img.convert("RGBA"),alpha=0.55).convert("RGB")
         else:
             print("[fundo] imagem normal")
+
+        # Pipeline de tratamento fotografico profissional
+        estilo_foto = seed % 4
+
+        if estilo_foto == 0:
+            # Profundidade de campo — foco no centro, desfoque top/base
+            img = aplicar_desfoque_profundidade(img, H//3, H//3, intensidade=2.0)
+            img = aplicar_contraste_dramatico(img, fator=1.2)
+            img = aplicar_vinheta(img, intensidade=0.5)
+
+        elif estilo_foto == 1:
+            # Perspectiva leve + overlay cromatico
+            direcao = "esquerda" if seed%2==0 else "direita"
+            img = aplicar_perspectiva_leve(img, direcao)
+            img = aplicar_overlay_cromatico(img, cor1, opacidade=35)
+            img = aplicar_contraste_dramatico(img, fator=1.3)
+            img = aplicar_vinheta(img, intensidade=0.6)
+
+        elif estilo_foto == 2:
+            # Split toning cinematografico + vinheta forte
+            img = aplicar_split_toning(img, MARINHO, LARANJA, intensidade=0.15)
+            img = aplicar_contraste_dramatico(img, fator=1.25)
+            img = aplicar_vinheta(img, intensidade=0.65)
+
+        else:
+            # Overlay + profundidade + vinheta suave
+            img = aplicar_overlay_cromatico(img, cor2, opacidade=25)
+            img = aplicar_desfoque_profundidade(img, H//4, H//2, intensidade=1.8)
+            img = aplicar_contraste_dramatico(img, fator=1.15)
+            img = aplicar_vinheta(img, intensidade=0.45)
+
         return img
     except Exception as e: print(f"[fundo] erro: {e}"); return None
 
-def adicionar_elementos_brand(img,cor_acento,estilo):
+# ── Elementos graficos da identidade ─────────────────────────────────────────
+def adicionar_elementos_brand(img, cor_acento, estilo):
     draw=ImageDraw.Draw(img,"RGBA"); e=estilo%6
     if e==0:
         for y in range(SZ_BOTTOM-280,H):
@@ -291,86 +441,111 @@ def adicionar_elementos_brand(img,cor_acento,estilo):
         for y in range(0,220):
             a=int(110*(1-y/220)); draw.line([(0,y),(W,y)],fill=(*PETROLEO,a))
     else:
-        for y in range(H-180,H):
-            for x in range(W-180,W):
-                d=math.sqrt((x-(W-180))**2+(y-(H-180))**2)
-                if d<180:
-                    a=int(80*(1-d/180)); draw.point((x,y),fill=(*cor_acento,a))
+        for y in range(H-200,H):
+            a=int(160*(y-(H-200))/max(1,200)); draw.line([(0,y),(W,y)],fill=(*cor_acento,min(a,120)))
     return img
 
-def formatar_titulo(tema,estilo_idx,cor_principal,cor_destaque):
+# ── Tipografia — 7 estrategias visuais ───────────────────────────────────────
+def formatar_titulo(tema, estilo_idx, cor_principal, cor_destaque):
     palavras=tema.split(); e=estilo_idx%7; elementos=[]
     if e==0:
+        # Todo maiusculo grande — Agilera — impacto maximo
         linhas=textwrap.wrap(tema.upper(),width=11)[:3]
         for l in linhas: elementos.append((l,f_titulo,104,cor_principal))
     elif e==1:
+        # Primeira palavra enorme + resto menor bold
         if len(palavras)>=2:
             elementos.append((palavras[0].upper(),f_titulo,130,cor_principal))
             for l in textwrap.wrap(" ".join(palavras[1:]).title(),width=14)[:2]:
                 elementos.append((l,f_bold,68,cor_destaque))
         else: elementos.append((tema.upper(),f_titulo,120,cor_principal))
     elif e==2:
+        # Title case Agilera — ultima linha em cor destaque
         linhas=textwrap.wrap(tema.title(),width=13)[:2]
         for i,l in enumerate(linhas):
             elementos.append((l,f_titulo,96,cor_principal if i==0 else cor_destaque))
     elif e==3:
+        # Bold maiusculo + light minusculo — contraste de peso
         for l in textwrap.wrap(tema.upper(),width=12)[:1]: elementos.append((l,f_bold,110,cor_principal))
         for l in textwrap.wrap(tema.title(),width=16)[:2]: elementos.append((l,f_light,58,cor_destaque))
     elif e==4:
+        # Elegante title case — acento na ultima linha
         linhas=textwrap.wrap(tema.title(),width=14)[:3]
         for i,l in enumerate(linhas):
             elementos.append((l,f_titulo,88,cor_destaque if i==len(linhas)-1 else cor_principal))
     elif e==5:
+        # Duas fontes diferentes — Malgun corpo
         if len(palavras)>=3:
             elementos.append((" ".join(palavras[:2]).title(),f_bold,82,cor_principal))
             elementos.append((" ".join(palavras[2:]).title(),f_corpo,66,cor_destaque))
         else: elementos.append((tema.title(),f_bold,88,cor_principal))
     else:
+        # Titulo curto — impacto centralizado
         if len(tema)<=12: elementos.append((tema.upper(),f_titulo,120,cor_principal))
         else:
             for l in textwrap.wrap(tema.upper(),width=10)[:3]: elementos.append((l,f_titulo,92,cor_principal))
     return elementos
 
-def aplicar_sombra_texto(draw,texto,fonte,x,y,lum_fundo):
-    if lum_fundo>150:
-        for ox,oy in [(2,2),(3,3)]: draw.text((x+ox,y+oy),texto,font=fonte,fill=(*PRETO,120))
-    elif lum_fundo>=80:
-        for ox,oy in [(2,2),(3,3)]: draw.text((x+ox,y+oy),texto,font=fonte,fill=(*MARINHO,140))
+def aplicar_sombra_texto(draw, texto, fonte, x, y, lum_fundo, cor_sombra=None):
+    """Sombra profissional adaptativa — nao deforma a fonte."""
+    if cor_sombra is None:
+        cor_sombra = PRETO if lum_fundo > 150 else MARINHO
+    opacidade = 140 if lum_fundo > 100 else 80
+    if lum_fundo > 40:
+        for ox,oy in [(2,2),(3,3),(1,3)]:
+            draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor_sombra,opacidade))
 
-def gerar_card(tema,legenda,imagem_url,pid=""):
-    img=Image.new("RGB",(W,H),MARINHO); fundo=None
+# ── Gerar Card ────────────────────────────────────────────────────────────────
+def gerar_card_imagem(tema, legenda, imagem_url, pid=""):
+    """Gera a imagem PIL do card com todas as tecnicas de design."""
+    img=Image.new("RGB",(W,H),MARINHO)
+    fundo=None
+    seed = hash(tema.lower()+pid) % 1000
+
+    # Analisa cores antes de tudo
     temp_img=None
     if imagem_url:
         try:
             r=requests.get(imagem_url,timeout=15); r.raise_for_status()
             temp_img=Image.open(io.BytesIO(r.content)).convert("RGB").resize((200,250),Image.Resampling.LANCZOS)
         except: pass
+
     if temp_img: cor_principal,cor_destaque,cor_acento=cores_harmonicas_da_paleta(temp_img)
     else: cor_principal,cor_destaque,cor_acento=LARANJA,BRANCO,TEAL
     print(f"[cores] p={cor_principal} d={cor_destaque} a={cor_acento}")
+
+    # Prepara fundo com pipeline fotografico completo
     if imagem_url:
-        fundo=preparar_fundo(imagem_url,pid,cor_principal,cor_destaque)
+        fundo=preparar_fundo(imagem_url,pid,cor_principal,cor_destaque,seed,tema)
         if fundo: img.paste(fundo,(0,0))
-    img=adicionar_elementos_brand(img,cor_acento,hash(tema.lower())%6)
-    estilo_tipo=(hash(tema.lower())+hash(pid))%7
+
+    # Elementos graficos da identidade
+    img=adicionar_elementos_brand(img,cor_acento,seed%6)
+
+    # Tipografia
+    estilo_tipo=(seed)%7
     elementos=formatar_titulo(tema,estilo_tipo,cor_principal,cor_destaque)
     altura_bloco=sum(e[2]+18 for e in elementos)
+
     if fundo:
         yt=melhor_posicao_titulo(fundo,altura_bloco)
         lum_zona=luminosidade_regiao(fundo,max(0,yt-10),min(yt+altura_bloco+10,H))
     else:
         yt=SZ_TOP+60; lum_zona=30
+
     draw=ImageDraw.Draw(img,"RGBA"); ya=yt
     for (texto,fonte_fn,tamanho,cor) in elementos:
         fonte=fonte_fn(tamanho)
         aplicar_sombra_texto(draw,texto,fonte,SZ_LEFT,ya,lum_zona)
-        draw.text((SZ_LEFT,ya),texto,font=fonte,fill=cor); ya+=tamanho+18
+        draw.text((SZ_LEFT,ya),texto,font=fonte,fill=cor)
+        ya+=tamanho+18
+
     return img
 
-def upload_card(img,pid):
+def upload_imagem(img, folder, public_id):
     buf=io.BytesIO(); img.save(buf,format="JPEG",quality=92); buf.seek(0)
     try:
-        res=cloudinary.uploader.upload(buf,public_id=pid,folder=CLOUDINARY_POSTS,overwrite=True,resource_type="image")
+        res=cloudinary.uploader.upload(buf,public_id=public_id,folder=folder,overwrite=True,resource_type="image")
         return res.get("secure_url","")
     except Exception as e: print(f"Upload erro:{e}"); return ""
 
@@ -390,6 +565,8 @@ def atualizar_status(linha,status):
     get_sheets().spreadsheets().values().update(spreadsheetId=SPREADSHEET_ID,
         range=f"G{linha}",valueInputOption="RAW",body={"values":[[status]]}).execute()
 
+# ── Rotas ─────────────────────────────────────────────────────────────────────
+
 @app.route("/health",methods=["GET"])
 def health():
     return jsonify({"status":"ok","dimensoes":f"{W}x{H}","fontes_dir":FONTS_DIR,"fontes_existem":os.path.exists(FONTS_DIR)})
@@ -401,29 +578,106 @@ def rota_gerar_legenda():
     try: return jsonify({"legenda":gerar_legenda_ia(tema)})
     except Exception as e: return jsonify({"erro":str(e)}),500
 
-@app.route("/gerar-card",methods=["POST"])
-def rota_gerar_card():
+@app.route("/preview-card",methods=["POST"])
+def rota_preview_card():
+    """
+    Gera o card e faz upload em pasta temporaria de preview.
+    NAO grava na planilha. NAO salva no Firestore.
+    Retorna URL de preview e card_id para uso posterior na aprovacao.
+    """
     data=request.get_json() or {}
     tema=data.get("tema","").strip(); legenda=data.get("legenda","").strip()
     if not tema: return jsonify({"erro":"Tema obrigatorio"}),400
+
     erros_leg=None
     if not legenda:
         try: legenda=gerar_legenda_ia(tema)
         except Exception as e: erros_leg=str(e); legenda=""
-    if legenda and "CRP 04/57327" not in legenda: legenda=legenda.rstrip()+ASSINATURA
+    if legenda and "CRP 04/57327" not in legenda:
+        legenda=legenda.rstrip()+ASSINATURA
+
     url_img,pid=buscar_imagem(tema)
+
     try:
-        card=gerar_card(tema,legenda,url_img,pid)
-        uid=f"post_{uuid.uuid4().hex[:8]}"
-        card_url=upload_card(card,uid)
-        if not card_url: return jsonify({"erro":"Falha no upload"}),500
+        card=gerar_card_imagem(tema,legenda,url_img,pid)
+        card_id=f"preview_{uuid.uuid4().hex[:10]}"
+        # Upload na pasta de preview (temporario)
+        preview_url=upload_imagem(card,CLOUDINARY_PREVIEW,card_id)
+        if not preview_url: return jsonify({"erro":"Falha no upload do preview"}),500
+
+        # Guarda dados em cache para aprovacao posterior
+        _cards_pendentes[card_id]={
+            "tema":tema,"legenda":legenda,
+            "imagem_fundo":url_img,"pid_fundo":pid,
+            "preview_url":preview_url,"card_pil":None,
+        }
+        # Salva imagem PIL em buffer para reusar na aprovacao
+        buf=io.BytesIO(); card.save(buf,format="JPEG",quality=92)
+        _cards_pendentes[card_id]["card_bytes"]=buf.getvalue()
+
     except Exception as e: return jsonify({"erro":f"Erro ao gerar card:{e}"}),500
-    linha=0
-    try: linha=escrever_planilha(tema,legenda,card_url)
-    except Exception as e: print(f"Erro planilha:{e}")
-    resp={"cloudinary_url":card_url,"legenda":legenda,"imagem_fundo":url_img,"linha_planilha":linha,"status":"Aguardando Postagem"}
+
+    resp={
+        "card_id":card_id,
+        "preview_url":preview_url,
+        "legenda":legenda,
+        "imagem_fundo":url_img,
+    }
     if erros_leg: resp["aviso_legenda"]=erros_leg
     return jsonify(resp)
+
+@app.route("/aprovar-card",methods=["POST"])
+def rota_aprovar_card():
+    """
+    Aprovacao do card:
+    - Move imagem para pasta permanente no Cloudinary
+    - Grava na planilha Google Sheets
+    - Remove do cache de pendentes
+    """
+    data=request.get_json() or {}
+    card_id=data.get("card_id","")
+    tema=data.get("tema","").strip()
+    legenda=data.get("legenda","").strip()
+
+    if not card_id or card_id not in _cards_pendentes:
+        return jsonify({"erro":"Card nao encontrado. Gere novamente."}),400
+
+    dados=_cards_pendentes[card_id]
+    # Usa legenda editada pelo usuario se diferente
+    legenda_final=legenda if legenda else dados["legenda"]
+
+    try:
+        # Faz upload definitivo na pasta permanente
+        uid=f"post_{uuid.uuid4().hex[:8]}"
+        buf=io.BytesIO(dados["card_bytes"])
+        res=cloudinary.uploader.upload(buf,public_id=uid,folder=CLOUDINARY_POSTS,overwrite=True,resource_type="image")
+        card_url=res.get("secure_url","")
+        if not card_url: return jsonify({"erro":"Falha no upload definitivo"}),500
+
+        # Deleta preview do Cloudinary
+        try: cloudinary.uploader.destroy(f"{CLOUDINARY_PREVIEW}/{card_id}")
+        except: pass
+
+        # Remove do cache
+        del _cards_pendentes[card_id]
+
+    except Exception as e: return jsonify({"erro":f"Erro no upload: {e}"}),500
+
+    # Grava na planilha
+    linha=0
+    try: linha=escrever_planilha(tema,legenda_final,card_url)
+    except Exception as e: print(f"Erro planilha:{e}")
+
+    return jsonify({
+        "cloudinary_url":card_url,
+        "linha_planilha":linha,
+        "status":"Aguardando Postagem",
+    })
+
+@app.route("/gerar-card",methods=["POST"])
+def rota_gerar_card():
+    """Rota legada — mantida para compatibilidade. Usa o novo fluxo de preview."""
+    return rota_preview_card()
 
 @app.route("/atualizar-status",methods=["POST"])
 def rota_atualizar_status():
