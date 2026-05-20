@@ -243,24 +243,30 @@ def melhor_posicao_titulo(img,altura_bloco):
 # ── Tecnicas de design de excelencia ─────────────────────────────────────────
 
 def aplicar_vinheta(img, intensidade=0.55):
-    """Vinheta fotografica profissional — escurece bordas criando profundidade e foco."""
-    vinheta = Image.new("L", (W,H), 255)
-    draw = ImageDraw.Draw(vinheta)
-    cx,cy = W//2, H//2
-    passos = 180
-    for i in range(passos,0,-1):
-        t = i/passos
-        rx = int(cx * t * 1.05)
-        ry = int(cy * t * 1.05)
-        alpha = int(255 * (1 - (1-t)**1.8 * intensidade * 2.5))
-        alpha = max(0,min(255,alpha))
-        draw.ellipse([cx-rx,cy-ry,cx+rx,cy+ry],fill=alpha)
-    vinheta = vinheta.filter(ImageFilter.GaussianBlur(60))
-    r,g,b = img.split() if img.mode=="RGB" else img.convert("RGB").split()
-    r=ImageChops.multiply(r,vinheta)
-    g=ImageChops.multiply(g,vinheta)
-    b=ImageChops.multiply(b,vinheta)
-    return Image.merge("RGB",[r,g,b])
+    """Vinheta fotográfica de alta qualidade — escurece suavemente as bordas usando gradiente radial perfeito."""
+    mw, mh = W // 10, H // 10
+    mask = Image.new("L", (mw, mh))
+    cx, cy = mw / 2, mh / 2
+    max_dist = math.sqrt(cx**2 + cy**2)
+    
+    pixels = []
+    for y in range(mh):
+        for x in range(mw):
+            dist = math.sqrt((x - cx)**2 + (y - cy)**2)
+            factor = dist / max_dist
+            val = 1.0 - (factor ** 2) * intensidade
+            val = max(0.0, min(1.0, val))
+            pixels.append(int(val * 255))
+            
+    mask.putdata(pixels)
+    mask_full = mask.resize((W, H), Image.Resampling.BICUBIC)
+    mask_full = mask_full.filter(ImageFilter.GaussianBlur(30))
+    
+    r, g, b = img.split()
+    r = ImageChops.multiply(r, mask_full)
+    g = ImageChops.multiply(g, mask_full)
+    b = ImageChops.multiply(b, mask_full)
+    return Image.merge("RGB", [r, g, b])
 
 def aplicar_desfoque_profundidade(img, zona_foco_y, zona_foco_h, intensidade=2.5):
     """
@@ -381,23 +387,37 @@ def remover_fundo(img):
     return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
 
 def compor_com_fundo(pessoa_rgba, fundo, cor_sombras, cor_luzes):
-    """Compoe pessoa sem fundo sobre fundo da identidade com sombra projetada."""
-    pw,ph=pessoa_rgba.size; nw=int(pw*H/ph)
-    pessoa_rgba=pessoa_rgba.resize((nw,H),Image.Resampling.LANCZOS)
-    # Sombra projetada sutil
-    sombra = Image.new("RGBA",(W,H),(0,0,0,0))
-    sombra_pessoa = Image.new("RGBA",(nw,H),(0,0,0,0))
+    """Compoe pessoa sem fundo sobre fundo da identidade com sombra projetada suave e alinhamento profissional à direita."""
+    pw, ph = pessoa_rgba.size
+    nw = int(pw * H / ph)
+    pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
+    
+    # Alinhamento à direita para dar espaço ao texto à esquerda (composição editorial premium)
+    # Deixa uma margem sutil para o braço/corpo não ficar colado na borda extrema
+    x_pos = W - nw + 80
+    # Limita o posicionamento para garantir que a pessoa não suma da tela se for muito estreita
+    x_pos = max(W // 3, min(x_pos, W - int(nw * 0.85)))
+    
+    # Sombra projetada suave e realista (Drop Shadow realista em vez de círculo preto)
+    sombra = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sombra_pessoa = Image.new("RGBA", (nw, H), (0, 0, 0, 0))
     alpha = pessoa_rgba.split()[3]
-    sombra_mask = alpha.point(lambda x: int(x*0.35))
-    sombra_pessoa.paste(Image.new("RGB",(nw,H),(0,0,0)), mask=sombra_mask)
-    sombra.paste(sombra_pessoa, ((W-nw)//2+18, 18), sombra_pessoa)
-    sombra = sombra.filter(ImageFilter.GaussianBlur(22))
+    
+    # A máscara da sombra usa a silhueta da pessoa com opacidade suave (28%)
+    sombra_mask = alpha.point(lambda x: int(x * 0.28))
+    sombra_pessoa.paste(Image.new("RGB", (nw, H), (2, 64, 89)), mask=sombra_mask) # Usando a cor Marinho para sombra mais natural
+    
+    # Sombra levemente deslocada para baixo e para a esquerda
+    sombra.paste(sombra_pessoa, (x_pos - 15, 20), sombra_pessoa)
+    # Desfoque generoso na sombra para parecer iluminação de estúdio suave
+    sombra = sombra.filter(ImageFilter.GaussianBlur(35))
+    
     res = fundo.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
-    res.paste(pessoa_rgba, ((W-nw)//2,0), pessoa_rgba)
+    res.paste(pessoa_rgba, (x_pos, 0), pessoa_rgba)
+    
     resultado = res.convert("RGB")
-    # Split toning para coerencia cromatica
-    resultado = aplicar_split_toning(resultado, cor_sombras, cor_luzes)
+    resultado = aplicar_split_toning(resultado, cor_sombras, cor_luzes, intensidade=0.12)
     return resultado
 
 def preparar_fundo(url, pid="", cor1=MARINHO, cor2=PETROLEO, seed=0, tema=""):
@@ -519,14 +539,59 @@ def formatar_titulo(tema, estilo_idx, cor_principal, cor_destaque):
         for l in linhas: elementos.append((l,f_titulo,tam_base,cor_principal))
     return elementos
 
+def aplicar_sombra_texto_premium(img, texto, fonte, x, y, cor_sombra=(2,64,89), opacidade=120, raio_desfoque=8):
+    """Cria uma sombra projetada suave e esfumada (Drop Shadow estilo Figma) para o texto."""
+    sombra_img = Image.new("RGBA", img.size, (0,0,0,0))
+    sombra_draw = ImageDraw.Draw(sombra_img)
+    sombra_draw.text((x + 3, y + 4), texto, font=fonte, fill=(*cor_sombra, 255))
+    sombra_desfocada = sombra_img.filter(ImageFilter.GaussianBlur(raio_desfoque))
+    r, g, b, a = sombra_desfocada.split()
+    a = a.point(lambda p: int(p * (opacidade / 255.0)))
+    sombra_final = Image.merge("RGBA", (r, g, b, a))
+    img.paste(sombra_final, (0,0), mask=sombra_final)
+
+def adicionar_ondas_marca(img, cor_onda, seed):
+    """Adiciona as ondas orgânicas da identidade visual AlvoreSer no fundo."""
+    draw = ImageDraw.Draw(img, "RGBA")
+    rng = random.Random(seed)
+    for i in range(2):
+        h_onda = rng.uniform(H * 0.15, H * 0.35)
+        ctrl_y = rng.uniform(H * 0.05, H * 0.25)
+        pontos = []
+        passos = 40
+        for p in range(passos + 1):
+            t = p / passos
+            x = t * W
+            y = (1 - t)**2 * ctrl_y + 2 * (1 - t) * t * h_onda + t**2 * ctrl_y
+            pontos.append((x, y))
+        pontos.append((W, 0))
+        pontos.append((0, 0))
+        opacidade = rng.randint(12, 22)
+        draw.polygon(pontos, fill=(*cor_onda, opacidade))
+        
+    for i in range(2):
+        h_onda = H - rng.uniform(H * 0.15, H * 0.35)
+        ctrl_y = H - rng.uniform(H * 0.05, H * 0.25)
+        pontos = []
+        passos = 40
+        for p in range(passos + 1):
+            t = p / passos
+            x = t * W
+            y = (1 - t)**2 * ctrl_y + 2 * (1 - t) * t * h_onda + t**2 * ctrl_y
+            pontos.append((x, y))
+        pontos.append((W, H))
+        pontos.append((0, H))
+        opacidade = rng.randint(12, 22)
+        draw.polygon(pontos, fill=(*cor_onda, opacidade))
+    return img
+
 def aplicar_sombra_texto(draw, texto, fonte, x, y, lum_fundo, cor_sombra=None):
-    """Sombra profissional adaptativa — nao deforma a fonte."""
+    """Sombra de compatibilidade sutil se chamada de outro local."""
     if cor_sombra is None:
         cor_sombra = PRETO if lum_fundo > 150 else MARINHO
     opacidade = 140 if lum_fundo > 100 else 80
-    if lum_fundo > 40:
-        for ox,oy in [(2,2),(3,3),(1,3)]:
-            draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor_sombra,opacidade))
+    for ox,oy in [(2,2),(1,2)]:
+        draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor_sombra,opacidade))
 
 # ── Gerar Card ────────────────────────────────────────────────────────────────
 def gerar_card_imagem(tema, legenda, imagem_url, pid=""):
@@ -550,7 +615,10 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid=""):
     # Prepara fundo com pipeline fotografico completo
     if imagem_url:
         fundo=preparar_fundo(imagem_url,pid,cor_principal,cor_destaque,seed,tema)
-        if fundo: img.paste(fundo,(0,0))
+        if fundo: 
+            img.paste(fundo,(0,0))
+            # Adiciona as ondas orgânicas da identidade visual AlvoreSer no fundo
+            img = adicionar_ondas_marca(img, cor_acento, seed)
 
     # Elementos graficos da identidade
     img=adicionar_elementos_brand(img,cor_acento,seed%6)
@@ -566,11 +634,25 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid=""):
     else:
         yt=SZ_TOP+60; lum_zona=30
 
-    draw=ImageDraw.Draw(img,"RGBA"); ya=yt
+    # 1. Desenha primeiro as sombras em formato drop shadow profissional (Figma-style)
+    ya = yt
     for (texto,fonte_fn,tamanho,cor) in elementos:
         fonte=fonte_fn(tamanho)
-        aplicar_sombra_texto(draw,texto,fonte,SZ_LEFT,ya,lum_zona)
-        draw.text((SZ_LEFT,ya),texto,font=fonte,fill=cor)
+        cor_sombra = PRETO if lum_zona > 150 else MARINHO
+        aplicar_sombra_texto_premium(img, texto, fonte, SZ_LEFT, ya, cor_sombra=cor_sombra, opacidade=110, raio_desfoque=7)
+        ya+=tamanho+18
+
+    # 2. Desenha o texto principal nítido por cima da sombra
+    draw=ImageDraw.Draw(img,"RGBA")
+    ya=yt
+    for (texto,fonte_fn,tamanho,cor) in elementos:
+        fonte=fonte_fn(tamanho)
+        # Garante visibilidade e contraste profissional
+        cor_final = cor
+        if lum_zona < 90 and (sum(cor)/3) < 90:
+            # Fundo escuro e cor de texto escura -> força cor clara da paleta (Branco ou Laranja)
+            cor_final = BRANCO if seed % 2 == 0 else LARANJA
+        draw.text((SZ_LEFT,ya),texto,font=fonte,fill=cor_final)
         ya+=tamanho+18
 
     return img
