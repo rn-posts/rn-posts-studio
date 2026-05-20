@@ -21,15 +21,30 @@ def get_rembg():
         _rembg_remove = _r
     return _rembg_remove
 
-app = Flask(__name__)
-CORS(app, origins=["https://marvelous-cat-8a8767.netlify.app","http://localhost:5173","http://localhost:3000"], supports_credentials=True)
+app = Flask(__name__, static_folder="../dist", static_url_path="/")
+
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:5000",
+    "https://alvoreser-python-api.onrender.com"
+]
+
+CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
 @app.after_request
 def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "https://marvelous-cat-8a8767.netlify.app"
+    origin = request.headers.get("Origin")
+    if origin:
+        if origin in ALLOWED_ORIGINS or "localhost" in origin or "onrender.com" in origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
+
+@app.route("/")
+def index():
+    return app.send_static_file("index.html")
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
