@@ -5,7 +5,9 @@ import {
 } from "firebase/firestore";
 
 const MAKE_URL    = import.meta.env.VITE_MAKE_WEBHOOK_URL || "";
-const RENDER_URL  = import.meta.env.VITE_RENDER_URL || "";
+const RENDER_URL  = import.meta.env.DEV
+  ? (import.meta.env.VITE_RENDER_URL || "http://localhost:5000")
+  : "";
 
 const STATUS_LABEL = {
   pendente:  "Pendente",

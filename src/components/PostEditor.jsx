@@ -2,7 +2,9 @@ import { useState } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 
-const RENDER_URL = import.meta.env.VITE_RENDER_URL || "";
+const RENDER_URL = import.meta.env.DEV
+  ? (import.meta.env.VITE_RENDER_URL || "http://localhost:5000")
+  : "";
 
 export default function PostEditor({ post, onClose, onNotify }) {
   const isEdit = Boolean(post);
