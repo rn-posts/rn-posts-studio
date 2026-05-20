@@ -96,13 +96,42 @@ MAPA_PASTAS={
 }
 
 ROOT_DIR  = os.path.dirname(os.path.abspath(__file__))
-FONTS_DIR = os.path.join(ROOT_DIR,"..","src","Brand","fonts")
+
+# Busca diretorio de fontes candidatos de forma robusta
+CANDIDATOS_FONTS = [
+    os.path.join(ROOT_DIR, "fonts"),
+    os.path.join(ROOT_DIR, "..", "src", "Brand", "fonts"),
+    os.path.join(ROOT_DIR, "src", "Brand", "fonts")
+]
+
+FONTS_DIR = None
+for c in CANDIDATOS_FONTS:
+    if os.path.exists(c) and os.path.isdir(c):
+        if os.path.exists(os.path.join(c, "AGILERA.OTF")):
+            FONTS_DIR = c
+            print(f"[fontes] Diretorio encontrado e validado: {FONTS_DIR}")
+            break
+
+if not FONTS_DIR:
+    FONTS_DIR = os.path.join(ROOT_DIR, "..", "src", "Brand", "fonts")
+    print(f"[fontes] Usando fallback padrao: {FONTS_DIR}")
 
 def _font(nome,tam):
-    try: return ImageFont.truetype(os.path.join(FONTS_DIR,nome),tam)
-    except:
-        try: return ImageFont.load_default(size=tam)
-        except: return ImageFont.load_default()
+    try:
+        p = os.path.join(FONTS_DIR, nome)
+        if os.path.exists(p):
+            return ImageFont.truetype(p, tam)
+        else:
+            # Tenta busca direta no diretorio local
+            p_local = os.path.join(ROOT_DIR, "fonts", nome)
+            if os.path.exists(p_local):
+                return ImageFont.truetype(p_local, tam)
+    except Exception as e:
+        print(f"[fontes] Erro ao carregar {nome}: {e}")
+    
+    # Fallback absoluto se a fonte nao carregar
+    try: return ImageFont.load_default(size=tam)
+    except: return ImageFont.load_default()
 
 def f_titulo(t): return _font("AGILERA.OTF",t)
 def f_bold(t):   return _font("MALGUNBD.TTF",t)
@@ -523,8 +552,17 @@ def formatar_titulo(tema, estilo_idx, cor_principal, cor_destaque):
         for i,l in enumerate(linhas):
             elementos.append((l,f_titulo,tam_base,cor_principal if i==0 else cor_destaque))
     elif e==3:
-        for l in textwrap.wrap(tema.upper(),width=w_base): elementos.append((l,f_bold,tam_base,cor_principal))
-        for l in textwrap.wrap(tema.title(),width=w_base+4): elementos.append((l,f_light,max(50,tam_base-28),cor_destaque))
+        # Estilo 3 refatorado para NÃO repetir o título: divide ao meio
+        if len(palavras)>=2:
+            metade = len(palavras) // 2
+            p1 = " ".join(palavras[:metade]).upper()
+            p2 = " ".join(palavras[metade:]).title()
+            for l in textwrap.wrap(p1, width=w_base):
+                elementos.append((l, f_bold, tam_base, cor_principal))
+            for l in textwrap.wrap(p2, width=w_base+2):
+                elementos.append((l, f_light, max(54, tam_base-18), cor_destaque))
+        else:
+            elementos.append((tema.upper(), f_bold, tam_base, cor_principal))
     elif e==4:
         linhas=textwrap.wrap(tema.title(),width=w_base)
         for i,l in enumerate(linhas):
@@ -535,8 +573,14 @@ def formatar_titulo(tema, estilo_idx, cor_principal, cor_destaque):
             elementos.append((" ".join(palavras[2:]).title(),f_corpo,max(54,tam_base-20),cor_destaque))
         else: elementos.append((tema.title(),f_bold,tam_base,cor_principal))
     else:
-        linhas=textwrap.wrap(tema.upper(),width=w_base)
-        for l in linhas: elementos.append((l,f_titulo,tam_base,cor_principal))
+        # Estilo 6 elegante: primeira palavra em destaque f_bold, resto em f_titulo
+        if len(palavras)>=3:
+            elementos.append((" ".join(palavras[:1]).upper(),f_bold,max(46,tam_base-25),cor_destaque))
+            for l in textwrap.wrap(" ".join(palavras[1:]).upper(),width=w_base):
+                elementos.append((l,f_titulo,tam_base,cor_principal))
+        else:
+            linhas=textwrap.wrap(tema.upper(),width=w_base)
+            for l in linhas: elementos.append((l,f_titulo,tam_base,cor_principal))
     return elementos
 
 def aplicar_sombra_texto_premium(img, texto, fonte, x, y, cor_sombra=(2,64,89), opacidade=120, raio_desfoque=8):
@@ -594,11 +638,14 @@ def aplicar_sombra_texto(draw, texto, fonte, x, y, lum_fundo, cor_sombra=None):
         draw.text((x+ox,y+oy),texto,font=fonte,fill=(*cor_sombra,opacidade))
 
 # ── Gerar Card ────────────────────────────────────────────────────────────────
-def gerar_card_imagem(tema, legenda, imagem_url, pid=""):
+def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     """Gera a imagem PIL do card com todas as tecnicas de design."""
     img=Image.new("RGB",(W,H),MARINHO)
     fundo=None
-    seed = hash(tema.lower()+pid) % 1000
+    
+    # Se não for informado, geramos um seed aleatório para garantir máxima variedade visual a cada clique
+    if seed is None:
+        seed = random.randint(0, 999999)
 
     # Analisa cores antes de tudo
     temp_img=None
@@ -714,7 +761,8 @@ def rota_preview_card():
     url_img,pid=buscar_imagem(tema)
 
     try:
-        card=gerar_card_imagem(tema,legenda,url_img,pid)
+        seed = data.get("seed")
+        card=gerar_card_imagem(tema,legenda,url_img,pid,seed=seed)
         card_id=f"preview_{uuid.uuid4().hex[:10]}"
         # Upload na pasta de preview (temporario)
         preview_url=upload_imagem(card,CLOUDINARY_PREVIEW,card_id)
