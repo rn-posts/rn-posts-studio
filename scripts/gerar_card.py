@@ -1,160 +1,245 @@
 """
-scripts/gerar_card.py
-Gera um card 1080x1080 com identidade visual AlvoreSer e sobe no Cloudinary.
+scripts/gerar_card.py — AlvoreSer
 Uso: python3 gerar_card.py "tema" "legenda"
-Saída: imprime a URL do Cloudinary no stdout (última linha)
+Gera card 1080×1350 com identidade visual AlvoreSer e sobe no Cloudinary.
+Saída: imprime a URL do Cloudinary na última linha (consumida pela Netlify Function)
 
-Dependências: pip install pillow cloudinary
-Fontes: baixe DM_Sans e Cormorant_Garamond do Google Fonts e coloque em scripts/fonts/
+Fontes: AGILERA.otf, MALGUN.ttf, MALGUNBD.ttf, MALGUNSL.ttf
+Coloque em scripts/fonts/ ou ../src/Brand/fonts/
 """
 
-import sys
-import os
-import re
-import uuid
-import textwrap
-import cloudinary
-import cloudinary.uploader
-from PIL import Image, ImageDraw, ImageFont
+import sys, os, io, re, uuid, math, random
+import cloudinary, cloudinary.uploader
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
-# ── Identidade Visual AlvoreSer ──────────────────────────────────────────────
-VERDE_ESCURO  = (45,  80,  22)
-VERDE_MEDIO   = (74,  124, 47)
-VERDE_CLARO   = (123, 174, 90)
-VERDE_PALIDO  = (200, 221, 184)
-CREME         = (245, 240, 232)
-CREME_ESCURO  = (234, 226, 212)
-TERRA         = (139, 110, 82)
-BRANCO        = (255, 255, 255)
-TEXTO_ESCURO  = (28,  43,  15)
-TEXTO_SUAVE   = (122, 140, 110)
+# ── Paleta oficial AlvoreSer ──────────────────────────────────────────────────
+MARINHO      = (2,   64,  89)
+PETROLEO     = (27,  121, 125)
+TEAL         = (4,   157, 191)
+VERDE_NEUTRO = (119, 153, 147)
+BRANCO       = (244, 246, 248)
+LARANJA      = (249, 171, 11)
+PRETO        = (20,  20,  20)
 
-SIZE          = 1080
-PASTA_FONTS   = os.path.join(os.path.dirname(__file__), "fonts")
+W, H = 1080, 1350
 CLOUDINARY_FOLDER = "AlvoreSer_Posts"
 
-# ── Cloudinary ───────────────────────────────────────────────────────────────
 cloudinary.config(
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key    = os.getenv("CLOUDINARY_API_KEY"),
-    api_secret = os.getenv("CLOUDINARY_API_SECRET"),
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
 )
 
-# ── Helpers de fonte ─────────────────────────────────────────────────────────
-def _font(nome, tamanho, fallback_bold=False):
-    """Carrega fonte da pasta fonts/, com fallback para fonte padrão."""
-    try:
-        caminho = os.path.join(PASTA_FONTS, nome)
-        return ImageFont.truetype(caminho, tamanho)
-    except Exception:
+# ── Fontes — mesmo caminho do main.py ────────────────────────────────────────
+_script_dir = os.path.dirname(__file__)
+CANDIDATOS_FONTS = [
+    os.path.join(_script_dir, "fonts"),
+    os.path.join(_script_dir, "..", "src", "Brand", "fonts"),
+    os.path.join(_script_dir, "..", "python-api", "fonts"),
+]
+FONTS_DIR = None
+for _c in CANDIDATOS_FONTS:
+    _n = os.path.normpath(_c)
+    if os.path.isdir(_n) and os.path.isfile(os.path.join(_n, "AGILERA.otf")):
+        FONTS_DIR = _n
+        break
+if not FONTS_DIR:
+    FONTS_DIR = os.path.normpath(os.path.join(_script_dir, "fonts"))
+
+def _font(nome, tam):
+    p = os.path.join(FONTS_DIR, nome)
+    if os.path.isfile(p):
         try:
-            return ImageFont.load_default(size=tamanho)
+            return ImageFont.truetype(p, tam)
         except Exception:
-            return ImageFont.load_default()
+            pass
+    try:
+        return ImageFont.load_default(size=tam)
+    except Exception:
+        return ImageFont.load_default()
 
-def fonte_titulo(tamanho=72):
-    return _font("CormorantGaramond-SemiBold.ttf", tamanho)
+def f_display(t): return _font("AGILERA.otf",  t)
+def f_bold(t):    return _font("MALGUNBD.ttf", t)
+def f_corpo(t):   return _font("MALGUN.ttf",   t)
+def f_light(t):   return _font("MALGUNSL.ttf", t)
 
-def fonte_corpo(tamanho=38):
-    return _font("DMSans-Regular.ttf", tamanho)
+def _medir(texto, fonte):
+    try:
+        bb = fonte.getbbox(texto)
+        return bb[2] - bb[0]
+    except Exception:
+        return len(texto) * 30
 
-def fonte_corpo_bold(tamanho=38):
-    return _font("DMSans-Medium.ttf", tamanho)
+def _sombra(img_rgba, texto, fonte, x, y, opacidade=140):
+    layer = Image.new("RGBA", (W, H), (0,0,0,0))
+    ImageDraw.Draw(layer).text((x+3, y+5), texto, font=fonte, fill=(*MARINHO, 255))
+    layer = layer.filter(ImageFilter.GaussianBlur(10))
+    r2, g2, b2, a2 = layer.split()
+    a2 = a2.point(lambda p: int(p*(opacidade/255.0)))
+    img_rgba.paste(Image.merge("RGBA", (r2, g2, b2, a2)), (0,0), Image.merge("RGBA", (r2, g2, b2, a2)))
 
-# ── Desenho do card ──────────────────────────────────────────────────────────
-def gerar_card(tema: str, legenda: str) -> Image.Image:
-    img = Image.new("RGB", (SIZE, SIZE), CREME)
-    draw = ImageDraw.Draw(img)
+def gerar_fundo(seed=0):
+    """Textura de fundo com gradiente orgânico AlvoreSer."""
+    rng = random.Random(seed)
+    base = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(base)
+    off  = rng.uniform(0, math.pi*2)
+    cor1, cor2 = MARINHO, PETROLEO
+    for y in range(H):
+        t  = y/H
+        t2 = max(0.0, min(1.0, t + math.sin(y/140+off)*0.05))
+        r  = int(cor1[0]*(1-t2)+cor2[0]*t2)
+        g  = int(cor1[1]*(1-t2)+cor2[1]*t2)
+        b  = int(cor1[2]*(1-t2)+cor2[2]*t2)
+        for x in range(0, W, 3):
+            wx = math.sin(x/200+y/280+off)*0.025
+            draw.line([(x,y),(x+3,y)], fill=(
+                max(0,min(255,int(r+wx*18))),
+                max(0,min(255,int(g+wx*12))),
+                max(0,min(255,int(b+wx*8))),
+            ))
+    return base.filter(ImageFilter.GaussianBlur(1))
 
-    # Fundo superior — bloco verde escuro
-    draw.rectangle([0, 0, SIZE, 360], fill=VERDE_ESCURO)
+def aplicar_overlay(img):
+    """Overlay gradiente inferior + faixa lateral esquerda."""
+    overlay = Image.new("RGBA", (W, H), (0,0,0,0))
+    draw = ImageDraw.Draw(overlay)
+    altura = int(H*0.42)
+    for y in range(altura):
+        prog = y/altura
+        draw.line([(0, H-altura+y),(W, H-altura+y)], fill=(*MARINHO, int((prog**1.5)*210)))
+    largura = int(W*0.42)
+    for x in range(largura):
+        prog = 1.0-(x/largura)
+        draw.line([(x,0),(x,H)], fill=(*MARINHO, int((prog**1.9)*90)))
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-    # Detalhe geométrico — círculo decorativo
-    draw.ellipse([SIZE - 220, -80, SIZE + 60, 200], fill=VERDE_MEDIO)
-    draw.ellipse([SIZE - 180, -40, SIZE + 20, 160], fill=VERDE_ESCURO)
+def gerar_card(tema: str, legenda: str, seed=None) -> Image.Image:
+    if seed is None:
+        seed = random.randint(0, 999999)
 
-    # Linha decorativa inferior do bloco verde
-    draw.rectangle([0, 358, SIZE, 368], fill=VERDE_CLARO)
+    base = gerar_fundo(seed)
+    base = aplicar_overlay(base)
+    img_rgba = base.convert("RGBA")
 
-    # Detalhe inferior — bloco terra sutil
-    draw.rectangle([0, SIZE - 80, SIZE, SIZE], fill=CREME_ESCURO)
-    draw.rectangle([0, SIZE - 82, SIZE, SIZE - 80], fill=VERDE_PALIDO)
+    MARGIN  = 80
+    MAX_PX  = int(W*0.82)
+    Y_INI   = int(H*0.54)
+    Y_FIM   = int(H*0.88)
 
-    # ── Texto do tema (topo, área verde) ─────────────────────────────────────
-    f_tema = fonte_titulo(tamanho=64)
-    tema_display = tema.upper()
-    max_chars = 28
-    if len(tema_display) > max_chars:
-        tema_display = tema_display[:max_chars].rsplit(" ", 1)[0] + "..."
+    # Divide tema: 1ª palavra = título display, restante = complemento
+    palavras = tema.strip().split()
+    n = len(palavras)
+    if n == 1:
+        titulo, complemento = tema.upper(), ""
+    elif n == 2:
+        titulo, complemento = palavras[0].upper(), palavras[1].title()
+    else:
+        titulo      = palavras[0].upper()
+        complemento = " ".join(palavras[1:]).title()
 
-    # Sombra do tema
-    draw.text((62, 122), tema_display, font=f_tema, fill=(0, 0, 0, 60))
-    draw.text((60, 120), tema_display, font=f_tema, fill=CREME)
+    nc = len(titulo)
+    if   nc <= 8:  tam = 136
+    elif nc <= 12: tam = 116
+    elif nc <= 16: tam = 100
+    elif nc <= 22: tam = 86
+    else:          tam = 72
 
-    # ── Legenda (área creme) ──────────────────────────────────────────────────
-    legenda_limpa = re.sub(r'#\w+', '', legenda).strip()  # Remove hashtags do card
-    f_corpo = fonte_corpo(tamanho=36)
+    tam_sub = max(46, int(tam*0.50))
+    tam_bdg = 28
 
-    # Quebra de linha automática
-    linhas = textwrap.wrap(legenda_limpa, width=38)[:7]  # máx 7 linhas
-    y_legenda = 410
-    espacamento = 52
+    fonte_titulo = f_display(tam)
+    fonte_sub    = f_light(tam_sub)
+    fonte_badge  = f_corpo(tam_bdg)
 
-    for linha in linhas:
-        draw.text((60, y_legenda), linha, font=f_corpo, fill=TEXTO_ESCURO)
-        y_legenda += espacamento
+    linhas_t = [titulo]   # sem quebra para cards standalone
+    linhas_s = [complemento] if complemento else []
 
-    # ── Linha decorativa lateral ──────────────────────────────────────────────
-    draw.rectangle([36, 400, 44, y_legenda - 10], fill=VERDE_CLARO)
+    badge_h    = tam_bdg + 16
+    badge_gap  = 18
+    sub_gap    = 10
+    esp_titulo = int(tam  * 1.08)
+    esp_sub    = int(tam_sub * 1.22)
+    altura_bloco = (badge_h+badge_gap
+                    + len(linhas_t)*esp_titulo
+                    + (sub_gap+len(linhas_s)*esp_sub if linhas_s else 0))
 
-    # ── Marca AlvoreSer (rodapé) ──────────────────────────────────────────────
-    f_marca = fonte_corpo_bold(tamanho=30)
-    f_sub   = fonte_corpo(tamanho=22)
-    draw.text((60, SIZE - 60), "AlvoreSer", font=f_marca, fill=VERDE_MEDIO)
-    draw.text((200, SIZE - 54), "Clínica de Psicologia", font=f_sub, fill=TEXTO_SUAVE)
+    zona = Y_FIM - Y_INI
+    y0   = Y_INI + max(0, (zona-altura_bloco)//2)
+    y0   = max(Y_INI, min(y0, Y_FIM-altura_bloco-16))
 
-    # Ponto decorativo
-    draw.ellipse([44, SIZE - 52, 58, SIZE - 38], fill=VERDE_CLARO)
+    draw = ImageDraw.Draw(img_rgba, "RGBA")
+
+    # Badge
+    cat   = "PSICOLOGIA"
+    bdg_w = _medir(cat, fonte_badge) + 36
+    draw.rounded_rectangle([MARGIN, y0, MARGIN+bdg_w, y0+badge_h], radius=7, fill=(*LARANJA, 235))
+    draw.text((MARGIN+18, y0+8), cat, font=fonte_badge, fill=(*PRETO, 255))
+
+    # Título AGILERA
+    y = y0 + badge_h + badge_gap
+    for linha in linhas_t:
+        _sombra(img_rgba, linha, fonte_titulo, MARGIN, y)
+        draw = ImageDraw.Draw(img_rgba, "RGBA")
+        draw.text((MARGIN, y), linha, font=fonte_titulo, fill=(*BRANCO, 255))
+        y += esp_titulo
+
+    # Complemento MALGUNSL
+    if linhas_s:
+        y += sub_gap
+        for linha in linhas_s:
+            _sombra(img_rgba, linha, fonte_sub, MARGIN, y, opacidade=110)
+            draw = ImageDraw.Draw(img_rgba, "RGBA")
+            draw.text((MARGIN, y), linha, font=fonte_sub, fill=(*LARANJA, 235))
+            y += esp_sub
+
+    img = img_rgba.convert("RGB")
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    # Rodapé
+    ROD_Y = H - 90
+    draw.line([(MARGIN, ROD_Y-16),(W-MARGIN, ROD_Y-16)], fill=(*LARANJA, 195), width=2)
+    f_m = f_bold(33)
+    draw.text((MARGIN, ROD_Y), "AlvoreSer", font=f_m, fill=(*BRANCO, 252))
+    f_s = f_corpo(24)
+    lw  = _medir("AlvoreSer", f_m)
+    draw.text((MARGIN+lw+16, ROD_Y+7), "Clínica de Psicologia", font=f_s, fill=(*VERDE_NEUTRO, 200))
+    f_c = f_corpo(22)
+    crp = "CRP 04/57327"
+    draw.text((W-MARGIN-_medir(crp, f_c), ROD_Y+7), crp, font=f_c, fill=(*VERDE_NEUTRO, 165))
 
     return img
 
 
-# ── Upload Cloudinary ─────────────────────────────────────────────────────────
 def upload_card(img: Image.Image, public_id: str) -> str:
-    tmp = f"/tmp/{public_id}.jpg"
-    img.save(tmp, "JPEG", quality=92)
-
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92)
+    buf.seek(0)
     try:
         res = cloudinary.uploader.upload(
-            tmp,
-            public_id=public_id,
-            folder=CLOUDINARY_FOLDER,
-            overwrite=True,
-            resource_type="image",
-        )
+            buf, public_id=public_id,
+            folder=CLOUDINARY_FOLDER, overwrite=True, resource_type="image")
         return res.get("secure_url", "")
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+    except Exception as e:
+        print(f"Upload erro: {e}", file=sys.stderr)
+        return ""
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    tema   = sys.argv[1] if len(sys.argv) > 1 else "Saúde Mental"
+    tema    = sys.argv[1] if len(sys.argv) > 1 else "Saúde Mental"
     legenda = sys.argv[2] if len(sys.argv) > 2 else ""
+    seed    = int(sys.argv[3]) if len(sys.argv) > 3 else None
 
-    print(f"Gerando card: {tema}")
-    card = gerar_card(tema, legenda)
+    print(f"Gerando card: {tema}", file=sys.stderr)
+    card = gerar_card(tema, legenda, seed)
 
     uid = f"card_{uuid.uuid4().hex[:8]}"
-    print(f"Subindo para Cloudinary: {uid}")
+    print(f"Upload: {uid}", file=sys.stderr)
 
     url = upload_card(card, uid)
-
     if url:
-        print(f"OK: {url}")
-        # Última linha = URL (consumida pela Netlify Function)
-        print(url)
+        print(f"OK: {url}", file=sys.stderr)
+        print(url)   # última linha = URL (consumida pela Netlify Function)
     else:
         print("ERRO: upload falhou", file=sys.stderr)
         sys.exit(1)
