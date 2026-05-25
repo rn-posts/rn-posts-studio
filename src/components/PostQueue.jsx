@@ -30,13 +30,10 @@ export default function PostQueue({ onEdit, onNotify }) {
     return unsub;
   }, []);
 
-  // Aprova o post — muda status para "aprovado" no Firestore
-  // Se modo automatico, ja dispara publicacao
   const handleAprovar = async (post) => {
     try {
       await updateDoc(doc(db, "posts", post.id), { status: "aprovado" });
       onNotify("Post aprovado ✓");
-      // Modo automatico: publica imediatamente apos aprovacao
       if (post.modo === "automatico") {
         await handlePublicar({ ...post, status: "aprovado" });
       }
@@ -45,12 +42,10 @@ export default function PostQueue({ onEdit, onNotify }) {
     }
   };
 
-  // Publica — dispara webhook Make e atualiza status
   const handlePublicar = async (post) => {
     setPublishing(post.id);
     try {
       if (!MAKE_URL) {
-        // Make nao configurado — apenas marca como publicado
         await updateDoc(doc(db, "posts", post.id), {
           status: "publicado",
           publicadoEm: new Date().toISOString(),
@@ -77,7 +72,6 @@ export default function PostQueue({ onEdit, onNotify }) {
         publicadoEm:  new Date().toISOString(),
       });
 
-      // Atualiza status na planilha Google Sheets tambem
       if (post.linhaSheet) {
         try {
           await fetch(`${RENDER_URL}/atualizar-status`, {
@@ -159,7 +153,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
 
   return (
     <div className="post-card">
-      {/* Imagem */}
       <div className="post-card__image">
         {post.cloudinaryUrl ? (
           <img src={post.cloudinaryUrl} alt={post.tema} loading="lazy" />
@@ -175,7 +168,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
         )}
       </div>
 
-      {/* Corpo */}
       <div className="post-card__body">
         {post.tema && (
           <div className="post-card__tema">{post.tema}</div>
@@ -192,14 +184,12 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
         </div>
       </div>
 
-      {/* Rodapé */}
       <div className="post-card__footer">
         <span className={`post-card__status status--${post.status || "pendente"}`}>
           {STATUS_LABEL[post.status] || "Pendente"}
         </span>
 
         <div className="post-card__actions">
-          {/* Ver tamanho real */}
           {post.cloudinaryUrl && (
             <a href={post.cloudinaryUrl} target="_blank" rel="noreferrer"
               className="btn--icon" title="Ver imagem completa">
@@ -211,7 +201,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
             </a>
           )}
 
-          {/* Editar */}
           <button className="btn--icon" onClick={() => onEdit(post)} title="Editar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
@@ -219,7 +208,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
             </svg>
           </button>
 
-          {/* Aprovar — so se pendente */}
           {post.status === "pendente" && (
             <button
               className="btn btn--outline"
@@ -230,7 +218,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
             </button>
           )}
 
-          {/* Publicar — so se aprovado e nao publicado */}
           {post.status === "aprovado" && (
             <button
               className="btn btn--primary"
@@ -244,7 +231,6 @@ function PostCard({ post, onEdit, onAprovar, onPublicar, onExcluir, isPublishing
             </button>
           )}
 
-          {/* Excluir */}
           <button
             className="btn--icon"
             onClick={() => onExcluir(post)}

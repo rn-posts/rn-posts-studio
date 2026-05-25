@@ -14,13 +14,12 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [previewUrl,    setPreviewUrl]    = useState(post?.cloudinaryUrl || "");
   const [previewBase64, setPreviewBase64] = useState("");
   const [modo,          setModo]          = useState(post?.modo || "manual");
-  const [dadosCard,     setDadosCard]     = useState(null); // dados completos do card gerado
+  const [dadosCard,     setDadosCard]     = useState(null);
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
   const [loadingAprovar, setLoadingAprovar] = useState(false);
 
-  // ── Gerar só legenda ────────────────────────────────────────────────────────
   const handleGerarLegenda = async () => {
     if (!tema.trim()) { onNotify("Informe o tema.", "error"); return; }
     setLoadingLegenda(true);
@@ -41,7 +40,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
     }
   };
 
-  // ── Gerar card — APENAS preview, sem salvar em lugar nenhum ────────────────
   const handleGerarCard = async () => {
     if (!tema.trim()) { onNotify("Informe o tema.", "error"); return; }
     setLoadingCard(true);
@@ -55,8 +53,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
-
-      // Guarda dados do card para usar na aprovação
       setDadosCard(data);
       setPreviewUrl(data.preview_url);
       setLegenda(data.legenda);
@@ -68,7 +64,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
     }
   };
 
-  // ── Aprovar card — agora sim salva no Cloudinary, planilha e Firestore ──────
   const handleAprovar = async () => {
     if (!dadosCard) { onNotify("Gere o card antes de aprovar.", "error"); return; }
     setLoadingAprovar(true);
@@ -86,7 +81,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao aprovar card");
 
-      // Salva no Firestore
       const payload = {
         tema,
         legenda,
@@ -114,7 +108,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
     }
   };
 
-  // ── Descartar card gerado ───────────────────────────────────────────────────
   const handleDescartar = () => {
     setDadosCard(null);
     setPreviewUrl("");
@@ -130,7 +123,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
 
       <div className="editor-card">
 
-        {/* Tema */}
         <div className="field">
           <label>Tema / Assunto</label>
           <input
@@ -143,7 +135,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </p>
         </div>
 
-        {/* Botões de geração */}
         <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
           <button
             className="btn btn--outline"
@@ -166,7 +157,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </button>
         </div>
 
-        {/* Preview do card — só visualização, ainda não salvo */}
         {previewUrl && (
           <div className="field">
             <label>
@@ -199,7 +189,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </div>
         )}
 
-        {/* Legenda editável */}
         <div className="field">
           <label>
             Legenda
@@ -220,7 +209,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </p>
         </div>
 
-        {/* Modo de publicação */}
         <div className="field">
           <label>Modo de Publicação</label>
           <div className="mode-toggle">
@@ -238,7 +226,6 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </p>
         </div>
 
-        {/* Ações — Aprovar só aparece se card foi gerado */}
         <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
           {dadosCard && (
             <button
