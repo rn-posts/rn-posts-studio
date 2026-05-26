@@ -1,0 +1,15 @@
+# Render Blueprint — rn-posts (Flask API + React frontend)
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: rn-posts
+    runtime: python
+    plan: free
+    buildCommand: npm ci && npm run build && pip install -r python-api/requirements.txt
+    startCommand: cd python-api && gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: NODE_VERSION
+        value: "20"

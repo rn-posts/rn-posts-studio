@@ -50,9 +50,12 @@ def add_cors(response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
-@app.route("/")
-def index():
-    return app.send_static_file("index.html")
+def _dist_index_path():
+    folder = app.static_folder
+    if not folder:
+        return None
+    path = os.path.join(os.path.abspath(folder), "index.html")
+    return path if os.path.isfile(path) else None
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
@@ -111,29 +114,39 @@ ROOT_DIR  = os.path.join(os.path.dirname(__file__), "..")
 FONTS_DIR = os.path.join(ROOT_DIR, "src", "Brand", "fonts")
 _fallback = os.path.join(os.path.dirname(__file__), "fonts")
 
-def _font(nome, tam):
+def _resolve_font_path(nome):
     for base in [FONTS_DIR, _fallback]:
         p = os.path.join(base, nome)
         if os.path.isfile(p):
-            try:
-                return ImageFont.truetype(p, tam)
-            except Exception as e:
-                print(f"[font] erro {p}: {e}")
+            return p
+        if os.path.isdir(base):
+            low = nome.lower()
+            for f in os.listdir(base):
+                if f.lower() == low:
+                    return os.path.join(base, f)
+    return None
+
+def _font(nome, tam):
+    p = _resolve_font_path(nome)
+    if p:
+        try:
+            return ImageFont.truetype(p, tam)
+        except Exception as e:
+            print(f"[font] erro {p}: {e}")
     print(f"[font] FALTANDO: {nome}")
     try:
         return ImageFont.load_default(size=tam)
     except Exception:
         return ImageFont.load_default()
 
-# Nomes em minusculo — case-sensitive no Linux/Render
-def f_display(t): return _font("AGILERA.otf",  t)
-def f_bold(t):    return _font("MALGUNBD.ttf", t)
-def f_corpo(t):   return _font("MALGUN.ttf",   t)
-def f_light(t):   return _font("MALGUNSL.ttf", t)
+# Nomes em MAIUSCULO — igual ao arquivo no disco (case-sensitive no Linux/Render)
+def f_display(t): return _font("AGILERA.OTF",  t)
+def f_bold(t):    return _font("MALGUNBD.TTF", t)
+def f_corpo(t):   return _font("MALGUN.TTF",   t)
+def f_light(t):   return _font("MALGUNSL.TTF", t)
 
-for _fn in ["AGILERA.otf", "MALGUN.ttf", "MALGUNBD.ttf", "MALGUNSL.ttf"]:
-    _ok = (os.path.isfile(os.path.join(FONTS_DIR, _fn)) or
-           os.path.isfile(os.path.join(_fallback, _fn)))
+for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
+    _ok = _resolve_font_path(_fn) is not None
     print(f"[font] {'OK' if _ok else 'FALTANDO'} {_fn}")
 
 # ── IA ─────────────────────────────────────────────────────────────────────────
@@ -537,11 +550,10 @@ def atualizar_status(linha, status):
 
 @app.route("/health", methods=["GET"])
 def health():
-    fontes = {fn: (os.path.isfile(os.path.join(FONTS_DIR, fn)) or
-                   os.path.isfile(os.path.join(_fallback, fn)))
-              for fn in ["AGILERA.otf", "MALGUN.ttf", "MALGUNBD.ttf", "MALGUNSL.ttf"]}
+    fontes = {fn: _resolve_font_path(fn) is not None
+              for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
-                    "fontes": fontes, "agilera_ok": fontes.get("AGILERA.otf", False)})
+                    "fontes": fontes, "agilera_ok": fontes.get("AGILERA.OTF", False)})
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
@@ -643,6 +655,26 @@ def rota_atualizar_status():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
+
+@app.route("/")
+def index():
+    if _dist_index_path():
+        return app.send_static_file("index.html")
+    return jsonify({
+        "erro": "Frontend nao compilado.",
+        "dica": "No Render, use Build Command: npm ci && npm run build && pip install -r python-api/requirements.txt",
+        "health": "/health",
+    }), 503
+
+@app.route("/<path:path>")
+def spa_static(path):
+    """Assets do Vite (js/css); rotas de API ja foram registradas acima."""
+    dist_file = os.path.join(app.static_folder or "", path)
+    if app.static_folder and os.path.isfile(dist_file):
+        return app.send_static_file(path)
+    if _dist_index_path():
+        return app.send_static_file("index.html")
+    return jsonify({"erro": "Not Found"}), 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
