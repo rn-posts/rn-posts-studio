@@ -3,9 +3,26 @@ import PostQueue from "./components/PostQueue";
 import PostEditor from "./components/PostEditor";
 import History from "./components/History";
 import Sidebar from "./components/Sidebar";
+import { firebaseConfigError } from "./firebase";
 import "./styles/global.css";
 
 export default function App() {
+  if (firebaseConfigError) {
+    return (
+      <div className="app-shell">
+        <main className="main-content" style={{ padding: "2rem", maxWidth: 560 }}>
+          <h1 style={{ marginBottom: "1rem" }}>Configuração Firebase</h1>
+          <p style={{ lineHeight: 1.6 }}>{firebaseConfigError}</p>
+          <p style={{ marginTop: "1rem", lineHeight: 1.6, opacity: 0.85 }}>
+            No Render: <strong>Environment</strong> → adicione as variáveis{" "}
+            <code>VITE_FIREBASE_*</code> (mesmos valores do seu arquivo <code>.env</code> local) →{" "}
+            <strong>Manual Deploy</strong>.
+          </p>
+        </main>
+      </div>
+    );
+  }
+
   const [activePage, setActivePage] = useState("queue");
   const [editingPost, setEditingPost] = useState(null);
   const [notification, setNotification] = useState(null);

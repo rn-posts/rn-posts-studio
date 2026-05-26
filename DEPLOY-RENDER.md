@@ -16,7 +16,27 @@ Em **Settings** do serviço `rn-posts`:
 | **Build Command** | `npm ci && npm run build && pip install -r python-api/requirements.txt` |
 | **Start Command** | `cd python-api && gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120` |
 
-Variáveis de ambiente obrigatórias (já devem estar no serviço):
+### Firebase (obrigatório para o app React)
+
+O Vite **embute** as variáveis no JavaScript no momento do **build**.  
+Sem elas no Render, o navegador mostra `auth/invalid-api-key`.
+
+Em **Environment**, adicione (copie do seu `.env` local):
+
+| Variável | Exemplo de origem |
+|----------|-------------------|
+| `VITE_FIREBASE_API_KEY` | Firebase Console → Config do app Web |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `*.firebaseapp.com` |
+| `VITE_FIREBASE_PROJECT_ID` | ID do projeto |
+| `VITE_FIREBASE_STORAGE_BUCKET` | `*.firebasestorage.app` |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | número do projeto |
+| `VITE_FIREBASE_APP_ID` | `1:...:web:...` |
+
+Opcional: `VITE_MAKE_WEBHOOK_URL` (publicação via Make).
+
+Depois de salvar → **Manual Deploy** (precisa rebuildar o frontend).
+
+### API Python (runtime)
 
 - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
 - `GROQ_API_KEY` e/ou `GEMINI_API_KEY`

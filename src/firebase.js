@@ -1,8 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
-import { getAuth } from "firebase/auth";
 
-// Coloque as variáveis no .env (VITE_FIREBASE_*)
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -12,7 +10,13 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-const app = initializeApp(firebaseConfig);
+export const firebaseConfigError = (() => {
+  if (!firebaseConfig.apiKey?.trim()) {
+    return "VITE_FIREBASE_API_KEY não definida no build. Configure no Render (Environment) e faça redeploy.";
+  }
+  return null;
+})();
 
-export const db   = getFirestore(app);
-export const auth = getAuth(app);
+const app = firebaseConfigError ? null : initializeApp(firebaseConfig);
+
+export const db = app ? getFirestore(app) : null;

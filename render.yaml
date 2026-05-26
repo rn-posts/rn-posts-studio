@@ -13,3 +13,16 @@ services:
         value: "3.11.11"
       - key: NODE_VERSION
         value: "20"
+      # Firebase — obrigatório no BUILD (Vite embute no JS). Preencha no painel Render:
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_PROJECT_ID
+        sync: false
+      - key: VITE_FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
