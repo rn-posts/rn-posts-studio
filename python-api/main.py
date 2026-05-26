@@ -548,6 +548,31 @@ def atualizar_status(linha, status):
 
 # ── Rotas ──────────────────────────────────────────────────────────────────────
 
+def _env_first(*keys):
+    for key in keys:
+        val = os.getenv(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    return None
+
+@app.route("/config/firebase", methods=["GET"])
+def rota_config_firebase():
+    """Config do Firebase em runtime (mesmas vars do .env, sem precisar de VITE_ no build)."""
+    cfg = {
+        "apiKey":            _env_first("FIREBASE_API_KEY", "VITE_FIREBASE_API_KEY"),
+        "authDomain":        _env_first("FIREBASE_AUTH_DOMAIN", "VITE_FIREBASE_AUTH_DOMAIN"),
+        "projectId":         _env_first("FIREBASE_PROJECT_ID", "VITE_FIREBASE_PROJECT_ID"),
+        "storageBucket":     _env_first("FIREBASE_STORAGE_BUCKET", "VITE_FIREBASE_STORAGE_BUCKET"),
+        "messagingSenderId": _env_first("FIREBASE_MESSAGING_SENDER_ID", "VITE_FIREBASE_MESSAGING_SENDER_ID"),
+        "appId":             _env_first("FIREBASE_APP_ID", "VITE_FIREBASE_APP_ID"),
+    }
+    if not cfg["apiKey"]:
+        return jsonify({
+            "erro": "Firebase nao configurado no Render.",
+            "dica": "Environment: adicione FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, ... (valores do .env local)",
+        }), 503
+    return jsonify(cfg)
+
 @app.route("/health", methods=["GET"])
 def health():
     fontes = {fn: _resolve_font_path(fn) is not None
