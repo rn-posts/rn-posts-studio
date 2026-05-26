@@ -13,10 +13,16 @@ const required = [
 const missing = required.filter((k) => !process.env[k]?.trim());
 
 if (missing.length) {
+  const viteKeys = Object.keys(process.env).filter((k) => k.startsWith("VITE_"));
   console.error("\n[build] Variáveis ausentes para o Vite (Firebase):\n");
   missing.forEach((k) => console.error(`  - ${k}`));
   console.error(
-    "\nNo Render: Environment → adicione cada VITE_FIREBASE_* → Manual Deploy.\n" +
+    `\n[build] VITE_* presentes no servidor: ${
+      viteKeys.length ? viteKeys.join(", ") : "(nenhuma — Environment não foi salvo no Render)"
+    }\n`
+  );
+  console.error(
+    "No Render: rn-posts → Environment → adicione VITE_FIREBASE_* → Save, rebuild and deploy.\n" +
       "Local: copie de .env.example para .env\n"
   );
   process.exit(1);
