@@ -23,7 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 "src/Brand/readme.md/*.pdf" 
-.env 
+.env
+render.env
 
 # Local Netlify folder
 .netlify
