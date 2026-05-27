@@ -404,16 +404,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
                 print(f"[foto] rembg falhou: {e}")
                 # Fallback bem contrastado e integrado com a marca em vez de blend puro escuro
                 img = Image.blend(tex, img, alpha=0.55)
-        elif eh_fundo_claro(img):
-            print("[foto] fundo claro")
-            try:
-                img = compor_pessoa(remover_fundo_rembg(img), tex)
-            except Exception as e:
-                print(f"[foto] rembg falhou no fundo claro: {e}")
-                img = Image.blend(tex, img, alpha=0.50)
         else:
-            print("[foto] editorial — pipeline direto com ondas")
-            # Fotos normais também ganham ondas da identidade visual para manter coesão de marca!
+            print("[foto] editorial — mantendo fundo original de alta qualidade e inserindo ondas da marca")
+            # Para stock photos de outras pastas, MANTEMOS a imagem original e apenas adicionamos as ondas e tratamentos!
             img = adicionar_ondas_marca(img, cor_onda, seed)
 
         img = aplicar_split_toning(img)
@@ -506,43 +499,43 @@ def desenhar_titulo(img, tema, seed):
             elementos.append((l, fonte, cor))
             
     elif estilo == 2:
-        # Estilo 2: Puro Malgun Bold com capitalização preservada
-        fonte = f_bold(tam_bold)
-        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
-        for l in linhas:
-            elementos.append((l, fonte, BRANCO))
-            
-    elif estilo == 3:
-        # Estilo 3: Primeira linha em Malgun Bold (Branco), restante em Malgun Light (Teal/Amarelo)
-        fonte_b = f_bold(tam_bold)
-        fonte_l = f_light(tam_bold - 12)
-        linhas = _quebrar_texto(titulo_texto, fonte_b, MAX_PX)
-        for i, l in enumerate(linhas):
-            f = fonte_b if i == 0 else fonte_l
-            cor = BRANCO if i == 0 else (AMARELO if seed % 2 == 0 else TEAL)
-            elementos.append((l, f, cor))
-            
-    elif estilo == 4:
-        # Estilo 4: Primeira palavra em Agilera (Laranja), resto em Malgun Bold (Branco)
+        # Estilo 2: Agilera (display) para todo o título, com a primeira palavra em Malgun Bold
         f_disp = f_display(tam_display)
         f_bld  = f_bold(tam_bold)
         
         l1 = palavras[0]
-        elementos.append((l1, f_disp, LARANJA))
+        elementos.append((l1, f_bld, AMARELO))
         
         resto = " ".join(palavras[1:])
         if resto:
-            linhas_resto = _quebrar_texto(resto, f_bld, MAX_PX)
+            linhas_resto = _quebrar_texto(resto, f_disp, MAX_PX)
             for l in linhas_resto:
-                elementos.append((l, f_bld, BRANCO))
+                elementos.append((l, f_disp, BRANCO))
+            
+    elif estilo == 3:
+        # Estilo 3: Primeira linha em Agilera, restante em Malgun Light (Teal/Amarelo)
+        fonte_a = f_display(tam_display)
+        fonte_l = f_light(tam_bold - 12)
+        linhas = _quebrar_texto(titulo_texto, fonte_a, MAX_PX)
+        for i, l in enumerate(linhas):
+            f = fonte_a if i == 0 else fonte_l
+            cor = BRANCO if i == 0 else (AMARELO if seed % 2 == 0 else TEAL)
+            elementos.append((l, f, cor))
+            
+    elif estilo == 4:
+        # Estilo 4: Título principal em Agilera, com destaque colorido na primeira linha
+        fonte = f_display(tam_display)
+        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
+        for i, l in enumerate(linhas):
+            cor = BRANCO if i == 0 else (LARANJA if seed % 2 == 0 else AMARELO)
+            elementos.append((l, fonte, cor))
                 
     else: # estilo == 5
-        # Estilo 5: Malgun Bold em caixa alta com destaque colorido
+        # Estilo 5: Puro Malgun Bold para liberdade tipográfica completa
         fonte = f_bold(tam_bold)
-        linhas = _quebrar_texto(titulo_texto.upper(), fonte, MAX_PX)
-        for i, l in enumerate(linhas):
-            cor = BRANCO if i == 0 else AMARELO
-            elementos.append((l, fonte, cor))
+        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
+        for l in linhas:
+            elementos.append((l, fonte, BRANCO))
 
     # Calcula altura e desenha
     altura_bloco = 0
@@ -629,7 +622,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
 
     base = aplicar_overlay(base)
     base = desenhar_titulo(base, tema, seed) # Passando o seed para variedade tipográfica
-    base = desenhar_rodape(base) # Garantindo o rodapé da marca com AlvoreSer + CRP
+    # Rodapé removido permanentemente a pedido do usuário (imagem limpa, contendo apenas o texto digitado)
     return base
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
