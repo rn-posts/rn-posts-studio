@@ -165,19 +165,34 @@ export default function PostEditor({ post, onClose, onNotify }) {
                 ⏳ Aguardando aprovação
               </span>
             </label>
+
+            {/* CORREÇÃO: preview maior (420px) para visualização adequada */}
             <div style={{
-              maxWidth: 270,
+              width: "100%",
+              maxWidth: 420,
               borderRadius: 12,
               overflow: "hidden",
               marginBottom: "0.75rem",
               boxShadow: "var(--sombra-media)",
-              border: "2px solid var(--creme-escuro)"
-            }}>
+              border: "2px solid var(--creme-escuro)",
+              cursor: "pointer",
+            }}
+              onClick={() => window.open(previewUrl, "_blank")}
+              title="Clique para ver em tamanho real"
+            >
               <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
             </div>
-            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-              <a href={previewUrl} target="_blank" rel="noreferrer" className="btn btn--outline" style={{ fontSize: "0.8rem" }}>
-                Ver tamanho real ↗
+
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+              {/* CORREÇÃO: botão "ver tamanho real" mais destacado */}
+              <a
+                href={previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn--primary"
+                style={{ fontSize: "0.82rem", background: "var(--verde-medio)" }}
+              >
+                🔍 Ver tamanho real (1080×1350)
               </a>
               <button className="btn btn--outline" style={{ fontSize: "0.8rem" }} onClick={handleGerarCard} disabled={loadingCard}>
                 🔄 Gerar outro

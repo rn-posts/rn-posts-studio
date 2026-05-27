@@ -111,19 +111,29 @@ MAPA_PASTAS = {
 
 # ── Fontes ─────────────────────────────────────────────────────────────────────
 ROOT_DIR  = os.path.join(os.path.dirname(__file__), "..")
-FONTS_DIR = os.path.join(ROOT_DIR, "src", "Brand", "fonts")
-_fallback = os.path.join(os.path.dirname(__file__), "fonts")
+# CORREÇÃO: python-api/fonts/ vem PRIMEIRO — único caminho garantido no Render (Linux).
+# src/Brand/fonts/ fica como segunda opção para ambiente local.
+_FONTS_DIRS = [
+    os.path.join(os.path.dirname(__file__), "fonts"),   # python-api/fonts/ — garantido no Render
+    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),    # src/Brand/fonts/  — só local
+]
 
 def _resolve_font_path(nome):
-    for base in [FONTS_DIR, _fallback]:
+    low = nome.lower()
+    for base in _FONTS_DIRS:
+        if not os.path.isdir(base):
+            continue
+        # Tentativa exata
         p = os.path.join(base, nome)
         if os.path.isfile(p):
             return p
-        if os.path.isdir(base):
-            low = nome.lower()
+        # Varredura case-insensitive (Linux/Render é case-sensitive)
+        try:
             for f in os.listdir(base):
                 if f.lower() == low:
                     return os.path.join(base, f)
+        except Exception:
+            pass
     return None
 
 def _font(nome, tam):
@@ -132,8 +142,8 @@ def _font(nome, tam):
         try:
             return ImageFont.truetype(p, tam)
         except Exception as e:
-            print(f"[font] erro {p}: {e}")
-    print(f"[font] FALTANDO: {nome}")
+            print(f"[font] erro ao carregar {p}: {e}")
+    print(f"[font] FALTANDO: {nome} — espa\u00e7amento pode ficar ruim!")
     try:
         return ImageFont.load_default(size=tam)
     except Exception:
@@ -145,9 +155,11 @@ def f_bold(t):    return _font("MALGUNBD.TTF", t)
 def f_corpo(t):   return _font("MALGUN.TTF",   t)
 def f_light(t):   return _font("MALGUNSL.TTF", t)
 
+# Log de diagnóstico ao iniciar — aparece nos logs do Render
 for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
-    _ok = _resolve_font_path(_fn) is not None
-    print(f"[font] {'OK' if _ok else 'FALTANDO'} {_fn}")
+    _p  = _resolve_font_path(_fn)
+    _ok = _p is not None
+    print(f"[font] {'OK  ' if _ok else 'MISS'} {_fn}" + (f" => {_p}" if _ok else " <= FALTANDO!"))
 
 # ── IA ─────────────────────────────────────────────────────────────────────────
 
@@ -402,11 +414,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
                 img = compor_pessoa(remover_fundo_rembg(img), tex)
             except Exception as e:
                 print(f"[foto] rembg falhou: {e}")
-                # Fallback bem contrastado e integrado com a marca em vez de blend puro escuro
                 img = Image.blend(tex, img, alpha=0.55)
         else:
             print("[foto] editorial — mantendo fundo original de alta qualidade e inserindo ondas da marca")
-            # Para stock photos de outras pastas, MANTEMOS a imagem original e apenas adicionamos as ondas e tratamentos!
             img = adicionar_ondas_marca(img, cor_onda, seed)
 
         img = aplicar_split_toning(img)
@@ -448,26 +458,38 @@ def _sombra_texto(img_rgba, texto, fonte, x, y, opacidade_suave=0.35, opacidade_
     layer_nitida = layer_nitida.filter(ImageFilter.GaussianBlur(3))
     img_rgba.paste(layer_nitida, (0,0), layer_nitida)
 
+def _desenhar_texto_com_spacing(draw, x, y, texto, fonte, cor, letter_spacing=0):
+    """
+    CORREÇÃO DE KERNING: desenha o texto letra por letra aplicando spacing uniforme.
+    Resolve o espaçamento estranho da AGILERA no Render.
+    Se letter_spacing=0, usa o render nativo da fonte (mais rápido).
+    """
+    if letter_spacing == 0:
+        draw.text((x, y), texto, font=fonte, fill=cor)
+        return
+    cursor = x
+    for char in texto:
+        draw.text((cursor, y), char, font=fonte, fill=cor)
+        try:
+            bb = fonte.getbbox(char)
+            cursor += (bb[2] - bb[0]) + letter_spacing
+        except Exception:
+            cursor += 30 + letter_spacing
+
 def desenhar_titulo(img, tema, seed):
     """
-    Desenha o título com alta variabilidade e grade editorial premium baseada em seed:
-    - Mescla fontes AGILERA (display) e MALGUN (bold/light)
-    - Suporta caixa alta/baixa (capitalização exata preservada do input do usuário ou título refinado)
-    - Limita a largura para a metade esquerda do card caso haja sujeito na direita, evitando sobreposições
-    - Aplica nossa dupla sombra projetada (Figma style) para legibilidade incrível
+    Desenha o título com alta variabilidade e grade editorial premium baseada em seed.
+    AGILERA usa letter_spacing negativo leve para corrigir o kerning no Render.
     """
     img_rgba = img.convert("RGBA")
     
     MARGIN = 80
-    MAX_PX = int(W * 0.58) # Limita a largura a 58% do card para não invadir o sujeito na direita
-    Y_INI  = int(H * 0.38) # Posicionado na zona do meio-alto (editorial de revista)
+    MAX_PX = int(W * 0.58)
+    Y_INI  = int(H * 0.38)
     Y_FIM  = int(H * 0.76)
     
     estilo = seed % 6
     
-    # Decisão de Capitalização:
-    # Se estilo for par (0, 2, 4), respeita e preserva a capitalização EXATA digitada pelo usuário!
-    # Se for ímpar (1, 3, 5), força caixa alta para dar impacto.
     if estilo % 2 == 0:
         titulo_texto = tema.strip()
     else:
@@ -477,77 +499,74 @@ def desenhar_titulo(img, tema, seed):
     if not palavras:
         palavras = [titulo_texto]
         
-    elementos = [] # Lista de (linha, fonte, cor)
+    elementos = []
     
     n = len(titulo_texto)
     tam_display = 126 if n <= 10 else 108 if n <= 18 else 88 if n <= 28 else 72
     tam_bold    = 108 if n <= 10 else 90  if n <= 18 else 76 if n <= 28 else 60
     
+    # CORREÇÃO: spacing negativo leve na AGILERA compensa o kerning excessivo no Render
+    # Malgun não precisa de ajuste (fonte sem serifa bem balanceada)
+    AGILERA_SPACING = -2   # px entre letras — ajuste fino sem quebrar o visual
+
     if estilo == 0:
-        # Estilo 0: Puro Agilera com capitalização preservada
         fonte = f_display(tam_display)
         linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
         for l in linhas:
-            elementos.append((l, fonte, BRANCO))
+            elementos.append((l, fonte, BRANCO, AGILERA_SPACING))
             
     elif estilo == 1:
-        # Estilo 1: Agilera com destaque da última linha em Laranja/Amarelo
         fonte = f_display(tam_display)
         linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
         for i, l in enumerate(linhas):
             cor = BRANCO if i < len(linhas)-1 else (LARANJA if seed % 2 == 0 else AMARELO)
-            elementos.append((l, fonte, cor))
+            elementos.append((l, fonte, cor, AGILERA_SPACING))
             
     elif estilo == 2:
-        # Estilo 2: Agilera (display) para todo o título, com a primeira palavra em Malgun Bold
         f_disp = f_display(tam_display)
         f_bld  = f_bold(tam_bold)
-        
         l1 = palavras[0]
-        elementos.append((l1, f_bld, AMARELO))
-        
+        elementos.append((l1, f_bld, AMARELO, 0))
         resto = " ".join(palavras[1:])
         if resto:
             linhas_resto = _quebrar_texto(resto, f_disp, MAX_PX)
             for l in linhas_resto:
-                elementos.append((l, f_disp, BRANCO))
+                elementos.append((l, f_disp, BRANCO, AGILERA_SPACING))
             
     elif estilo == 3:
-        # Estilo 3: Primeira linha em Agilera, restante em Malgun Light (Teal/Amarelo)
         fonte_a = f_display(tam_display)
         fonte_l = f_light(tam_bold - 12)
         linhas = _quebrar_texto(titulo_texto, fonte_a, MAX_PX)
         for i, l in enumerate(linhas):
             f = fonte_a if i == 0 else fonte_l
             cor = BRANCO if i == 0 else (AMARELO if seed % 2 == 0 else TEAL)
-            elementos.append((l, f, cor))
+            sp = AGILERA_SPACING if i == 0 else 0
+            elementos.append((l, f, cor, sp))
             
     elif estilo == 4:
-        # Estilo 4: Título principal em Agilera, com destaque colorido na primeira linha
         fonte = f_display(tam_display)
         linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
         for i, l in enumerate(linhas):
             cor = BRANCO if i == 0 else (LARANJA if seed % 2 == 0 else AMARELO)
-            elementos.append((l, fonte, cor))
+            elementos.append((l, fonte, cor, AGILERA_SPACING))
                 
-    else: # estilo == 5
-        # Estilo 5: Puro Malgun Bold para liberdade tipográfica completa
+    else:  # estilo == 5
         fonte = f_bold(tam_bold)
         linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
         for l in linhas:
-            elementos.append((l, fonte, BRANCO))
+            elementos.append((l, fonte, BRANCO, 0))
 
     # Calcula altura e desenha
     altura_bloco = 0
     linhas_prontas = []
-    for l, f, cor in elementos:
+    for l, f, cor, sp in elementos:
         try:
             bbox = f.getbbox(l)
             h_linha = bbox[3] - bbox[1]
         except Exception:
             h_linha = 50
         esp = int(h_linha * 1.15)
-        linhas_prontas.append((l, f, cor, esp))
+        linhas_prontas.append((l, f, cor, esp, sp))
         altura_bloco += esp
         
     zona = Y_FIM - Y_INI
@@ -555,9 +574,9 @@ def desenhar_titulo(img, tema, seed):
     y = max(Y_INI, min(y, Y_FIM - altura_bloco - 20))
     
     draw = ImageDraw.Draw(img_rgba, "RGBA")
-    for l, f, cor, esp in linhas_prontas:
+    for l, f, cor, esp, sp in linhas_prontas:
         _sombra_texto(img_rgba, l, f, MARGIN, y)
-        draw.text((MARGIN, y), l, font=f, fill=(*cor, 255))
+        _desenhar_texto_com_spacing(draw, MARGIN, y, l, f, (*cor, 255), letter_spacing=sp)
         y += esp
         
     return img_rgba.convert("RGB")
@@ -583,13 +602,10 @@ def desenhar_rodape(img):
     draw   = ImageDraw.Draw(img, "RGBA")
     MARGIN = 80
     ROD_Y  = H - 88
-    # Linha separadora laranja
     draw.line([(MARGIN, ROD_Y-14), (W-MARGIN, ROD_Y-14)],
               fill=(*LARANJA, 170), width=2)
-    # AlvoreSer
     f_m = f_bold(32)
     draw.text((MARGIN, ROD_Y), "AlvoreSer", font=f_m, fill=(*BRANCO, 250))
-    # CRP alinhado à direita
     f_c   = f_corpo(23)
     crp   = "CRP 04/57327"
     crp_w = _medir(crp, f_c)
@@ -621,8 +637,8 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
             base = foto
 
     base = aplicar_overlay(base)
-    base = desenhar_titulo(base, tema, seed) # Passando o seed para variedade tipográfica
-    # Rodapé removido permanentemente a pedido do usuário (imagem limpa, contendo apenas o texto digitado)
+    base = desenhar_titulo(base, tema, seed)
+    # Rodapé removido permanentemente a pedido do usuário
     return base
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
@@ -674,7 +690,6 @@ def _env_first(*keys):
 
 @app.route("/config/firebase", methods=["GET"])
 def rota_config_firebase():
-    """Config do Firebase em runtime (mesmas vars do .env, sem precisar de VITE_ no build)."""
     cfg = {
         "apiKey":            _env_first("FIREBASE_API_KEY", "VITE_FIREBASE_API_KEY"),
         "authDomain":        _env_first("FIREBASE_AUTH_DOMAIN", "VITE_FIREBASE_AUTH_DOMAIN"),
@@ -694,8 +709,11 @@ def rota_config_firebase():
 def health():
     fontes = {fn: _resolve_font_path(fn) is not None
               for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
+    caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
+                for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
-                    "fontes": fontes, "agilera_ok": fontes.get("AGILERA.OTF", False)})
+                    "fontes": fontes, "caminhos": caminhos,
+                    "agilera_ok": fontes.get("AGILERA.OTF", False)})
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
@@ -731,12 +749,10 @@ def rota_preview_card():
         card = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         
-        # Gera os bytes JPEG locais para evitar qualquer upload ao Cloudinary sem a aprovação do usuário!
         buf = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
         card_bytes = buf.getvalue()
         
-        # Converte para Base64 Data URI de forma instantânea e totalmente limpa
         preview_url = f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode('utf-8')}"
         
         _cards_pendentes[card_id] = {
@@ -770,7 +786,6 @@ def rota_aprovar_card():
         card_url = res.get("secure_url", "")
         if not card_url:
             return jsonify({"erro": "Falha no upload definitivo"}), 500
-        # O preview base64 é local, portanto nenhuma exclusão de preview do Cloudinary é necessária!
         del _cards_pendentes[card_id]
     except Exception as e:
         return jsonify({"erro": f"Erro no upload: {e}"}), 500
@@ -811,7 +826,6 @@ def index():
 
 @app.route("/<path:path>")
 def spa_static(path):
-    """Assets do Vite (js/css); rotas de API ja foram registradas acima."""
     dist_file = os.path.join(app.static_folder or "", path)
     if app.static_folder and os.path.isfile(dist_file):
         return app.send_static_file(path)
