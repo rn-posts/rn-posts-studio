@@ -11,7 +11,7 @@ Regras definitivas:
 - Encoding: tudo em unicode escape para evitar caracteres quebrados
 """
 
-import os, io, uuid, random, json, math
+import os, io, uuid, random, json, math, base64
 import numpy as np
 import requests, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime
@@ -322,19 +322,58 @@ def gerar_textura(cor1, cor2, seed):
                 max(0, min(255, int(b+wx*8)))))
     return base.filter(ImageFilter.GaussianBlur(1))
 
+def adicionar_ondas_marca(img, cor_onda, seed):
+    """Adiciona as ondas orgânicas da identidade visual AlvoreSer no topo e fundo."""
+    img_rgba = img.convert("RGBA")
+    draw = ImageDraw.Draw(img_rgba, "RGBA")
+    rng = random.Random(seed)
+    
+    # Onda no topo (sutil, opacidade 10-18%)
+    h_onda = rng.uniform(H * 0.15, H * 0.30)
+    ctrl_y = rng.uniform(H * 0.05, H * 0.20)
+    pontos_topo = []
+    passos = 40
+    for p in range(passos + 1):
+        t = p / passos
+        x = t * W
+        y = (1 - t)**2 * ctrl_y + 2 * (1 - t) * t * h_onda + t**2 * ctrl_y
+        pontos_topo.append((x, y))
+    pontos_topo.append((W, 0))
+    pontos_topo.append((0, 0))
+    draw.polygon(pontos_topo, fill=(*cor_onda, rng.randint(25, 45)))
+    
+    # Outra onda na base (sutil, opacidade 12-20%)
+    h_onda_b = H - rng.uniform(H * 0.15, H * 0.30)
+    ctrl_y_b = H - rng.uniform(H * 0.05, H * 0.20)
+    pontos_base = []
+    for p in range(passos + 1):
+        t = p / passos
+        x = t * W
+        y = (1 - t)**2 * ctrl_y_b + 2 * (1 - t) * t * h_onda_b + t**2 * ctrl_y_b
+        pontos_base.append((x, y))
+    pontos_base.append((W, H))
+    pontos_base.append((0, H))
+    draw.polygon(pontos_base, fill=(*cor_onda, rng.randint(28, 48)))
+    
+    return img_rgba.convert("RGB")
+
 def compor_pessoa(pessoa_rgba, fundo_rgb):
     pw, ph = pessoa_rgba.size
     nw = int(pw*H/ph)
     pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
-    x = max(int(W*0.38), W-nw+30)
-    x = min(x, W-int(nw*0.80))
+    
+    # Alinhamento à direita seguro e inteligente
+    x = W - nw + 50
+    x = max(int(W * 0.38), min(x, W - 150))
+    
     alpha = pessoa_rgba.split()[3]
     sombra = Image.new("RGBA", (W, H), (0,0,0,0))
     sil = Image.new("RGBA", (nw, H), (0,0,0,0))
     sil.paste(Image.new("RGB", (nw, H), MARINHO),
-              mask=alpha.point(lambda v: int(v*0.15)))
-    sombra.paste(sil, (x-16, 22), sil)
-    sombra = sombra.filter(ImageFilter.GaussianBlur(36))
+              mask=alpha.point(lambda v: int(v*0.18)))
+    sombra.paste(sil, (x-20, 18), sil)
+    sombra = sombra.filter(ImageFilter.GaussianBlur(38))
+    
     res = fundo_rgb.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
@@ -350,7 +389,12 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         img = img.resize((nw, nh), Image.Resampling.LANCZOS)
         l = (nw-W)//2; t = (nh-H)//2
         img = img.crop((l, t, l+W, t+H))
+        
+        # Fundo com a textura da marca
         tex = gerar_textura(cor1, cor2, seed)
+        # Ondas elegantes no fundo
+        cor_onda = TEAL if sum(cor1)/3 < 120 else PETROLEO
+        tex = adicionar_ondas_marca(tex, cor_onda, seed)
 
         if eh_foto_ronilson(pid):
             print(f"[foto] Ronilson rembg: {pid}")
@@ -358,15 +402,19 @@ def preparar_foto(url, pid, cor1, cor2, seed):
                 img = compor_pessoa(remover_fundo_rembg(img), tex)
             except Exception as e:
                 print(f"[foto] rembg falhou: {e}")
-                img = Image.blend(tex, img, alpha=0.75)
+                # Fallback bem contrastado e integrado com a marca em vez de blend puro escuro
+                img = Image.blend(tex, img, alpha=0.55)
         elif eh_fundo_claro(img):
             print("[foto] fundo claro")
             try:
                 img = compor_pessoa(remover_fundo_rembg(img), tex)
-            except Exception:
-                img = Image.blend(tex, img, alpha=0.72)
+            except Exception as e:
+                print(f"[foto] rembg falhou no fundo claro: {e}")
+                img = Image.blend(tex, img, alpha=0.50)
         else:
-            print("[foto] editorial — pipeline direto")
+            print("[foto] editorial — pipeline direto com ondas")
+            # Fotos normais também ganham ondas da identidade visual para manter coesão de marca!
+            img = adicionar_ondas_marca(img, cor_onda, seed)
 
         img = aplicar_split_toning(img)
         img = aplicar_contraste(img)
@@ -394,48 +442,139 @@ def aplicar_overlay(img):
 
 # ── Tipografia — título completo, sem divisão, sem badge ─────────────────────
 
-def _sombra_texto(img_rgba, texto, fonte, x, y, opacidade=120):
-    layer = Image.new("RGBA", (W, H), (0,0,0,0))
-    ImageDraw.Draw(layer).text((x+2, y+4), texto, font=fonte, fill=(*MARINHO, 255))
-    layer = layer.filter(ImageFilter.GaussianBlur(8))
-    r2, g2, b2, a2 = layer.split()
-    a2 = a2.point(lambda p: int(p*(opacidade/255.0)))
-    s = Image.merge("RGBA", (r2, g2, b2, a2))
-    img_rgba.paste(s, (0,0), s)
+def _sombra_texto(img_rgba, texto, fonte, x, y, opacidade_suave=0.35, opacidade_nitida=0.55):
+    # Sombra suave e profunda
+    layer_suave = Image.new("RGBA", (W, H), (0,0,0,0))
+    ImageDraw.Draw(layer_suave).text((x+5, y+7), texto, font=fonte, fill=(2, 20, 30, int(255 * opacidade_suave)))
+    layer_suave = layer_suave.filter(ImageFilter.GaussianBlur(14))
+    img_rgba.paste(layer_suave, (0,0), layer_suave)
 
-def desenhar_titulo(img, tema):
+    # Sombra nítida para contraste
+    layer_nitida = Image.new("RGBA", (W, H), (0,0,0,0))
+    ImageDraw.Draw(layer_nitida).text((x+2, y+3), texto, font=fonte, fill=(2, 20, 30, int(255 * opacidade_nitida)))
+    layer_nitida = layer_nitida.filter(ImageFilter.GaussianBlur(3))
+    img_rgba.paste(layer_nitida, (0,0), layer_nitida)
+
+def desenhar_titulo(img, tema, seed):
     """
-    Título: tema completo em AGILERA, branco, maiúsculo.
-    Quebra linha automaticamente se ultrapassar largura.
-    Posicionado na zona inferior (62%–87%).
-    Sem badge, sem complemento — apenas o título.
+    Desenha o título com alta variabilidade e grade editorial premium baseada em seed:
+    - Mescla fontes AGILERA (display) e MALGUN (bold/light)
+    - Suporta caixa alta/baixa (capitalização exata preservada do input do usuário ou título refinado)
+    - Limita a largura para a metade esquerda do card caso haja sujeito na direita, evitando sobreposições
+    - Aplica nossa dupla sombra projetada (Figma style) para legibilidade incrível
     """
     img_rgba = img.convert("RGBA")
+    
     MARGIN = 80
-    MAX_PX = int(W * 0.85)
-    Y_INI  = int(H * 0.62)
-    Y_FIM  = int(H * 0.87)
+    MAX_PX = int(W * 0.58) # Limita a largura a 58% do card para não invadir o sujeito na direita
+    Y_INI  = int(H * 0.38) # Posicionado na zona do meio-alto (editorial de revista)
+    Y_FIM  = int(H * 0.76)
+    
+    estilo = seed % 6
+    
+    # Decisão de Capitalização:
+    # Se estilo for par (0, 2, 4), respeita e preserva a capitalização EXATA digitada pelo usuário!
+    # Se for ímpar (1, 3, 5), força caixa alta para dar impacto.
+    if estilo % 2 == 0:
+        titulo_texto = tema.strip()
+    else:
+        titulo_texto = tema.strip().upper()
+        
+    palavras = titulo_texto.split()
+    if not palavras:
+        palavras = [titulo_texto]
+        
+    elementos = [] # Lista de (linha, fonte, cor)
+    
+    n = len(titulo_texto)
+    tam_display = 126 if n <= 10 else 108 if n <= 18 else 88 if n <= 28 else 72
+    tam_bold    = 108 if n <= 10 else 90  if n <= 18 else 76 if n <= 28 else 60
+    
+    if estilo == 0:
+        # Estilo 0: Puro Agilera com capitalização preservada
+        fonte = f_display(tam_display)
+        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
+        for l in linhas:
+            elementos.append((l, fonte, BRANCO))
+            
+    elif estilo == 1:
+        # Estilo 1: Agilera com destaque da última linha em Laranja/Amarelo
+        fonte = f_display(tam_display)
+        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
+        for i, l in enumerate(linhas):
+            cor = BRANCO if i < len(linhas)-1 else (LARANJA if seed % 2 == 0 else AMARELO)
+            elementos.append((l, fonte, cor))
+            
+    elif estilo == 2:
+        # Estilo 2: Puro Malgun Bold com capitalização preservada
+        fonte = f_bold(tam_bold)
+        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
+        for l in linhas:
+            elementos.append((l, fonte, BRANCO))
+            
+    elif estilo == 3:
+        # Estilo 3: Primeira linha em Malgun Bold (Branco), restante em Malgun Light (Teal/Amarelo)
+        fonte_b = f_bold(tam_bold)
+        fonte_l = f_light(tam_bold - 12)
+        linhas = _quebrar_texto(titulo_texto, fonte_b, MAX_PX)
+        for i, l in enumerate(linhas):
+            f = fonte_b if i == 0 else fonte_l
+            cor = BRANCO if i == 0 else (AMARELO if seed % 2 == 0 else TEAL)
+            elementos.append((l, f, cor))
+            
+    elif estilo == 4:
+        # Estilo 4: Primeira palavra em Agilera (Laranja), resto em Malgun Bold (Branco)
+        f_disp = f_display(tam_display)
+        f_bld  = f_bold(tam_bold)
+        
+        l1 = palavras[0]
+        elementos.append((l1, f_disp, LARANJA))
+        
+        resto = " ".join(palavras[1:])
+        if resto:
+            linhas_resto = _quebrar_texto(resto, f_bld, MAX_PX)
+            for l in linhas_resto:
+                elementos.append((l, f_bld, BRANCO))
+                
+    else: # estilo == 5
+        # Estilo 5: Malgun Bold em caixa alta com destaque colorido
+        fonte = f_bold(tam_bold)
+        linhas = _quebrar_texto(titulo_texto.upper(), fonte, MAX_PX)
+        for i, l in enumerate(linhas):
+            cor = BRANCO if i == 0 else AMARELO
+            elementos.append((l, fonte, cor))
 
-    titulo = tema.strip().upper()
+    # Calcula altura e desenha
+    altura_bloco = 0
+    linhas_prontas = []
+    for l, f, cor in elementos:
+        try:
+            bbox = f.getbbox(l)
+            h_linha = bbox[3] - bbox[1]
+        except Exception:
+            h_linha = 50
+        esp = int(h_linha * 1.15)
+        linhas_prontas.append((l, f, cor, esp))
+        altura_bloco += esp
+        
+    zona = Y_FIM - Y_INI
+    y = Y_INI + max(0, (zona - altura_bloco) // 2)
+    y = max(Y_INI, min(y, Y_FIM - altura_bloco - 20))
+    
+    draw = ImageDraw.Draw(img_rgba, "RGBA")
+    for l, f, cor, esp in linhas_prontas:
+        _sombra_texto(img_rgba, l, f, MARGIN, y)
+        draw.text((MARGIN, y), l, font=f, fill=(*cor, 255))
+        y += esp
+        
+    return img_rgba.convert("RGB")
 
-    # Tamanho adaptativo ao comprimento total
-    n = len(titulo)
-    if   n <= 6:  tam = 158
-    elif n <= 10: tam = 144
-    elif n <= 14: tam = 126
-    elif n <= 18: tam = 108
-    elif n <= 24: tam = 90
-    elif n <= 32: tam = 76
-    else:         tam = 62
-
-    fonte = f_display(tam)
-
-    # Quebra em linhas respeitando largura máxima
-    palavras = titulo.split()
+def _quebrar_texto(texto, fonte, max_px):
+    palavras = texto.split()
     linhas, atual = [], []
     for p in palavras:
         cand = " ".join(atual + [p])
-        if _medir(cand, fonte) <= MAX_PX:
+        if _medir(cand, fonte) <= max_px:
             atual.append(p)
         else:
             if atual:
@@ -443,23 +582,7 @@ def desenhar_titulo(img, tema):
             atual = [p]
     if atual:
         linhas.append(" ".join(atual))
-    if not linhas:
-        linhas = [titulo]
-
-    esp = int(tam * 1.06)
-    altura_bloco = len(linhas) * esp
-    zona = Y_FIM - Y_INI
-    y = Y_INI + max(0, (zona - altura_bloco) // 2)
-    y = max(Y_INI, min(y, Y_FIM - altura_bloco - 16))
-
-    draw = ImageDraw.Draw(img_rgba, "RGBA")
-    for linha in linhas:
-        _sombra_texto(img_rgba, linha, fonte, MARGIN, y)
-        draw = ImageDraw.Draw(img_rgba, "RGBA")
-        draw.text((MARGIN, y), linha, font=fonte, fill=(*BRANCO, 255))
-        y += esp
-
-    return img_rgba.convert("RGB")
+    return linhas if linhas else [texto]
 
 # ── Rodapé — AlvoreSer + CRP, sem "Clínica de Psicologia" ────────────────────
 
@@ -505,7 +628,8 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
             base = foto
 
     base = aplicar_overlay(base)
-    base = desenhar_titulo(base, tema)
+    base = desenhar_titulo(base, tema, seed) # Passando o seed para variedade tipográfica
+    base = desenhar_rodape(base) # Garantindo o rodapé da marca com AlvoreSer + CRP
     return base
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
@@ -613,15 +737,19 @@ def rota_preview_card():
         seed = data.get("seed")
         card = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
-        preview_url = upload_imagem(card, CLOUDINARY_PREVIEW, card_id)
-        if not preview_url:
-            return jsonify({"erro": "Falha no upload do preview"}), 500
+        
+        # Gera os bytes JPEG locais para evitar qualquer upload ao Cloudinary sem a aprovação do usuário!
         buf = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
+        card_bytes = buf.getvalue()
+        
+        # Converte para Base64 Data URI de forma instantânea e totalmente limpa
+        preview_url = f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode('utf-8')}"
+        
         _cards_pendentes[card_id] = {
             "tema": tema, "legenda": legenda,
             "imagem_fundo": url_img, "pid_fundo": pid,
-            "preview_url": preview_url, "card_bytes": buf.getvalue()}
+            "preview_url": preview_url, "card_bytes": card_bytes}
     except Exception as e:
         return jsonify({"erro": f"Erro ao gerar card: {e}"}), 500
 
@@ -649,10 +777,7 @@ def rota_aprovar_card():
         card_url = res.get("secure_url", "")
         if not card_url:
             return jsonify({"erro": "Falha no upload definitivo"}), 500
-        try:
-            cloudinary.uploader.destroy(f"{CLOUDINARY_PREVIEW}/{card_id}")
-        except Exception:
-            pass
+        # O preview base64 é local, portanto nenhuma exclusão de preview do Cloudinary é necessária!
         del _cards_pendentes[card_id]
     except Exception as e:
         return jsonify({"erro": f"Erro no upload: {e}"}), 500
