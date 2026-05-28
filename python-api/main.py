@@ -1,14 +1,15 @@
 """
 python-api/main.py — API Flask — Render
-Identidade Visual AlvoreSer — v7
+Identidade Visual AlvoreSer — v8
 
-Regras definitivas:
-- Título: tema completo em AGILERA, branco, maiúsculo — SEM divisão, SEM badge
+Regras tipográficas definitivas:
+- Palavra-chave / título principal → AGILERA (display serifada estilizada), cor destaque (amarelo/laranja/branco)
+- Texto secundário / complemento  → MALGUN (sans-serif legível), branco
+- Título curto (sem complemento)  → só AGILERA, grande, branco
 - Overlay: gradiente inferior leve apenas para legibilidade
 - Vinheta: suave, não destrói a foto
 - Split toning: mínimo, só para harmonizar
-- Rodapé: AlvoreSer + CRP 04/57327 — sem "Clínica de Psicologia"
-- Encoding: tudo em unicode escape para evitar caracteres quebrados
+- Preview: base64 local — NÃO sobe ao Cloudinary antes da aprovação
 """
 
 import os, io, uuid, random, json, math, base64
@@ -111,11 +112,10 @@ MAPA_PASTAS = {
 
 # ── Fontes ─────────────────────────────────────────────────────────────────────
 ROOT_DIR  = os.path.join(os.path.dirname(__file__), "..")
-# CORREÇÃO: python-api/fonts/ vem PRIMEIRO — único caminho garantido no Render (Linux).
-# src/Brand/fonts/ fica como segunda opção para ambiente local.
+# python-api/fonts/ PRIMEIRO — único caminho garantido no Render (Linux).
 _FONTS_DIRS = [
-    os.path.join(os.path.dirname(__file__), "fonts"),   # python-api/fonts/ — garantido no Render
-    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),    # src/Brand/fonts/  — só local
+    os.path.join(os.path.dirname(__file__), "fonts"),
+    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),
 ]
 
 def _resolve_font_path(nome):
@@ -123,11 +123,9 @@ def _resolve_font_path(nome):
     for base in _FONTS_DIRS:
         if not os.path.isdir(base):
             continue
-        # Tentativa exata
         p = os.path.join(base, nome)
         if os.path.isfile(p):
             return p
-        # Varredura case-insensitive (Linux/Render é case-sensitive)
         try:
             for f in os.listdir(base):
                 if f.lower() == low:
@@ -143,19 +141,17 @@ def _font(nome, tam):
             return ImageFont.truetype(p, tam)
         except Exception as e:
             print(f"[font] erro ao carregar {p}: {e}")
-    print(f"[font] FALTANDO: {nome} — espa\u00e7amento pode ficar ruim!")
+    print(f"[font] FALTANDO: {nome}")
     try:
         return ImageFont.load_default(size=tam)
     except Exception:
         return ImageFont.load_default()
 
-# Nomes em MAIUSCULO — igual ao arquivo no disco (case-sensitive no Linux/Render)
 def f_display(t): return _font("AGILERA.OTF",  t)
 def f_bold(t):    return _font("MALGUNBD.TTF", t)
 def f_corpo(t):   return _font("MALGUN.TTF",   t)
 def f_light(t):   return _font("MALGUNSL.TTF", t)
 
-# Log de diagnóstico ao iniciar — aparece nos logs do Render
 for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
     _p  = _resolve_font_path(_fn)
     _ok = _p is not None
@@ -268,13 +264,6 @@ def cores_fundo(img):
 def eh_foto_ronilson(pid):
     return PASTA_RONILSON in pid.lower()
 
-def eh_fundo_claro(img):
-    s = img.resize((80, 100), Image.Resampling.LANCZOS).convert("RGB")
-    vals = [sum(p)/3 for p in s.getdata()]
-    lum = sum(vals)/len(vals)
-    var = sum((v-lum)**2 for v in vals)/len(vals)
-    return lum > 155 and var < 3000
-
 def remover_fundo_rembg(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -283,7 +272,6 @@ def remover_fundo_rembg(img):
 # ── Pipeline fotográfico ──────────────────────────────────────────────────────
 
 def aplicar_vinheta(img, intensidade=0.25):
-    """Vinheta muito suave — só escurece levemente as bordas, preserva a foto."""
     mw, mh = max(1, W//8), max(1, H//8)
     cx, cy = mw/2, mh/2
     pixels = []
@@ -308,7 +296,6 @@ def aplicar_contraste(img):
     return img
 
 def aplicar_split_toning(img, intensidade=0.05):
-    """Split toning minimo — so harmoniza, nao colore."""
     arr = np.array(img.convert("RGB")).astype(np.float32)
     lum = arr.mean(axis=2, keepdims=True)/255.0
     arr += (np.array(MARINHO, dtype=np.float32) - arr) * ((1-lum)**2) * intensidade
@@ -335,12 +322,9 @@ def gerar_textura(cor1, cor2, seed):
     return base.filter(ImageFilter.GaussianBlur(1))
 
 def adicionar_ondas_marca(img, cor_onda, seed):
-    """Adiciona as ondas orgânicas da identidade visual AlvoreSer no topo e fundo."""
     img_rgba = img.convert("RGBA")
     draw = ImageDraw.Draw(img_rgba, "RGBA")
     rng = random.Random(seed)
-    
-    # Onda no topo (sutil, opacidade 10-18%)
     h_onda = rng.uniform(H * 0.15, H * 0.30)
     ctrl_y = rng.uniform(H * 0.05, H * 0.20)
     pontos_topo = []
@@ -353,8 +337,6 @@ def adicionar_ondas_marca(img, cor_onda, seed):
     pontos_topo.append((W, 0))
     pontos_topo.append((0, 0))
     draw.polygon(pontos_topo, fill=(*cor_onda, rng.randint(25, 45)))
-    
-    # Outra onda na base (sutil, opacidade 12-20%)
     h_onda_b = H - rng.uniform(H * 0.15, H * 0.30)
     ctrl_y_b = H - rng.uniform(H * 0.05, H * 0.20)
     pontos_base = []
@@ -366,18 +348,14 @@ def adicionar_ondas_marca(img, cor_onda, seed):
     pontos_base.append((W, H))
     pontos_base.append((0, H))
     draw.polygon(pontos_base, fill=(*cor_onda, rng.randint(28, 48)))
-    
     return img_rgba.convert("RGB")
 
 def compor_pessoa(pessoa_rgba, fundo_rgb):
     pw, ph = pessoa_rgba.size
     nw = int(pw*H/ph)
     pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
-    
-    # Alinhamento à direita seguro e inteligente
     x = W - nw + 50
     x = max(int(W * 0.38), min(x, W - 150))
-    
     alpha = pessoa_rgba.split()[3]
     sombra = Image.new("RGBA", (W, H), (0,0,0,0))
     sil = Image.new("RGBA", (nw, H), (0,0,0,0))
@@ -385,7 +363,6 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
               mask=alpha.point(lambda v: int(v*0.18)))
     sombra.paste(sil, (x-20, 18), sil)
     sombra = sombra.filter(ImageFilter.GaussianBlur(38))
-    
     res = fundo_rgb.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
@@ -401,13 +378,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         img = img.resize((nw, nh), Image.Resampling.LANCZOS)
         l = (nw-W)//2; t = (nh-H)//2
         img = img.crop((l, t, l+W, t+H))
-        
-        # Fundo com a textura da marca
         tex = gerar_textura(cor1, cor2, seed)
-        # Ondas elegantes no fundo
         cor_onda = TEAL if sum(cor1)/3 < 120 else PETROLEO
         tex = adicionar_ondas_marca(tex, cor_onda, seed)
-
         if eh_foto_ronilson(pid):
             print(f"[foto] Ronilson rembg: {pid}")
             try:
@@ -416,9 +389,7 @@ def preparar_foto(url, pid, cor1, cor2, seed):
                 print(f"[foto] rembg falhou: {e}")
                 img = Image.blend(tex, img, alpha=0.55)
         else:
-            print("[foto] editorial — mantendo fundo original de alta qualidade e inserindo ondas da marca")
             img = adicionar_ondas_marca(img, cor_onda, seed)
-
         img = aplicar_split_toning(img)
         img = aplicar_contraste(img)
         img = aplicar_vinheta(img)
@@ -427,13 +398,7 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         print(f"[foto] ERRO: {e}")
         return None
 
-# ── Overlay — gradiente inferior leve apenas para legibilidade ────────────────
-
 def aplicar_overlay(img):
-    """
-    Gradiente escuro apenas na base (30% da altura).
-    Leve — nao destrói a foto, só garante contraste para o título.
-    """
     overlay = Image.new("RGBA", (W, H), (0,0,0,0))
     draw = ImageDraw.Draw(overlay)
     altura = int(H * 0.30)
@@ -443,150 +408,54 @@ def aplicar_overlay(img):
         draw.line([(0, H-altura+y), (W, H-altura+y)], fill=(*MARINHO, alpha))
     return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-# ── Tipografia — título completo, sem divisão, sem badge ─────────────────────
+# ── Tipografia ────────────────────────────────────────────────────────────────
+#
+# REGRA DEFINITIVA:
+#   - Palavra(s)-chave / título principal → AGILERA (display serifada), cor destaque
+#   - Texto complementar / explicativo    → MALGUN (sans-serif), branco
+#   - Título sem complemento (tema curto) → só AGILERA, grande, branco
+#
+# O tema é dividido no primeiro separador encontrado: "e", "são", "é", "como", ":"
+# Ex: "TDAH e Ansiedade são primos de primeiro grau"
+#     → chave:       "TDAH"                              → AGILERA amarelo
+#     → complemento: "e Ansiedade são primos de primeiro grau" → MALGUN branco
 
-def _sombra_texto(img_rgba, texto, fonte, x, y, opacidade_suave=0.35, opacidade_nitida=0.55):
-    # Sombra suave e profunda
-    layer_suave = Image.new("RGBA", (W, H), (0,0,0,0))
-    ImageDraw.Draw(layer_suave).text((x+5, y+7), texto, font=fonte, fill=(2, 20, 30, int(255 * opacidade_suave)))
-    layer_suave = layer_suave.filter(ImageFilter.GaussianBlur(14))
-    img_rgba.paste(layer_suave, (0,0), layer_suave)
+SEPARADORES = [" e ", " são ", " é ", " como ", ": ", " — ", " - "]
 
-    # Sombra nítida para contraste
-    layer_nitida = Image.new("RGBA", (W, H), (0,0,0,0))
-    ImageDraw.Draw(layer_nitida).text((x+2, y+3), texto, font=fonte, fill=(2, 20, 30, int(255 * opacidade_nitida)))
-    layer_nitida = layer_nitida.filter(ImageFilter.GaussianBlur(3))
-    img_rgba.paste(layer_nitida, (0,0), layer_nitida)
-
-def _desenhar_texto_com_spacing(draw, x, y, texto, fonte, cor, letter_spacing=0):
+def _split_tema(tema):
     """
-    CORREÇÃO DE KERNING: desenha o texto letra por letra aplicando spacing uniforme.
-    Resolve o espaçamento estranho da AGILERA no Render.
-    Se letter_spacing=0, usa o render nativo da fonte (mais rápido).
+    Divide o tema em (chave, complemento).
+    chave      → vai para AGILERA
+    complemento → vai para MALGUN (pode ser vazio)
     """
-    if letter_spacing == 0:
-        draw.text((x, y), texto, font=fonte, fill=cor)
-        return
-    cursor = x
-    for char in texto:
-        draw.text((cursor, y), char, font=fonte, fill=cor)
+    t = tema.strip()
+    for sep in SEPARADORES:
+        idx = t.lower().find(sep.lower())
+        if idx > 0:
+            chave = t[:idx].strip()
+            comp  = t[idx:].strip()   # mantém o separador no início do complemento
+            return chave, comp
+    # Sem separador — título curto, tudo em AGILERA
+    return t, ""
+
+def _medir_spacing(texto, fonte, spacing):
+    """Mede a largura do texto considerando o letter_spacing manual."""
+    total = 0
+    for ch in texto:
         try:
-            bb = fonte.getbbox(char)
-            cursor += (bb[2] - bb[0]) + letter_spacing
+            bb = fonte.getbbox(ch)
+            total += (bb[2] - bb[0]) + spacing
         except Exception:
-            cursor += 30 + letter_spacing
+            total += 30 + spacing
+    return max(0, total - spacing)  # remove o spacing extra do último char
 
-def desenhar_titulo(img, tema, seed):
-    """
-    Desenha o título com alta variabilidade e grade editorial premium baseada em seed.
-    AGILERA usa letter_spacing negativo leve para corrigir o kerning no Render.
-    """
-    img_rgba = img.convert("RGBA")
-    
-    MARGIN = 80
-    MAX_PX = int(W * 0.58)
-    Y_INI  = int(H * 0.38)
-    Y_FIM  = int(H * 0.76)
-    
-    estilo = seed % 6
-    
-    if estilo % 2 == 0:
-        titulo_texto = tema.strip()
-    else:
-        titulo_texto = tema.strip().upper()
-        
-    palavras = titulo_texto.split()
-    if not palavras:
-        palavras = [titulo_texto]
-        
-    elementos = []
-    
-    n = len(titulo_texto)
-    tam_display = 126 if n <= 10 else 108 if n <= 18 else 88 if n <= 28 else 72
-    tam_bold    = 108 if n <= 10 else 90  if n <= 18 else 76 if n <= 28 else 60
-    
-    # CORREÇÃO: spacing negativo leve na AGILERA compensa o kerning excessivo no Render
-    # Malgun não precisa de ajuste (fonte sem serifa bem balanceada)
-    AGILERA_SPACING = -2   # px entre letras — ajuste fino sem quebrar o visual
-
-    if estilo == 0:
-        fonte = f_display(tam_display)
-        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
-        for l in linhas:
-            elementos.append((l, fonte, BRANCO, AGILERA_SPACING))
-            
-    elif estilo == 1:
-        fonte = f_display(tam_display)
-        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
-        for i, l in enumerate(linhas):
-            cor = BRANCO if i < len(linhas)-1 else (LARANJA if seed % 2 == 0 else AMARELO)
-            elementos.append((l, fonte, cor, AGILERA_SPACING))
-            
-    elif estilo == 2:
-        f_disp = f_display(tam_display)
-        f_bld  = f_bold(tam_bold)
-        l1 = palavras[0]
-        elementos.append((l1, f_bld, AMARELO, 0))
-        resto = " ".join(palavras[1:])
-        if resto:
-            linhas_resto = _quebrar_texto(resto, f_disp, MAX_PX)
-            for l in linhas_resto:
-                elementos.append((l, f_disp, BRANCO, AGILERA_SPACING))
-            
-    elif estilo == 3:
-        fonte_a = f_display(tam_display)
-        fonte_l = f_light(tam_bold - 12)
-        linhas = _quebrar_texto(titulo_texto, fonte_a, MAX_PX)
-        for i, l in enumerate(linhas):
-            f = fonte_a if i == 0 else fonte_l
-            cor = BRANCO if i == 0 else (AMARELO if seed % 2 == 0 else TEAL)
-            sp = AGILERA_SPACING if i == 0 else 0
-            elementos.append((l, f, cor, sp))
-            
-    elif estilo == 4:
-        fonte = f_display(tam_display)
-        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
-        for i, l in enumerate(linhas):
-            cor = BRANCO if i == 0 else (LARANJA if seed % 2 == 0 else AMARELO)
-            elementos.append((l, fonte, cor, AGILERA_SPACING))
-                
-    else:  # estilo == 5
-        fonte = f_bold(tam_bold)
-        linhas = _quebrar_texto(titulo_texto, fonte, MAX_PX)
-        for l in linhas:
-            elementos.append((l, fonte, BRANCO, 0))
-
-    # Calcula altura e desenha
-    altura_bloco = 0
-    linhas_prontas = []
-    for l, f, cor, sp in elementos:
-        try:
-            bbox = f.getbbox(l)
-            h_linha = bbox[3] - bbox[1]
-        except Exception:
-            h_linha = 50
-        esp = int(h_linha * 1.15)
-        linhas_prontas.append((l, f, cor, esp, sp))
-        altura_bloco += esp
-        
-    zona = Y_FIM - Y_INI
-    y = Y_INI + max(0, (zona - altura_bloco) // 2)
-    y = max(Y_INI, min(y, Y_FIM - altura_bloco - 20))
-    
-    draw = ImageDraw.Draw(img_rgba, "RGBA")
-    for l, f, cor, esp, sp in linhas_prontas:
-        _sombra_texto(img_rgba, l, f, MARGIN, y)
-        _desenhar_texto_com_spacing(draw, MARGIN, y, l, f, (*cor, 255), letter_spacing=sp)
-        y += esp
-        
-    return img_rgba.convert("RGB")
-
-def _quebrar_texto(texto, fonte, max_px):
+def _quebrar_texto(texto, fonte, max_px, spacing=0):
     palavras = texto.split()
     linhas, atual = [], []
     for p in palavras:
         cand = " ".join(atual + [p])
-        if _medir(cand, fonte) <= max_px:
+        w = _medir_spacing(cand, fonte, spacing) if spacing else _medir(cand, fonte)
+        if w <= max_px:
             atual.append(p)
         else:
             if atual:
@@ -596,7 +465,113 @@ def _quebrar_texto(texto, fonte, max_px):
         linhas.append(" ".join(atual))
     return linhas if linhas else [texto]
 
-# ── Rodapé — AlvoreSer + CRP, sem "Clínica de Psicologia" ────────────────────
+def _sombra_texto(img_rgba, texto, fonte, x, y, spacing=0):
+    for offset, blur, opac in [(( 5,  7), 14, 0.35), ((2, 3), 3, 0.55)]:
+        layer = Image.new("RGBA", (W, H), (0,0,0,0))
+        d = ImageDraw.Draw(layer)
+        _desenhar_linha(d, x + offset[0], y + offset[1], texto, fonte,
+                        (2, 20, 30, int(255 * opac)), spacing)
+        layer = layer.filter(ImageFilter.GaussianBlur(blur))
+        img_rgba.paste(layer, (0,0), layer)
+
+def _desenhar_linha(draw, x, y, texto, fonte, cor, spacing=0):
+    """Desenha uma linha respeitando o letter_spacing."""
+    if spacing == 0:
+        draw.text((x, y), texto, font=fonte, fill=cor)
+        return
+    cursor = x
+    for ch in texto:
+        draw.text((cursor, y), ch, font=fonte, fill=cor)
+        try:
+            bb = fonte.getbbox(ch)
+            cursor += (bb[2] - bb[0]) + spacing
+        except Exception:
+            cursor += 30 + spacing
+
+def _altura_linha(fonte, texto="A"):
+    try:
+        bb = fonte.getbbox(texto)
+        return bb[3] - bb[1]
+    except Exception:
+        return 50
+
+def desenhar_titulo(img, tema, seed):
+    """
+    Tipografia editorial com regra clara:
+      AGILERA  → palavra(s)-chave / título principal (destaque, cor)
+      MALGUN   → texto complementar / explicativo (legível, branco)
+    """
+    img_rgba = img.convert("RGBA")
+    draw     = ImageDraw.Draw(img_rgba, "RGBA")
+
+    MARGIN  = 80
+    MAX_PX  = int(W * 0.60)
+    Y_INI   = int(H * 0.55)   # posição vertical — terço inferior do card
+    Y_FIM   = int(H * 0.88)
+
+    chave, complemento = _split_tema(tema)
+
+    # ── Tamanhos proporcionais ao comprimento do título completo ──
+    n_total = len(tema)
+    # AGILERA: fonte grande e impactante
+    tam_ag = 130 if n_total <= 8  else \
+             112 if n_total <= 14 else \
+              96 if n_total <= 22 else \
+              80 if n_total <= 32 else 68
+
+    # MALGUN: menor que AGILERA, mas legível
+    tam_ml = int(tam_ag * 0.62)
+
+    fa = f_display(tam_ag)   # AGILERA
+    fm = f_corpo(tam_ml)     # MALGUN regular
+
+    # Cor de destaque alterna entre amarelo e laranja baseado na seed
+    cor_destaque = AMARELO if seed % 2 == 0 else LARANJA
+
+    # AGILERA_SPACING: compensa o kerning excessivo que a AGILERA apresenta no Render
+    # Valor negativo aproxima as letras; ajuste fino por tamanho
+    ag_sp = -3 if tam_ag >= 100 else -2
+
+    # ── Monta blocos de linhas ──
+    # Bloco 1: chave em AGILERA (maiúsculo para impacto)
+    chave_upper = chave.upper()
+    linhas_chave = _quebrar_texto(chave_upper, fa, MAX_PX, ag_sp)
+
+    # Bloco 2: complemento em MALGUN (caixa original preservada)
+    linhas_comp = _quebrar_texto(complemento, fm, MAX_PX) if complemento else []
+
+    # ── Calcula altura total do bloco ──
+    esp_ag = int(_altura_linha(fa) * 1.10)
+    esp_ml = int(_altura_linha(fm) * 1.18)
+    gap_entre = int(esp_ag * 0.25)   # espaço entre o bloco AGILERA e o MALGUN
+
+    altura_bloco = (esp_ag * len(linhas_chave)) + \
+                   (gap_entre if linhas_comp else 0) + \
+                   (esp_ml * len(linhas_comp))
+
+    # Centraliza verticalmente na zona definida
+    zona = Y_FIM - Y_INI
+    y = Y_INI + max(0, (zona - altura_bloco) // 2)
+    y = max(Y_INI, min(y, Y_FIM - altura_bloco - 20))
+
+    # ── Desenha AGILERA (chave) ──
+    for i, linha in enumerate(linhas_chave):
+        cor = cor_destaque if i == 0 else BRANCO   # 1ª linha em destaque, demais branco
+        _sombra_texto(img_rgba, linha, fa, MARGIN, y, ag_sp)
+        _desenhar_linha(draw, MARGIN, y, linha, fa, (*cor, 255), ag_sp)
+        y += esp_ag
+
+    # ── Desenha MALGUN (complemento) ──
+    if linhas_comp:
+        y += gap_entre
+        for linha in linhas_comp:
+            _sombra_texto(img_rgba, linha, fm, MARGIN, y)
+            _desenhar_linha(draw, MARGIN, y, linha, fm, (*BRANCO, 230))
+            y += esp_ml
+
+    return img_rgba.convert("RGB")
+
+# ── Rodapé ────────────────────────────────────────────────────────────────────
 
 def desenhar_rodape(img):
     draw   = ImageDraw.Draw(img, "RGBA")
@@ -631,14 +606,20 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
             pass
 
     base = Image.new("RGB", (W, H), MARINHO)
+
+    # Sempre gera a textura — mesmo sem foto, o fundo fica com gradiente da marca
+    tex = gerar_textura(cor1, cor2, seed)
+    cor_onda = TEAL if sum(cor1)/3 < 120 else PETROLEO
+    tex = adicionar_ondas_marca(tex, cor_onda, seed)
+
     if imagem_url:
         foto = preparar_foto(imagem_url, pid, cor1, cor2, seed)
-        if foto:
-            base = foto
+        base = foto if foto else tex
+    else:
+        base = tex   # sem foto: fundo texturizado da marca, não azul sólido
 
     base = aplicar_overlay(base)
     base = desenhar_titulo(base, tema, seed)
-    # Rodapé removido permanentemente a pedido do usuário
     return base
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
@@ -701,14 +682,14 @@ def rota_config_firebase():
     if not cfg["apiKey"]:
         return jsonify({
             "erro": "Firebase nao configurado no Render.",
-            "dica": "Environment: adicione FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, ... (valores do .env local)",
+            "dica": "Environment: adicione FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, ...",
         }), 503
     return jsonify(cfg)
 
 @app.route("/health", methods=["GET"])
 def health():
-    fontes = {fn: _resolve_font_path(fn) is not None
-              for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
+    fontes   = {fn: _resolve_font_path(fn) is not None
+                for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
@@ -745,20 +726,22 @@ def rota_preview_card():
 
     url_img, pid = buscar_imagem(tema)
     try:
-        seed = data.get("seed")
-        card = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
+        seed  = data.get("seed")
+        card  = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
-        
+
         buf = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
         card_bytes = buf.getvalue()
-        
-        preview_url = f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode('utf-8')}"
-        
+
+        # Preview: base64 local — NÃO sobe ao Cloudinary antes da aprovação
+        preview_b64 = base64.b64encode(card_bytes).decode("utf-8")
+        preview_url = f"data:image/jpeg;base64,{preview_b64}"
+
         _cards_pendentes[card_id] = {
             "tema": tema, "legenda": legenda,
             "imagem_fundo": url_img, "pid_fundo": pid,
-            "preview_url": preview_url, "card_bytes": card_bytes}
+            "card_bytes": card_bytes}
     except Exception as e:
         return jsonify({"erro": f"Erro ao gerar card: {e}"}), 500
 
@@ -820,7 +803,7 @@ def index():
         return app.send_static_file("index.html")
     return jsonify({
         "erro": "Frontend nao compilado.",
-        "dica": "No Render, use Build Command: npm ci && npm run build && pip install -r python-api/requirements.txt",
+        "dica": "Build Command: npm ci && npm run build && pip install -r python-api/requirements.txt",
         "health": "/health",
     }), 503
 

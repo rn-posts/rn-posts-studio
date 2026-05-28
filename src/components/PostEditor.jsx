@@ -6,6 +6,28 @@ const RENDER_URL = import.meta.env.DEV
   ? (import.meta.env.VITE_RENDER_URL || "http://localhost:5000")
   : "";
 
+// Abre o preview em tamanho real convertendo base64 → Blob URL (evita bloqueio do browser)
+function abrirTamanhoReal(previewUrl) {
+  try {
+    if (previewUrl.startsWith("data:")) {
+      const [header, data] = previewUrl.split(",");
+      const mime = header.match(/:(.*?);/)[1];
+      const bin  = atob(data);
+      const arr  = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const blob    = new Blob([arr], { type: mime });
+      const blobUrl = URL.createObjectURL(blob);
+      const janela  = window.open(blobUrl, "_blank");
+      // Revoga o Blob URL após a janela carregar para liberar memória
+      if (janela) janela.addEventListener("load", () => URL.revokeObjectURL(blobUrl));
+    } else {
+      window.open(previewUrl, "_blank");
+    }
+  } catch (e) {
+    console.error("Erro ao abrir preview:", e);
+  }
+}
+
 export default function PostEditor({ post, onClose, onNotify }) {
   const isEdit = Boolean(post);
 
@@ -128,10 +150,10 @@ export default function PostEditor({ post, onClose, onNotify }) {
           <input
             value={tema}
             onChange={e => setTema(e.target.value)}
-            placeholder="Ex: Ansiedade, Autismo, Limites no relacionamento..."
+            placeholder="Ex: TDAH e Ansiedade são primos de primeiro grau"
           />
           <p className="field__hint">
-            Este campo define o conteúdo da legenda e a escolha da imagem.
+            A primeira parte do tema (antes de "e", "são", "é"...) aparece em destaque no card.
           </p>
         </div>
 
@@ -162,38 +184,36 @@ export default function PostEditor({ post, onClose, onNotify }) {
             <label>
               Card Gerado — 1080×1350
               <span style={{ fontSize: "0.72rem", color: "var(--aviso)", marginLeft: "0.5rem", fontWeight: 600 }}>
-                ⏳ Aguardando aprovação
+                ⏳ Aguardando aprovação — não enviado ao Cloudinary ainda
               </span>
             </label>
 
-            {/* CORREÇÃO: preview maior (420px) para visualização adequada */}
-            <div style={{
-              width: "100%",
-              maxWidth: 420,
-              borderRadius: 12,
-              overflow: "hidden",
-              marginBottom: "0.75rem",
-              boxShadow: "var(--sombra-media)",
-              border: "2px solid var(--creme-escuro)",
-              cursor: "pointer",
-            }}
-              onClick={() => window.open(previewUrl, "_blank")}
-              title="Clique para ver em tamanho real"
+            {/* Preview maior, clicável para abrir em tamanho real */}
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                borderRadius: 12,
+                overflow: "hidden",
+                marginBottom: "0.75rem",
+                boxShadow: "var(--sombra-media)",
+                border: "2px solid var(--creme-escuro)",
+                cursor: "zoom-in",
+              }}
+              onClick={() => abrirTamanhoReal(previewUrl)}
+              title="Clique para ver em tamanho real (1080×1350)"
             >
               <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-              {/* CORREÇÃO: botão "ver tamanho real" mais destacado */}
-              <a
-                href={previewUrl}
-                target="_blank"
-                rel="noreferrer"
+              <button
                 className="btn btn--primary"
-                style={{ fontSize: "0.82rem", background: "var(--verde-medio)" }}
+                style={{ fontSize: "0.82rem" }}
+                onClick={() => abrirTamanhoReal(previewUrl)}
               >
                 🔍 Ver tamanho real (1080×1350)
-              </a>
+              </button>
               <button className="btn btn--outline" style={{ fontSize: "0.8rem" }} onClick={handleGerarCard} disabled={loadingCard}>
                 🔄 Gerar outro
               </button>
