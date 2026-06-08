@@ -150,10 +150,10 @@ export default function PostEditor({ post, onClose, onNotify }) {
           <input
             value={tema}
             onChange={e => setTema(e.target.value)}
-            placeholder="Ex: TDAH e Ansiedade são primos de primeiro grau"
+            placeholder="Ex: Ansiedade Generalizada"
           />
           <p className="field__hint">
-            A primeira parte do tema (antes de "e", "são", "é"...) aparece em destaque no card.
+            O texto aparece exatamente como você digitar (maiúsculas, minúsculas ou misto).
           </p>
         </div>
 
@@ -188,22 +188,56 @@ export default function PostEditor({ post, onClose, onNotify }) {
               </span>
             </label>
 
-            {/* Preview maior, clicável para abrir em tamanho real */}
-            <div
-              style={{
-                width: "100%",
-                maxWidth: 420,
-                borderRadius: 12,
-                overflow: "hidden",
-                marginBottom: "0.75rem",
-                boxShadow: "var(--sombra-media)",
-                border: "2px solid var(--creme-escuro)",
-                cursor: "zoom-in",
-              }}
-              onClick={() => abrirTamanhoReal(previewUrl)}
-              title="Clique para ver em tamanho real (1080×1350)"
-            >
-              <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
+            {/* Layout flex: preview à esquerda, legenda de formatação à direita */}
+            <div style={{ display: "flex", gap: "1.25rem", alignItems: "flex-start", flexWrap: "wrap" }}>
+
+              {/* Preview do card */}
+              <div
+                style={{
+                  flex: "1 1 320px",
+                  maxWidth: 420,
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  marginBottom: "0.75rem",
+                  boxShadow: "var(--sombra-media)",
+                  border: "2px solid var(--creme-escuro)",
+                  cursor: "zoom-in",
+                }}
+                onClick={() => abrirTamanhoReal(previewUrl)}
+                title="Clique para ver em tamanho real (1080×1350)"
+              >
+                <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
+              </div>
+
+              {/* Legenda de simbologia de formatação */}
+              <div style={{
+                flex: "0 0 200px",
+                background: "var(--creme, #faf6f0)",
+                borderRadius: 10,
+                padding: "1rem 1.1rem",
+                border: "1px solid var(--creme-escuro, #e8ddd0)",
+                fontSize: "0.78rem",
+                lineHeight: 1.7,
+                color: "var(--texto, #333)",
+              }}>
+                <div style={{ fontWeight: 700, marginBottom: "0.5rem", fontSize: "0.82rem", color: "var(--marinho, #024059)" }}>
+                  Formatação do texto
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>:</span>
+                    <span style={{ marginLeft: "0.4rem" }}>malgun</span>
+                  </div>
+                  <div>
+                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>*</span>
+                    <span style={{ marginLeft: "0.4rem" }}>agilera estilizada</span>
+                  </div>
+                  <div>
+                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>-</span>
+                    <span style={{ marginLeft: "0.4rem" }}>efeito fundo</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>

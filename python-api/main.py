@@ -1,15 +1,39 @@
 """
-python-api/main.py — API Flask — Render
-Identidade Visual AlvoreSer — v9
+python-api/main.py  —  AlvoreSer Instagram Posts  —  v11
 
-Regras tipográficas definitivas:
-- Palavra-chave / título principal → AGILERA (display serifada estilizada), cor destaque
-- Texto secundário / complemento  → MALGUN (sans-serif legível), branco
-- Título curto (sem complemento)  → só AGILERA, grande, branco
-- Ondas: decorativas e sutis, máx 8% da altura, opacidade baixa
-- Fundo sem foto: gradiente rico com ruído e profundidade
-- Texto: centralizado verticalmente no card, tamanho impactante
-- Preview: base64 local — NÃO sobe ao Cloudinary antes da aprovação
+PIPELINE DEFINITIVO
+===================
+Imagem
+  1. Busca Cloudinary pela pasta temática (prioridade) ou geral
+  2. Ronilson  → rembg remove fundo → compõe sobre fundo da marca
+  3. Editorial → color grade cinematográfico + vinheta + split toning
+  4. Fallback  → fundo rico gradiente quando Cloudinary não retorna nada
+
+Overlay
+  - Adaptativo: mede a luminosidade da foto e ajusta a intensidade
+  - Foto clara  → overlay mais pesado para garantir legibilidade
+  - Foto escura → overlay mais leve
+
+Tipografia
+  AGILERA → chave / palavra-chave (maiúsculo, cor destaque)
+  MALGUN  → complemento / texto explicativo (branco, caixa preservada)
+  Separadores que dividem: "e", "são", "é", "como", ":", "—", "-"
+
+Layout (varia por seed — 5 estratégias distintas)
+  0 → texto no terço inferior esquerdo  (padrão editorial)
+  1 → texto centralizado verticalmente  (poster)
+  2 → título enorme no centro-baixo     (impacto)
+  3 → texto no terço superior esquerdo  (invertido)
+  4 → título à direita                  (assimétrico)
+
+Elementos decorativos (varia por seed — não repetitivos)
+  0 → duas linhas sinusoidais finas (topo e base)
+  1 → apenas uma linha na base
+  2 → linha lateral esquerda
+  3 → sem linhas (só a foto e o texto)
+  4 → duas linhas + bloco de cor atrás do texto
+
+Preview: base64 local — NÃO sobe ao Cloudinary antes da aprovação
 """
 
 import os, io, uuid, random, json, math, base64
@@ -22,6 +46,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageCho
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+# ── rembg (lazy load) ─────────────────────────────────────────────────────────
 _rembg_remove = None
 def get_rembg():
     global _rembg_remove
@@ -30,6 +55,7 @@ def get_rembg():
         _rembg_remove = _r
     return _rembg_remove
 
+# ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder="../dist", static_url_path="/")
 
 ALLOWED_ORIGINS = [
@@ -44,9 +70,8 @@ CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 @app.after_request
 def add_cors(response):
     origin = request.headers.get("Origin")
-    if origin:
-        if origin in ALLOWED_ORIGINS or "localhost" in origin or "onrender.com" in origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
+    if origin and (origin in ALLOWED_ORIGINS or "localhost" in origin or "onrender.com" in origin):
+        response.headers["Access-Control-Allow-Origin"]  = origin
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
@@ -55,12 +80,13 @@ def _dist_index_path():
     folder = app.static_folder
     if not folder:
         return None
-    path = os.path.join(os.path.abspath(folder), "index.html")
-    return path if os.path.isfile(path) else None
+    p = os.path.join(os.path.abspath(folder), "index.html")
+    return p if os.path.isfile(p) else None
 
+# ── Cloudinary config ─────────────────────────────────────────────────────────
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_key   =os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET"),
 )
 
@@ -74,21 +100,22 @@ GROQ_URL             = "https://api.groq.com/openai/v1/chat/completions"
 W, H = 1080, 1350
 CLOUDINARY_POSTS   = "AlvoreSer_Posts"
 CLOUDINARY_PREVIEW = "AlvoreSer_Preview"
+# IMPORTANTE: path exato como está no Cloudinary — case-sensitive
 PASTA_RONILSON     = "banco de imagens/ronilson"
 
-# Paleta AlvoreSer
-MARINHO      = (2,   64,  89)
-PETROLEO     = (27,  121, 125)
-TEAL         = (4,   157, 191)
-VERDE_NEUTRO = (119, 153, 147)
-BRANCO       = (244, 246, 248)
-LARANJA      = (249, 171, 11)
-VERDE_VIVO   = (122, 181, 0)
-VERDE_CITRICO= (146, 204, 29)
-AMARELO      = (255, 221, 0)
-PRETO        = (20,  20,  20)
-PALETA_9     = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO, BRANCO,
-                LARANJA, VERDE_VIVO, VERDE_CITRICO, AMARELO]
+# ── Paleta AlvoreSer ──────────────────────────────────────────────────────────
+MARINHO       = (2,   64,  89)
+PETROLEO      = (27,  121, 125)
+TEAL          = (4,   157, 191)
+VERDE_NEUTRO  = (119, 153, 147)
+BRANCO        = (244, 246, 248)
+LARANJA       = (249, 171, 11)
+VERDE_VIVO    = (122, 181, 0)
+VERDE_CITRICO = (146, 204, 29)
+AMARELO       = (255, 221, 0)
+PRETO         = (20,  20,  20)
+PALETA_9      = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO, BRANCO,
+                 LARANJA, VERDE_VIVO, VERDE_CITRICO, AMARELO]
 
 _cards_pendentes = {}
 
@@ -110,11 +137,11 @@ MAPA_PASTAS = {
     "transformacao":  "Banco de Imagens/Recome\u00e7o e Transforma\u00e7\u00e3o",
 }
 
-# ── Fontes ─────────────────────────────────────────────────────────────────────
-ROOT_DIR  = os.path.join(os.path.dirname(__file__), "..")
+# ── Fontes ────────────────────────────────────────────────────────────────────
+ROOT_DIR   = os.path.join(os.path.dirname(__file__), "..")
 _FONTS_DIRS = [
-    os.path.join(os.path.dirname(__file__), "fonts"),
-    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),
+    os.path.join(os.path.dirname(__file__), "fonts"),   # python-api/fonts/ — garantido no Render
+    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),    # src/Brand/fonts/  — local
 ]
 
 def _resolve_font_path(nome):
@@ -139,7 +166,7 @@ def _font(nome, tam):
         try:
             return ImageFont.truetype(p, tam)
         except Exception as e:
-            print(f"[font] erro ao carregar {p}: {e}")
+            print(f"[font] erro {p}: {e}")
     print(f"[font] FALTANDO: {nome}")
     try:
         return ImageFont.load_default(size=tam)
@@ -153,18 +180,15 @@ def f_light(t):   return _font("MALGUNSL.TTF", t)
 
 for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
     _p  = _resolve_font_path(_fn)
-    _ok = _p is not None
-    print(f"[font] {'OK  ' if _ok else 'MISS'} {_fn}" + (f" => {_p}" if _ok else " <= FALTANDO!"))
+    print(f"[font] {'OK  ' if _p else 'MISS'} {_fn}" + (f" => {_p}" if _p else " <= FALTANDO!"))
 
-# ── IA ─────────────────────────────────────────────────────────────────────────
-
+# ── IA ────────────────────────────────────────────────────────────────────────
 ASSINATURA = (
     "\n\n\U0001f468\u200d\U0001f4bc Ronilson Nogueira\n"
     "\u270d\ufe0f Psic\u00f3logo e Professor\n"
     "\U0001f9e9 Refer\u00eancia em Autismo e TDAH\n"
     "CRP 04/57327"
 )
-
 PROMPT_LEGENDA = (
     "Crie uma legenda para um post do Instagram sobre: '{tema}'. "
     "Para o psic\u00f3logo Ronilson Nogueira, especialista em Autismo e TDAH, "
@@ -210,25 +234,25 @@ def gerar_legenda_ia(tema):
             erros.append(str(e))
     raise Exception("IAs falharam: " + " | ".join(erros))
 
-# ── Cloudinary ─────────────────────────────────────────────────────────────────
-
+# ── Cloudinary ────────────────────────────────────────────────────────────────
 def buscar_imagem(tema=""):
-    t = tema.lower()
+    t     = tema.lower()
     todas = list(set(MAPA_PASTAS.values()))
     pasta = next((MAPA_PASTAS[k] for k in MAPA_PASTAS if k in t), None)
     if pasta:
         todas = [pasta] + [p for p in todas if p != pasta]
     for p in todas:
         try:
-            res = cloudinary.api.resources(type="upload", prefix=p+"/", max_results=50)
+            res = cloudinary.api.resources(type="upload", prefix=p + "/", max_results=50)
             rec = [r for r in res.get("resources", [])
                    if CLOUDINARY_POSTS not in r.get("public_id", "")
                    and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
             if rec:
                 c = random.choice(rec)
+                print(f"[busca] {c.get('public_id')}")
                 return c.get("secure_url"), c.get("public_id", "")
         except Exception as e:
-            print(f"[busca] {p}: {e}")
+            print(f"[busca] pasta '{p}': {e}")
     try:
         res = cloudinary.api.resources(type="upload", max_results=50)
         rec = [r for r in res.get("resources", [])
@@ -236,13 +260,14 @@ def buscar_imagem(tema=""):
                and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
         if rec:
             c = random.choice(rec)
+            print(f"[busca] fallback: {c.get('public_id')}")
             return c.get("secure_url"), c.get("public_id", "")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[busca] fallback erro: {e}")
+    print("[busca] sem imagem")
     return None, ""
 
-# ── Utilitários visuais ────────────────────────────────────────────────────────
-
+# ── Utilitários ───────────────────────────────────────────────────────────────
 def _medir(texto, fonte):
     try:
         bb = fonte.getbbox(texto)
@@ -250,199 +275,302 @@ def _medir(texto, fonte):
     except Exception:
         return len(texto) * 30
 
+def _medir_sp(texto, fonte, sp):
+    total = 0
+    for ch in texto:
+        try:
+            bb = fonte.getbbox(ch)
+            total += (bb[2] - bb[0]) + sp
+        except Exception:
+            total += 30 + sp
+    return max(0, total - sp)
+
+def _altura_linha(fonte, texto="Ag"):
+    try:
+        bb = fonte.getbbox(texto)
+        return bb[3] - bb[1]
+    except Exception:
+        return 50
+
+def _quebrar(texto, fonte, max_px, sp=0):
+    palavras = texto.split()
+    linhas, atual = [], []
+    for p in palavras:
+        cand = " ".join(atual + [p])
+        w = _medir_sp(cand, fonte, sp) if sp else _medir(cand, fonte)
+        if w <= max_px:
+            atual.append(p)
+        else:
+            if atual:
+                linhas.append(" ".join(atual))
+            atual = [p]
+    if atual:
+        linhas.append(" ".join(atual))
+    return linhas or [texto]
+
 def distancia_cor(c1, c2):
-    return sum((a-b)**2 for a, b in zip(c1, c2)) ** 0.5
+    return sum((a - b)**2 for a, b in zip(c1, c2)) ** 0.5
 
 def cores_fundo(img):
-    p = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
-    cf = tuple(sum(x[i] for x in p)//len(p) for i in range(3))
+    p   = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
+    cf  = tuple(sum(x[i] for x in p) // len(p) for i in range(3))
     ord_ = sorted([c for c in PALETA_9 if c != LARANJA],
                   key=lambda c: distancia_cor(cf, c), reverse=True)
-    return (MARINHO, PETROLEO) if sum(cf)/3 < 60 else (ord_[0], ord_[1])
+    return (MARINHO, PETROLEO) if sum(cf) / 3 < 60 else (ord_[0], ord_[1])
+
+def luminosidade_media(img):
+    """Retorna a luminosidade média da imagem (0–255)."""
+    arr = np.array(img.convert("RGB").resize((80, 100))).astype(np.float32)
+    return float(arr.mean())
 
 def eh_foto_ronilson(pid):
-    return PASTA_RONILSON in pid.lower()
+    """
+    Detecta fotos do Ronilson comparando o public_id de forma case-insensitive.
+    O path no Cloudinary pode ser 'banco de imagens/ronilson/...'
+    """
+    pid_low = pid.lower().replace("\\", "/")
+    return "ronilson" in pid_low
 
 def remover_fundo_rembg(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
+    resultado = get_rembg()(buf.getvalue())
+    return Image.open(io.BytesIO(resultado)).convert("RGBA")
 
-# ── Fundo rico sem foto ────────────────────────────────────────────────────────
-
+# ── Fundo rico (fallback) ─────────────────────────────────────────────────────
 def gerar_fundo_rico(cor1, cor2, seed):
-    """
-    Fundo gradiente com profundidade real:
-    - Gradiente diagonal suave entre cor1 e cor2
-    - Ruído sutil para textura orgânica
-    - Mancha de luz central para dar profundidade
-    - SEM ondas — ondas só como elemento decorativo fino separado
-    """
     rng = random.Random(seed)
     arr = np.zeros((H, W, 3), dtype=np.float32)
-
-    # Gradiente diagonal
     for y in range(H):
+        t = y / H
         for ch in range(3):
-            t = y / H
             arr[y, :, ch] = cor1[ch] * (1 - t) + cor2[ch] * t
-
-    # Mancha de luz suave no centro-topo para profundidade
-    cx = W * rng.uniform(0.35, 0.65)
-    cy = H * rng.uniform(0.15, 0.40)
+    cx = W * rng.uniform(0.30, 0.70)
+    cy = H * rng.uniform(0.10, 0.35)
     ys, xs = np.ogrid[:H, :W]
     dist2 = ((xs - cx) / (W * 0.55))**2 + ((ys - cy) / (H * 0.45))**2
-    luz = np.exp(-dist2 * 1.2) * rng.uniform(18, 32)
-    arr[:, :, 0] = np.clip(arr[:, :, 0] + luz, 0, 255)
+    luz = np.exp(-dist2 * 1.2) * rng.uniform(20, 35)
+    arr[:, :, 0] = np.clip(arr[:, :, 0] + luz,       0, 255)
     arr[:, :, 1] = np.clip(arr[:, :, 1] + luz * 0.8, 0, 255)
     arr[:, :, 2] = np.clip(arr[:, :, 2] + luz * 0.6, 0, 255)
-
-    # Ruído orgânico sutil (grain de filme)
     ruido = np.random.RandomState(seed).normal(0, 4, (H, W, 3))
-    arr = np.clip(arr + ruido, 0, 255).astype(np.uint8)
+    arr   = np.clip(arr + ruido, 0, 255).astype(np.uint8)
+    return Image.fromarray(arr).filter(ImageFilter.GaussianBlur(1))
 
-    img = Image.fromarray(arr)
-    return img.filter(ImageFilter.GaussianBlur(1))
-
-
-def adicionar_acento_decorativo(img, cor_acento, seed):
+# ── Elementos decorativos (variáveis por seed) ────────────────────────────────
+def adicionar_elementos_decorativos(img, cor_acento, seed):
     """
-    Linhas decorativas finas da identidade AlvoreSer:
-    - Uma linha curva fina no topo (como ondulação sutil)
-    - Uma linha curva fina na base
-    - Opacidade baixa: apenas decorativa, não domina o card
+    5 estratégias decorativas diferentes, escolhidas pela seed.
+    Nenhuma domina o card — são acentos da identidade visual.
     """
-    rng   = random.Random(seed)
-    rgba  = img.convert("RGBA")
-    draw  = ImageDraw.Draw(rgba, "RGBA")
-    opac  = rng.randint(35, 55)   # opacidade baixa — decorativo apenas
+    estrategia = seed % 5
+    rng  = random.Random(seed)
+    rgba = img.convert("RGBA")
+    draw = ImageDraw.Draw(rgba, "RGBA")
+    opac = rng.randint(35, 60)
 
-    # Linha decorativa no topo: curva senoidal suave, altura máx 6% do card
-    amp_t  = H * rng.uniform(0.03, 0.06)
-    base_t = H * rng.uniform(0.04, 0.07)
-    fase_t = rng.uniform(0, math.pi)
-    pts_t  = [(x, int(base_t + amp_t * math.sin(x / W * math.pi * 2 + fase_t)))
-              for x in range(0, W + 1, 4)]
-    if len(pts_t) > 1:
-        draw.line(pts_t, fill=(*cor_acento, opac), width=6)
+    def linha_seno(base_frac, cor, opacidade, largura=5):
+        base_y = H * base_frac
+        amp    = H * rng.uniform(0.02, 0.045)
+        fase   = rng.uniform(0, math.pi * 2)
+        pts    = [(x, int(base_y + amp * math.sin(x / W * math.pi * 1.5 + fase)))
+                  for x in range(0, W + 1, 4)]
+        if len(pts) > 1:
+            draw.line(pts, fill=(*cor, opacidade), width=largura)
 
-    # Linha decorativa na base: curva senoidal, altura máx 6% do card
-    amp_b  = H * rng.uniform(0.03, 0.06)
-    base_b = H * rng.uniform(0.93, 0.96)
-    fase_b = rng.uniform(0, math.pi)
-    pts_b  = [(x, int(base_b + amp_b * math.sin(x / W * math.pi * 2 + fase_b)))
-              for x in range(0, W + 1, 4)]
-    if len(pts_b) > 1:
-        draw.line(pts_b, fill=(*cor_acento, opac), width=6)
+    if estrategia == 0:
+        # Duas linhas sinusoidais (topo + base)
+        linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac)
+        linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac)
+
+    elif estrategia == 1:
+        # Apenas base
+        linha_seno(rng.uniform(0.92, 0.96), cor_acento, opac + 10, largura=6)
+
+    elif estrategia == 2:
+        # Linha lateral esquerda vertical
+        x_lat = int(W * rng.uniform(0.04, 0.07))
+        y0    = int(H * 0.08)
+        y1    = int(H * 0.92)
+        amp   = W * rng.uniform(0.008, 0.018)
+        pts   = [(int(x_lat + amp * math.sin(y / H * math.pi * 3 + rng.uniform(0, math.pi))), y)
+                 for y in range(y0, y1, 4)]
+        if len(pts) > 1:
+            draw.line(pts, fill=(*cor_acento, opac), width=5)
+
+    elif estrategia == 3:
+        # Sem linhas — só foto + texto (clean)
+        pass
+
+    else:  # 4
+        # Duas linhas mais grossas + bloco translúcido na borda esquerda
+        linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac, largura=7)
+        linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac, largura=7)
+        draw.rectangle([(0, 0), (int(W * 0.008), H)],
+                       fill=(*cor_acento, opac + 20))
 
     return rgba.convert("RGB")
 
+# ── Color grade editorial ─────────────────────────────────────────────────────
+def color_grade_editorial(img, seed):
+    rng = random.Random(seed)
+    arr = np.array(img.convert("RGB")).astype(np.float32)
+    lum = arr.mean(axis=2, keepdims=True) / 255.0
+    # Sombras frias (harmoniza MARINHO)
+    mask_s = np.clip(1.0 - lum * 2.5, 0, 1)
+    arr[:, :, 0] *= 1 + (0.92 - 1) * mask_s[:, :, 0]
+    arr[:, :, 1] *= 1 + (0.96 - 1) * mask_s[:, :, 0]
+    arr[:, :, 2] *= 1 + (1.06 - 1) * mask_s[:, :, 0]
+    # Meio-tons quentes (harmoniza LARANJA)
+    mask_m = np.clip(1.0 - abs(lum - 0.45) * 4, 0, 1)
+    arr[:, :, 0] = np.clip(arr[:, :, 0] + 6 * mask_m[:, :, 0], 0, 255)
+    arr[:, :, 1] = np.clip(arr[:, :, 1] + 3 * mask_m[:, :, 0], 0, 255)
+    arr[:, :, 2] = np.clip(arr[:, :, 2] - 4 * mask_m[:, :, 0], 0, 255)
+    # Grain
+    grain = np.random.RandomState(seed + 1).normal(0, rng.uniform(2.5, 4.5), arr.shape)
+    arr   = np.clip(arr + grain, 0, 255)
+    out   = Image.fromarray(arr.astype(np.uint8))
+    # Unsharp mask leve
+    blur  = out.filter(ImageFilter.GaussianBlur(1.8))
+    ao    = np.array(out).astype(np.float32)
+    ab    = np.array(blur).astype(np.float32)
+    return Image.fromarray(np.clip(ao + (ao - ab) * 0.45, 0, 255).astype(np.uint8))
 
-# ── Pipeline fotográfico ──────────────────────────────────────────────────────
-
-def aplicar_vinheta(img, intensidade=0.28):
-    mw, mh = max(1, W // 8), max(1, H // 8)
-    cx, cy = mw / 2, mh / 2
-    pixels = []
-    for y in range(mh):
-        for x in range(mw):
-            dx = (x - cx) / cx; dy = (y - cy) / cy
-            dist = math.sqrt(dx*dx + dy*dy)
-            fade = max(0.0, dist - 0.55) / 0.45
-            pixels.append(max(0, min(255, int((1 - fade*fade*intensidade) * 255))))
-    mask = Image.new("L", (mw, mh))
-    mask.putdata(pixels)
-    mask = mask.resize((W, H), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(60))
-    r, g, b = img.convert("RGB").split()
-    return Image.merge("RGB", [ImageChops.multiply(r, mask),
-                                ImageChops.multiply(g, mask),
-                                ImageChops.multiply(b, mask)])
-
-def aplicar_contraste(img):
-    img = ImageEnhance.Contrast(img).enhance(1.12)
-    img = ImageEnhance.Color(img).enhance(1.08)
-    img = ImageEnhance.Sharpness(img).enhance(1.15)
-    return img
-
-def aplicar_split_toning(img, intensidade=0.05):
+def aplicar_split_toning(img, intensidade=0.045):
     arr = np.array(img.convert("RGB")).astype(np.float32)
     lum = arr.mean(axis=2, keepdims=True) / 255.0
     arr += (np.array(MARINHO, dtype=np.float32) - arr) * ((1 - lum)**2) * intensidade
     arr += (np.array(LARANJA, dtype=np.float32) - arr) * (lum**2)       * intensidade
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
+def aplicar_vinheta(img, seed):
+    rng    = random.Random(seed)
+    intens = rng.uniform(0.28, 0.44)
+    mw, mh = max(1, W // 6), max(1, H // 6)
+    cx, cy = mw / 2, mh / 2
+    pixels = []
+    for y in range(mh):
+        for x in range(mw):
+            dx = (x - cx) / cx; dy = (y - cy) / cy
+            d  = math.sqrt(dx*dx + dy*dy)
+            fade = max(0.0, d - 0.50) / 0.50
+            pixels.append(max(0, min(255, int((1 - (fade**1.6) * intens) * 255))))
+    mask = Image.new("L", (mw, mh))
+    mask.putdata(pixels)
+    mask = mask.resize((W, H), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(80))
+    r, g, b = img.convert("RGB").split()
+    return Image.merge("RGB", [ImageChops.multiply(r, mask),
+                                ImageChops.multiply(g, mask),
+                                ImageChops.multiply(b, mask)])
+
+def tratar_foto_editorial(img, cor_paleta, seed):
+    cor_ac = PETROLEO if sum(cor_paleta) / 3 < 120 else VERDE_NEUTRO
+    img = color_grade_editorial(img, seed)
+    img = ImageEnhance.Contrast(img).enhance(1.15)
+    img = ImageEnhance.Color(img).enhance(1.10)
+    img = ImageEnhance.Sharpness(img).enhance(1.18)
+    img = ImageEnhance.Brightness(img).enhance(1.02)
+    img = aplicar_split_toning(img)
+    img = aplicar_vinheta(img, seed)
+    img = adicionar_elementos_decorativos(img, cor_ac, seed)
+    return img
+
+# ── Composição Ronilson ────────────────────────────────────────────────────────
 def compor_pessoa(pessoa_rgba, fundo_rgb):
     pw, ph = pessoa_rgba.size
-    nw = int(pw * H / ph)
+    nw     = int(pw * H / ph)
     pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
     x = W - nw + 50
-    x = max(int(W * 0.38), min(x, W - 150))
-    alpha = pessoa_rgba.split()[3]
+    x = max(int(W * 0.35), min(x, W - 120))
+    alpha  = pessoa_rgba.split()[3]
     sombra = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sil    = Image.new("RGBA", (nw, H), (0, 0, 0, 0))
     sil.paste(Image.new("RGB", (nw, H), MARINHO),
-              mask=alpha.point(lambda v: int(v * 0.18)))
-    sombra.paste(sil, (x - 20, 18), sil)
-    sombra = sombra.filter(ImageFilter.GaussianBlur(38))
+              mask=alpha.point(lambda v: int(v * 0.22)))
+    sombra.paste(sil, (x - 24, 22), sil)
+    sombra = sombra.filter(ImageFilter.GaussianBlur(45))
     res = fundo_rgb.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB")
 
+# ── preparar_foto ─────────────────────────────────────────────────────────────
 def preparar_foto(url, pid, cor1, cor2, seed):
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(url, timeout=25)
         r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
         ratio = max(W / img.width, H / img.height)
         nw, nh = int(img.width * ratio), int(img.height * ratio)
         img   = img.resize((nw, nh), Image.Resampling.LANCZOS)
-        l = (nw - W) // 2; t = (nh - H) // 2
+        l     = (nw - W) // 2; t = (nh - H) // 2
         img   = img.crop((l, t, l + W, t + H))
 
-        cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-
         if eh_foto_ronilson(pid):
-            print(f"[foto] Ronilson rembg: {pid}")
-            fundo = gerar_fundo_rico(cor1, cor2, seed)
-            fundo = adicionar_acento_decorativo(fundo, cor_ac, seed)
+            print(f"[foto] Ronilson detectado — aplicando rembg: {pid}")
+            fundo  = gerar_fundo_rico(cor1, cor2, seed)
+            cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
+            fundo  = adicionar_elementos_decorativos(fundo, cor_ac, seed)
             try:
-                img = compor_pessoa(remover_fundo_rembg(img), fundo)
+                rgba = remover_fundo_rembg(img)
+                img  = compor_pessoa(rgba, fundo)
+                img  = aplicar_split_toning(img)
+                img  = ImageEnhance.Contrast(img).enhance(1.08)
+                print("[foto] rembg OK")
             except Exception as e:
-                print(f"[foto] rembg falhou: {e}")
-                img = Image.blend(fundo, img, alpha=0.55)
+                print(f"[foto] rembg falhou ({e}) — blend suave")
+                img = Image.blend(fundo, img, alpha=0.60)
+                img = aplicar_split_toning(img)
         else:
-            # Foto editorial: mantém a foto, adiciona apenas linha decorativa fina
-            img = adicionar_acento_decorativo(img, cor_ac, seed)
+            print(f"[foto] editorial: {pid}")
+            img = tratar_foto_editorial(img, cor1, seed)
 
-        img = aplicar_split_toning(img)
-        img = aplicar_contraste(img)
-        img = aplicar_vinheta(img)
         return img
     except Exception as e:
         print(f"[foto] ERRO: {e}")
         return None
 
-def aplicar_overlay(img):
-    """Gradiente escuro no terço inferior — garante legibilidade do texto."""
+# ── Overlay adaptativo ────────────────────────────────────────────────────────
+def aplicar_overlay(img, lum_media, layout):
+    """
+    Overlay adaptativo:
+    - Foto clara (lum > 140) → overlay mais intenso
+    - Foto escura (lum < 80) → overlay mais suave
+    - Ajuste de altura baseado no layout (texto em cima = overlay no topo tbm)
+    """
+    # Intensidade adaptativa
+    if lum_media > 160:
+        alpha_max = 215
+    elif lum_media > 120:
+        alpha_max = 190
+    elif lum_media > 80:
+        alpha_max = 165
+    else:
+        alpha_max = 140
+
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw    = ImageDraw.Draw(overlay)
-    altura  = int(H * 0.45)
-    for y in range(altura):
-        prog  = y / altura
-        alpha = int((prog ** 1.6) * 190)
-        draw.line([(0, H - altura + y), (W, H - altura + y)],
-                  fill=(*MARINHO, alpha))
+
+    if layout == 3:
+        # Texto no topo → overlay no topo também
+        altura = int(H * 0.42)
+        for y in range(altura):
+            prog  = 1.0 - y / altura
+            alpha = int((prog ** 1.5) * alpha_max)
+            draw.line([(0, y), (W, y)], fill=(*MARINHO, alpha))
+    else:
+        # Overlay padrão na base (cobre zona do texto)
+        altura = int(H * 0.50)
+        for y in range(altura):
+            prog  = y / altura
+            alpha = int((prog ** 1.4) * alpha_max)
+            draw.line([(0, H - altura + y), (W, H - altura + y)],
+                      fill=(*MARINHO, alpha))
+
     return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
 # ── Tipografia ────────────────────────────────────────────────────────────────
-#
-# REGRA:
-#   AGILERA  → chave / título (destaque, maiúsculo, cor)
-#   MALGUN   → complemento / texto explicativo (branco, caixa original)
-#
-# Separadores que dividem chave do complemento:
-SEPARADORES = [" e ", " são ", " é ", " como ", ": ", " — ", " - "]
+SEPARADORES = [" e ", " s\u00e3o ", " \u00e9 ", " como ", ": ", " \u2014 ", " - "]
 
 def _split_tema(tema):
     t = tema.strip()
@@ -452,50 +580,16 @@ def _split_tema(tema):
             return t[:idx].strip(), t[idx:].strip()
     return t, ""
 
-def _medir_spacing(texto, fonte, spacing):
-    total = 0
-    for ch in texto:
-        try:
-            bb = fonte.getbbox(ch)
-            total += (bb[2] - bb[0]) + spacing
-        except Exception:
-            total += 30 + spacing
-    return max(0, total - spacing)
-
-def _quebrar_texto(texto, fonte, max_px, spacing=0):
-    palavras = texto.split()
-    linhas, atual = [], []
-    for p in palavras:
-        cand = " ".join(atual + [p])
-        w = _medir_spacing(cand, fonte, spacing) if spacing else _medir(cand, fonte)
-        if w <= max_px:
-            atual.append(p)
-        else:
-            if atual:
-                linhas.append(" ".join(atual))
-            atual = [p]
-    if atual:
-        linhas.append(" ".join(atual))
-    return linhas if linhas else [texto]
-
-def _altura_linha(fonte, texto="A"):
-    try:
-        bb = fonte.getbbox(texto)
-        return bb[3] - bb[1]
-    except Exception:
-        return 50
-
-def _sombra_texto(img_rgba, texto, fonte, x, y, spacing=0):
-    for (ox, oy), blur, opac in [((5, 7), 14, 0.38), ((2, 3), 3, 0.60)]:
+def _sombra(img_rgba, texto, fonte, x, y, sp=0):
+    for (ox, oy), blur, opac in [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d     = ImageDraw.Draw(layer)
-        _desenhar_linha(d, x + ox, y + oy, texto, fonte,
-                        (2, 20, 30, int(255 * opac)), spacing)
+        _linha(d, x + ox, y + oy, texto, fonte, (2, 20, 30, int(255 * opac)), sp)
         layer = layer.filter(ImageFilter.GaussianBlur(blur))
         img_rgba.paste(layer, (0, 0), layer)
 
-def _desenhar_linha(draw, x, y, texto, fonte, cor, spacing=0):
-    if spacing == 0:
+def _linha(draw, x, y, texto, fonte, cor, sp=0):
+    if sp == 0:
         draw.text((x, y), texto, font=fonte, fill=cor)
         return
     cursor = x
@@ -503,114 +597,141 @@ def _desenhar_linha(draw, x, y, texto, fonte, cor, spacing=0):
         draw.text((cursor, y), ch, font=fonte, fill=cor)
         try:
             bb = fonte.getbbox(ch)
-            cursor += (bb[2] - bb[0]) + spacing
+            cursor += (bb[2] - bb[0]) + sp
         except Exception:
-            cursor += 30 + spacing
+            cursor += 30 + sp
 
 def desenhar_titulo(img, tema, seed):
     """
-    Layout editorial:
-      - AGILERA grande e impactante para a chave
-      - MALGUN legível para o complemento
-      - Bloco de texto posicionado no terço inferior (Y 52%–82%)
-        para não colidir com a foto e dar respiro ao topo
+    5 layouts distintos (seed % 5):
+      0 → terço inferior esquerdo  (editorial padrão)
+      1 → centralizado vertical    (poster)
+      2 → título enorme baixo      (impacto máximo)
+      3 → terço superior esquerdo  (invertido)
+      4 → base com título à direita (assimétrico)
     """
     img_rgba = img.convert("RGBA")
     draw     = ImageDraw.Draw(img_rgba, "RGBA")
 
-    MARGIN = 80
-    MAX_PX = int(W * 0.82)   # usa 82% da largura — textos longos cabem
-    Y_INI  = int(H * 0.52)
-    Y_FIM  = int(H * 0.84)
+    MARGIN   = 80
+    MAX_PX   = int(W * 0.84)
+    layout   = seed % 5
 
     chave, complemento = _split_tema(tema)
-
-    # Tamanhos: impactantes, proporcionais ao total de caracteres
     n = len(tema)
-    tam_ag = 148 if n <= 6  else \
-             128 if n <= 10 else \
-             108 if n <= 16 else \
-              90 if n <= 24 else \
-              76 if n <= 34 else 64
 
-    tam_ml = max(44, int(tam_ag * 0.58))
+    # Tamanhos — título curto = letras enormes, título longo = menores mas ainda impactantes
+    if layout == 2:
+        # Layout impacto: sempre usa o tamanho máximo possível
+        tam_ag = 160 if n <= 8  else 140 if n <= 14 else 118 if n <= 20 else 96 if n <= 28 else 78
+    else:
+        tam_ag = 148 if n <= 6  else 128 if n <= 10 else 108 if n <= 16 else \
+                  90 if n <= 24 else  76 if n <= 34 else 64
 
-    fa = f_display(tam_ag)
-    fm = f_corpo(tam_ml)
+    tam_ml   = max(44, int(tam_ag * 0.58))
+    ag_sp    = -3 if tam_ag >= 100 else -2
+    fa       = f_display(tam_ag)
+    fm       = f_corpo(tam_ml)
+    cor_dest = AMARELO if seed % 2 == 0 else LARANJA
 
-    cor_destaque = AMARELO if seed % 2 == 0 else LARANJA
-    ag_sp = -3 if tam_ag >= 100 else -2
+    chave_up     = chave.upper()
+    linhas_chave = _quebrar(chave_up, fa, MAX_PX, ag_sp)
+    linhas_comp  = _quebrar(complemento, fm, MAX_PX) if complemento else []
 
-    chave_upper  = chave.upper()
-    linhas_chave = _quebrar_texto(chave_upper, fa, MAX_PX, ag_sp)
-    linhas_comp  = _quebrar_texto(complemento, fm, MAX_PX) if complemento else []
+    esp_ag     = int(_altura_linha(fa) * 1.08)
+    esp_ml     = int(_altura_linha(fm) * 1.20)
+    gap        = int(esp_ag * 0.18)
+    h_bloco    = (esp_ag * len(linhas_chave)) + \
+                 (gap + esp_ml * len(linhas_comp) if linhas_comp else 0)
 
-    esp_ag      = int(_altura_linha(fa) * 1.08)
-    esp_ml      = int(_altura_linha(fm) * 1.20)
-    gap_entre   = int(esp_ag * 0.20)
-
-    altura_bloco = (esp_ag * len(linhas_chave)) \
-                 + (gap_entre + esp_ml * len(linhas_comp) if linhas_comp else 0)
+    # Zona vertical por layout
+    if layout == 0:    # inferior esquerdo
+        Y_INI, Y_FIM = int(H * 0.55), int(H * 0.86)
+    elif layout == 1:  # centralizado
+        Y_INI, Y_FIM = int(H * 0.30), int(H * 0.80)
+    elif layout == 2:  # impacto base
+        Y_INI, Y_FIM = int(H * 0.62), int(H * 0.90)
+    elif layout == 3:  # superior
+        Y_INI, Y_FIM = int(H * 0.08), int(H * 0.40)
+    else:              # assimétrico
+        Y_INI, Y_FIM = int(H * 0.52), int(H * 0.84)
 
     zona = Y_FIM - Y_INI
-    y    = Y_INI + max(0, (zona - altura_bloco) // 2)
-    y    = max(Y_INI, min(y, Y_FIM - altura_bloco - 20))
+    y    = Y_INI + max(0, (zona - h_bloco) // 2)
+    y    = max(Y_INI, min(y, Y_FIM - h_bloco - 10))
 
-    # Desenha AGILERA
+    # Margem horizontal por layout
+    if layout == 4:  # à direita
+        max_w_chave = max((_medir_sp(l, fa, ag_sp) if ag_sp else _medir(l, fa)) for l in linhas_chave)
+        x_inicio = max(MARGIN, W - MARGIN - max_w_chave)
+    else:
+        x_inicio = MARGIN
+
+    # Desenha AGILERA (chave)
     for i, linha in enumerate(linhas_chave):
-        cor = cor_destaque if i == 0 else BRANCO
-        _sombra_texto(img_rgba, linha, fa, MARGIN, y, ag_sp)
-        _desenhar_linha(draw, MARGIN, y, linha, fa, (*cor, 255), ag_sp)
+        cor = cor_dest if i == 0 else BRANCO
+        _sombra(img_rgba, linha, fa, x_inicio, y, ag_sp)
+        draw = ImageDraw.Draw(img_rgba, "RGBA")
+        _linha(draw, x_inicio, y, linha, fa, (*cor, 255), ag_sp)
         y += esp_ag
 
-    # Desenha MALGUN
+    # Desenha MALGUN (complemento)
     if linhas_comp:
-        y += gap_entre
+        y += gap
         for linha in linhas_comp:
-            _sombra_texto(img_rgba, linha, fm, MARGIN, y)
-            _desenhar_linha(draw, MARGIN, y, linha, fm, (*BRANCO, 235))
+            _sombra(img_rgba, linha, fm, x_inicio, y)
+            draw = ImageDraw.Draw(img_rgba, "RGBA")
+            _linha(draw, x_inicio, y, linha, fm, (*BRANCO, 232))
             y += esp_ml
 
-    return img_rgba.convert("RGB")
+    return img_rgba.convert("RGB"), layout
 
 # ── Geração principal ─────────────────────────────────────────────────────────
-
 def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     if seed is None:
         seed = random.randint(0, 999999)
-    print(f"[card] tema='{tema}' seed={seed} imagem={imagem_url is not None}")
+    print(f"[card] tema='{tema}' seed={seed} layout={seed % 5} decore={seed % 5} cloudinary={'sim' if imagem_url else 'NAO'}")
 
-    cor1, cor2 = MARINHO, PETROLEO
+    cor1, cor2  = MARINHO, PETROLEO
+    lum_media   = 100.0  # valor neutro default
+
     if imagem_url:
         try:
             r = requests.get(imagem_url, timeout=15)
             r.raise_for_status()
-            tmp = Image.open(io.BytesIO(r.content)).convert("RGB").resize(
-                (120, 150), Image.Resampling.LANCZOS)
+            tmp       = Image.open(io.BytesIO(r.content)).convert("RGB").resize((120, 150), Image.Resampling.LANCZOS)
             cor1, cor2 = cores_fundo(tmp)
+            lum_media  = luminosidade_media(tmp)
         except Exception as e:
-            print(f"[cor] falhou: {e}")
+            print(f"[cor] {e}")
 
-    # Fundo base: foto ou fundo rico com identidade visual
+    # Base visual
     if imagem_url:
         base = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
-            print("[card] foto falhou — usando fundo rico")
+            print("[card] foto falhou — fundo rico")
             base = gerar_fundo_rico(cor1, cor2, seed)
             cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-            base   = adicionar_acento_decorativo(base, cor_ac, seed)
+            base = adicionar_elementos_decorativos(base, cor_ac, seed)
+            lum_media = luminosidade_media(base)
     else:
         print("[card] sem imagem — fundo rico")
-        base   = gerar_fundo_rico(cor1, cor2, seed)
+        base = gerar_fundo_rico(cor1, cor2, seed)
         cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-        base   = adicionar_acento_decorativo(base, cor_ac, seed)
+        base = adicionar_elementos_decorativos(base, cor_ac, seed)
+        lum_media = luminosidade_media(base)
 
-    base = aplicar_overlay(base)
-    base = desenhar_titulo(base, tema, seed)
+    # Layout (precisamos saber antes para passar ao overlay)
+    layout = seed % 5
+
+    # Overlay adaptativo
+    base = aplicar_overlay(base, lum_media, layout)
+
+    # Título
+    base, _ = desenhar_titulo(base, tema, seed)
     return base
 
-# ── Upload ─────────────────────────────────────────────────────────────────────
-
+# ── Planilha / Upload ─────────────────────────────────────────────────────────
 def upload_imagem(img, folder, public_id):
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=93)
@@ -647,8 +768,7 @@ def atualizar_status(linha, status):
         spreadsheetId=SPREADSHEET_ID, range=f"G{linha}",
         valueInputOption="RAW", body={"values": [[status]]}).execute()
 
-# ── Rotas ──────────────────────────────────────────────────────────────────────
-
+# ── Rotas ─────────────────────────────────────────────────────────────────────
 def _env_first(*keys):
     for key in keys:
         val = os.getenv(key)
@@ -667,7 +787,8 @@ def rota_config_firebase():
         "appId":             _env_first("FIREBASE_APP_ID", "VITE_FIREBASE_APP_ID"),
     }
     if not cfg["apiKey"]:
-        return jsonify({"erro": "Firebase nao configurado.", "dica": "Adicione FIREBASE_API_KEY no Render."}), 503
+        return jsonify({"erro": "Firebase nao configurado.",
+                        "dica": "Adicione FIREBASE_API_KEY no Render."}), 503
     return jsonify(cfg)
 
 @app.route("/health", methods=["GET"])
@@ -676,8 +797,18 @@ def health():
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
-    return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
-                    "fontes": fontes, "caminhos": caminhos})
+    rembg_ok = False
+    try:
+        get_rembg()
+        rembg_ok = True
+    except Exception:
+        pass
+    return jsonify({
+        "status": "ok", "dimensoes": f"{W}x{H}",
+        "fontes": fontes, "caminhos": caminhos,
+        "rembg": rembg_ok,
+        "ronilson_path": PASTA_RONILSON,
+    })
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
@@ -708,23 +839,23 @@ def rota_preview_card():
         legenda = legenda.rstrip() + ASSINATURA
 
     url_img, pid = buscar_imagem(tema)
-    print(f"[preview] tema='{tema}' img={'sim' if url_img else 'nao'}")
+    print(f"[preview] tema='{tema}' cloudinary={'sim' if url_img else 'nao'} pid='{pid}'")
 
     try:
         seed    = data.get("seed")
         card    = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
-
-        buf = io.BytesIO()
+        buf     = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
         card_bytes  = buf.getvalue()
         preview_url = f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}"
-
         _cards_pendentes[card_id] = {
             "tema": tema, "legenda": legenda,
             "imagem_fundo": url_img, "pid_fundo": pid,
             "card_bytes": card_bytes}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"erro": f"Erro ao gerar card: {e}"}), 500
 
     resp = {"card_id": card_id, "preview_url": preview_url,
