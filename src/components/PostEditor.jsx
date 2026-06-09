@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { db } from "../firebase";
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 
@@ -6,7 +6,6 @@ const RENDER_URL = import.meta.env.DEV
   ? (import.meta.env.VITE_RENDER_URL || "http://localhost:5000")
   : "";
 
-// Abre o preview em tamanho real convertendo base64 → Blob URL (evita bloqueio do browser)
 function abrirTamanhoReal(previewUrl) {
   try {
     if (previewUrl.startsWith("data:")) {
@@ -18,7 +17,6 @@ function abrirTamanhoReal(previewUrl) {
       const blob    = new Blob([arr], { type: mime });
       const blobUrl = URL.createObjectURL(blob);
       const janela  = window.open(blobUrl, "_blank");
-      // Revoga o Blob URL após a janela carregar para liberar memória
       if (janela) janela.addEventListener("load", () => URL.revokeObjectURL(blobUrl));
     } else {
       window.open(previewUrl, "_blank");
@@ -28,19 +26,80 @@ function abrirTamanhoReal(previewUrl) {
   }
 }
 
+// Insere um símbolo no início de uma nova linha no textarea
+function inserirSimbolo(valor, cursor, simbolo, setTema, ref) {
+  const antes  = valor.substring(0, cursor);
+  const depois = valor.substring(cursor);
+  // Se o cursor está no meio de uma linha, quebra a linha antes
+  const prefixo = antes.length > 0 && !antes.endsWith("\n") ? "\n" : "";
+  const novo    = antes + prefixo + simbolo + depois;
+  setTema(novo);
+  // Reposiciona o cursor após o símbolo inserido
+  setTimeout(() => {
+    if (ref.current) {
+      const pos = (antes + prefixo + simbolo).length;
+      ref.current.selectionStart = pos;
+      ref.current.selectionEnd   = pos;
+      ref.current.focus();
+    }
+  }, 0);
+}
+
+// Pré-visualização do que cada linha vai gerar no card
+function PreviewLinhas({ tema }) {
+  if (!tema.trim()) return null;
+  const linhas = tema.split("\n").filter(l => l.trim());
+  return (
+    <div style={{ marginTop: "0.5rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+      {linhas.map((linha, i) => {
+        const l = linha.trim();
+        let estilo = "normal";
+        let icone  = "✦";
+        let cor    = "var(--branco, #f4f6f8)";
+        let fundo  = "transparent";
+        let label  = "Agilera";
+        if (l.startsWith(":")) { estilo = "malgun";      icone = ":"; cor = "#aac9d0"; label = "Malgun"; }
+        if (l.startsWith("*")) { estilo = "agilera_est"; icone = "*"; cor = "var(--laranja, #F9AB0B)"; label = "Agilera estilizada"; }
+        if (l.startsWith("-")) { estilo = "fundo";       icone = "-"; cor = "var(--marinho, #024059)"; fundo = "var(--laranja, #F9AB0B)"; label = "Fundo preenchido"; }
+        const texto = l.replace(/^[:*-]/, "").trim() || "(vazio)";
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.74rem" }}>
+            <span style={{
+              fontFamily: "monospace", fontWeight: 700, fontSize: "0.9rem",
+              color: "var(--laranja, #F9AB0B)", minWidth: 14,
+            }}>{icone}</span>
+            <span style={{
+              background: fundo, color: cor,
+              padding: fundo !== "transparent" ? "1px 8px" : "0",
+              borderRadius: 4, fontWeight: estilo === "malgun" ? 400 : 600,
+              fontStyle: estilo === "agilera_est" ? "italic" : "normal",
+              letterSpacing: estilo === "agilera_est" ? "0.12em" : "normal",
+              opacity: texto === "(vazio)" ? 0.4 : 1,
+            }}>{texto}</span>
+            <span style={{ color: "var(--texto-suave, #888)", fontSize: "0.68rem" }}>({label})</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function PostEditor({ post, onClose, onNotify }) {
   const isEdit = Boolean(post);
 
   const [tema,          setTema]          = useState(post?.tema || "");
   const [legenda,       setLegenda]       = useState(post?.legenda || "");
   const [previewUrl,    setPreviewUrl]    = useState(post?.cloudinaryUrl || "");
-  const [previewBase64, setPreviewBase64] = useState("");
   const [modo,          setModo]          = useState(post?.modo || "manual");
   const [dadosCard,     setDadosCard]     = useState(null);
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
   const [loadingAprovar, setLoadingAprovar] = useState(false);
+
+  const temaRef = useRef(null);
+
+  const getCursor = () => temaRef.current?.selectionStart ?? tema.length;
 
   const handleGerarLegenda = async () => {
     if (!tema.trim()) { onNotify("Informe o tema.", "error"); return; }
@@ -93,19 +152,13 @@ export default function PostEditor({ post, onClose, onNotify }) {
       const res = await fetch(`${RENDER_URL}/aprovar-card`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          card_id: dadosCard.card_id,
-          tema,
-          legenda,
-          modo,
-        }),
+        body: JSON.stringify({ card_id: dadosCard.card_id, tema, legenda, modo }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao aprovar card");
 
       const payload = {
-        tema,
-        legenda,
+        tema, legenda,
         cloudinaryUrl: data.cloudinary_url,
         modo,
         linhaSheet: data.linha_planilha,
@@ -117,9 +170,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
         await updateDoc(doc(db, "posts", post.id), payload);
         onNotify("Post atualizado ✓");
       } else {
-        await addDoc(collection(db, "posts"), {
-          ...payload, criadoEm: serverTimestamp(),
-        });
+        await addDoc(collection(db, "posts"), { ...payload, criadoEm: serverTimestamp() });
         onNotify("Post aprovado e adicionado à fila ✓");
       }
       onClose();
@@ -136,27 +187,79 @@ export default function PostEditor({ post, onClose, onNotify }) {
     onNotify("Card descartado.");
   };
 
+  // Botões de inserção de símbolo
+  const botoesFormato = [
+    { simbolo: "",  label: "Agilera",           desc: "Título principal",      cor: "#f4f6f8" },
+    { simbolo: ":", label: ": Malgun",           desc: "Texto complementar",    cor: "#aac9d0" },
+    { simbolo: "*", label: "* Agilera estilizada", desc: "Destaque expandido", cor: "#F9AB0B" },
+    { simbolo: "-", label: "- Fundo preenchido", desc: "Highlight com cor",    cor: "#024059", bg: "#F9AB0B" },
+  ];
+
   return (
     <div>
       <div className="section-header">
         <h1>{isEdit ? "Editar Post" : "Novo Post"}</h1>
-        <p>Digite o tema — o sistema gera legenda e card automaticamente.</p>
+        <p>Digite o tema — cada linha pode ter um estilo diferente usando os símbolos abaixo.</p>
       </div>
 
       <div className="editor-card">
 
+        {/* ── Campo Tema ── */}
         <div className="field">
           <label>Tema / Assunto</label>
-          <input
+
+          {/* Botões de formatação acima do campo */}
+          <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
+            {botoesFormato.map(({ simbolo, label, desc, cor, bg }) => (
+              <button
+                key={label}
+                title={desc}
+                style={{
+                  fontSize: "0.72rem", padding: "3px 10px", borderRadius: 6, cursor: "pointer",
+                  border: "1px solid var(--creme-escuro, #ddd)",
+                  background: bg || "var(--creme, #faf6f0)",
+                  color: cor, fontWeight: 600, fontFamily: "monospace",
+                  transition: "opacity 0.15s",
+                }}
+                onClick={() => inserirSimbolo(tema, getCursor(), simbolo, setTema, temaRef)}
+              >
+                {label}
+              </button>
+            ))}
+            <span style={{ fontSize: "0.68rem", color: "var(--texto-suave)", alignSelf: "center", marginLeft: "0.25rem" }}>
+              — clique para inserir na posição do cursor
+            </span>
+          </div>
+
+          {/* Textarea multiline — suporta \n para múltiplas linhas formatadas */}
+          <textarea
+            ref={temaRef}
             value={tema}
             onChange={e => setTema(e.target.value)}
-            placeholder="Ex: Ansiedade Generalizada"
+            placeholder={"Ansiedade Generalizada\n:Uma desordem sem fim"}
+            rows={3}
+            style={{ fontFamily: "monospace", fontSize: "0.92rem", resize: "vertical" }}
           />
-          <p className="field__hint">
-            O texto aparece exatamente como você digitar (maiúsculas, minúsculas ou misto).
+
+          {/* Pré-visualização das linhas */}
+          {tema.trim() && (
+            <div style={{
+              marginTop: "0.5rem", padding: "0.6rem 0.8rem",
+              background: "var(--marinho, #024059)", borderRadius: 8,
+            }}>
+              <div style={{ fontSize: "0.68rem", color: "#aac9d0", marginBottom: "0.35rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Pré-visualização das linhas
+              </div>
+              <PreviewLinhas tema={tema} />
+            </div>
+          )}
+
+          <p className="field__hint" style={{ marginTop: "0.5rem" }}>
+            Cada linha = um bloco de texto no card. Sem símbolo = Agilera (título). Use <code>:</code> <code>*</code> <code>-</code> no início da linha para mudar o estilo.
           </p>
         </div>
 
+        {/* ── Botões de geração ── */}
         <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
           <button
             className="btn btn--outline"
@@ -179,6 +282,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </button>
         </div>
 
+        {/* ── Preview do card gerado ── */}
         {previewUrl && (
           <div className="field">
             <label>
@@ -188,76 +292,39 @@ export default function PostEditor({ post, onClose, onNotify }) {
               </span>
             </label>
 
-            {/* Layout flex: preview à esquerda, legenda de formatação à direita */}
-            <div style={{ display: "flex", gap: "1.25rem", alignItems: "flex-start", flexWrap: "wrap" }}>
-
-              {/* Preview do card */}
-              <div
-                style={{
-                  flex: "1 1 320px",
-                  maxWidth: 420,
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  marginBottom: "0.75rem",
-                  boxShadow: "var(--sombra-media)",
-                  border: "2px solid var(--creme-escuro)",
-                  cursor: "zoom-in",
-                }}
-                onClick={() => abrirTamanhoReal(previewUrl)}
-                title="Clique para ver em tamanho real (1080×1350)"
-              >
-                <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
-              </div>
-
-              {/* Legenda de simbologia de formatação */}
-              <div style={{
-                flex: "0 0 200px",
-                background: "var(--creme, #faf6f0)",
-                borderRadius: 10,
-                padding: "1rem 1.1rem",
-                border: "1px solid var(--creme-escuro, #e8ddd0)",
-                fontSize: "0.78rem",
-                lineHeight: 1.7,
-                color: "var(--texto, #333)",
-              }}>
-                <div style={{ fontWeight: 700, marginBottom: "0.5rem", fontSize: "0.82rem", color: "var(--marinho, #024059)" }}>
-                  Formatação do texto
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
-                  <div>
-                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>:</span>
-                    <span style={{ marginLeft: "0.4rem" }}>malgun</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>*</span>
-                    <span style={{ marginLeft: "0.4rem" }}>agilera estilizada</span>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 700, color: "var(--laranja, #F9AB0B)", fontFamily: "monospace", fontSize: "1rem" }}>-</span>
-                    <span style={{ marginLeft: "0.4rem" }}>efeito fundo</span>
-                  </div>
-                </div>
-              </div>
+            <div
+              style={{
+                width: "100%", maxWidth: 420,
+                borderRadius: 12, overflow: "hidden",
+                marginBottom: "0.75rem",
+                boxShadow: "var(--sombra-media)",
+                border: "2px solid var(--creme-escuro)",
+                cursor: "zoom-in",
+              }}
+              onClick={() => abrirTamanhoReal(previewUrl)}
+              title="Clique para ver em tamanho real (1080×1350)"
+            >
+              <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-              <button
-                className="btn btn--primary"
-                style={{ fontSize: "0.82rem" }}
-                onClick={() => abrirTamanhoReal(previewUrl)}
-              >
+              <button className="btn btn--primary" style={{ fontSize: "0.82rem" }}
+                onClick={() => abrirTamanhoReal(previewUrl)}>
                 🔍 Ver tamanho real (1080×1350)
               </button>
-              <button className="btn btn--outline" style={{ fontSize: "0.8rem" }} onClick={handleGerarCard} disabled={loadingCard}>
+              <button className="btn btn--outline" style={{ fontSize: "0.8rem" }}
+                onClick={handleGerarCard} disabled={loadingCard}>
                 🔄 Gerar outro
               </button>
-              <button className="btn btn--outline" style={{ fontSize: "0.8rem", color: "var(--erro)" }} onClick={handleDescartar}>
+              <button className="btn btn--outline" style={{ fontSize: "0.8rem", color: "var(--erro)" }}
+                onClick={handleDescartar}>
                 🗑 Descartar
               </button>
             </div>
           </div>
         )}
 
+        {/* ── Legenda ── */}
         <div className="field">
           <label>
             Legenda
@@ -278,6 +345,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </p>
         </div>
 
+        {/* ── Modo de publicação ── */}
         <div className="field">
           <label>Modo de Publicação</label>
           <div className="mode-toggle">
@@ -295,6 +363,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
           </p>
         </div>
 
+        {/* ── Ações finais ── */}
         <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
           {dadosCard && (
             <button
