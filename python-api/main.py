@@ -464,7 +464,6 @@ def aplicar_vinheta(img, seed):
                                 ImageChops.multiply(b, mask)])
 
 def tratar_foto_editorial(img, cor_paleta, seed):
-    cor_ac = PETROLEO if sum(cor_paleta) / 3 < 120 else VERDE_NEUTRO
     img = color_grade_editorial(img, seed)
     img = ImageEnhance.Contrast(img).enhance(1.15)
     img = ImageEnhance.Color(img).enhance(1.10)
@@ -472,7 +471,6 @@ def tratar_foto_editorial(img, cor_paleta, seed):
     img = ImageEnhance.Brightness(img).enhance(1.02)
     img = aplicar_split_toning(img)
     img = aplicar_vinheta(img, seed)
-    img = adicionar_elementos_decorativos(img, cor_ac, seed)
     return img
 
 # ── Composição Ronilson ────────────────────────────────────────────────────────
@@ -509,8 +507,6 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         if eh_foto_ronilson(pid):
             print(f"[foto] Ronilson detectado — aplicando rembg: {pid}")
             fundo  = gerar_fundo_rico(cor1, cor2, seed)
-            cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-            fundo  = adicionar_elementos_decorativos(fundo, cor_ac, seed)
             try:
                 rgba = remover_fundo_rembg(img)
                 img  = compor_pessoa(rgba, fundo)
@@ -594,6 +590,67 @@ def _split_tema(tema):
             return t[:idx].strip(), t[idx:].strip()
     return t, ""
 
+import re as _re
+
+def _parse_inline(tema):
+    """
+    Analisa o tema com símbolos inline — funciona em linha única OU com \\n.
+
+    Símbolos (no início de uma palavra ou sozinhos):
+      (sem símbolo)  → AGILERA normal, caixa preservada
+      *palavra       → AGILERA estilizada (letter-spacing expandido, cor destaque)
+      :palavra       → MALGUN bold, branco
+      -palavra       → AGILERA com fundo preenchido (highlight)
+
+    Também interpreta ':' sozinho após uma palavra como abertura de segmento malgun:
+      "*Generalizada: Uma desordem" → agilera_est:"Generalizada" + malgun:"Uma desordem"
+
+    Caixa das letras é SEMPRE preservada como digitada.
+    """
+    MAPA = {"*": "agilera_est", ":": "malgun", "-": "fundo"}
+
+    # Junta todas as linhas em uma só (suporte a multiline via \n)
+    texto = " ".join(l.strip() for l in tema.split("\n") if l.strip())
+
+    # "palavra: " (trailing colon) → "palavra : " para virar separador standalone
+    texto = _re.sub(r'(\S):\s+', r'\1 : ', texto)
+
+    tokens = texto.split()
+    segmentos = []
+    estilo_atual = "normal"
+    palavras_atual = []
+
+    for token in tokens:
+        if token in MAPA:
+            # Símbolo standalone (ex: ":" isolado)
+            if palavras_atual:
+                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
+                palavras_atual = []
+            estilo_atual = MAPA[token]
+        elif len(token) > 1 and token[0] in MAPA:
+            # Símbolo no início do token (ex: "*Generalizada", ":Uma")
+            if palavras_atual:
+                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
+                palavras_atual = []
+            estilo_atual = MAPA[token[0]]
+            palavras_atual = [token[1:]]
+        else:
+            palavras_atual.append(token)
+
+    if palavras_atual:
+        segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
+
+    # Se não encontrou nenhum símbolo, usa modo automático (_split_tema)
+    tem_simbolo = any(s["estilo"] != "normal" for s in segmentos)
+    if not tem_simbolo:
+        chave, comp = _split_tema(tema.strip())
+        resultado = [{"texto": chave, "estilo": "normal"}]
+        if comp:
+            resultado.append({"texto": comp, "estilo": "malgun"})
+        return resultado
+
+    return segmentos or [{"texto": tema.strip(), "estilo": "normal"}]
+
 def _parse_segmentos(tema):
     """
     Modo manual (tema com \\n).
@@ -644,163 +701,80 @@ def _linha(draw, x, y, texto, fonte, cor, sp=0):
 
 def desenhar_titulo(img, tema, seed):
     """
-    5 layouts distintos (seed % 5):
-      0 → terço inferior esquerdo  (editorial padrão)
-      1 → centralizado vertical    (poster)
-      2 → título enorme baixo      (impacto máximo)
-      3 → terço superior esquerdo  (invertido)
-      4 → base com título à direita (assimétrico)
-
-    Modos de texto:
-      Sem \\n → modo automático (_split_tema)
-      Com \\n → modo manual (_parse_segmentos com símbolos :*-)
+    Usa _parse_inline — funciona em linha única OU multiline com \\n.
+    Caixa das letras SEMPRE preservada como digitada. Sem .upper() forçado.
+    5 layouts por seed % 5.
     """
     img_rgba = img.convert("RGBA")
-    draw     = ImageDraw.Draw(img_rgba, "RGBA")
-
     MARGIN   = 80
     MAX_PX   = int(W * 0.84)
     layout   = seed % 5
     cor_dest = AMARELO if seed % 2 == 0 else LARANJA
 
-    # ── Decide o modo de renderização ──
-    usa_segmentos = "\n" in tema
+    segmentos = _parse_inline(tema)
+    print(f"[titulo] layout={layout} segs={[(s['estilo'],s['texto'][:18]) for s in segmentos]}")
 
-    if usa_segmentos:
-        # MODO MANUAL: cada linha é um segmento com símbolo
-        segmentos = _parse_segmentos(tema)
-        texto_limpo = " ".join(s["texto"] for s in segmentos)
-        n = len(texto_limpo)
-        tam_ag = 148 if n <= 6 else 128 if n <= 10 else 108 if n <= 16 else \
-                  90 if n <= 24 else  76 if n <= 34 else 64
-        tam_ml    = max(44, int(tam_ag * 0.58))
-        ag_sp     = -3 if tam_ag >= 100 else -2
-        ag_est_sp = max(4, int(tam_ag * 0.06))  # expandido para Agilera estilizada
-        fa        = f_display(tam_ag)
-        fm        = f_corpo(tam_ml)
-        fb        = f_bold(tam_ml)
-
-        # Monta blocos: (linhas, fonte, cor, spacing, estilo)
-        blocos = []
-        for seg in segmentos:
-            txt = seg["texto"]
-            est = seg["estilo"]
-            if est == "agilera_est":
-                fonte = f_display(tam_ag)
-                sp    = ag_est_sp
-                cor   = cor_dest
-                lns   = _quebrar(txt, fonte, MAX_PX, sp)
-            elif est == "malgun":
-                fonte = fb
-                sp    = 0
-                cor   = BRANCO
-                lns   = _quebrar(txt, fonte, MAX_PX)
-            elif est == "fundo":
-                fonte = f_display(tam_ag)
-                sp    = ag_sp
-                cor   = MARINHO   # texto escuro sobre fundo claro
-                lns   = _quebrar(txt, fonte, MAX_PX - 40, sp)
-            else:  # normal
-                fonte = f_display(tam_ag)
-                sp    = ag_sp
-                cor   = BRANCO
-                lns   = _quebrar(txt.upper(), fonte, MAX_PX, sp)
-            blocos.append((lns, fonte, cor, sp, est))
-
-        gap_bloco = 16
-        h_bloco   = sum(int(_altura_linha(f) * 1.10) * len(ls)
-                        for ls, f, *_ in blocos) + gap_bloco * max(0, len(blocos) - 1)
-
-        # Zona vertical por layout
-        if layout == 0: Y_INI, Y_FIM = int(H * 0.55), int(H * 0.86)
-        elif layout == 1: Y_INI, Y_FIM = int(H * 0.30), int(H * 0.80)
-        elif layout == 2: Y_INI, Y_FIM = int(H * 0.62), int(H * 0.90)
-        elif layout == 3: Y_INI, Y_FIM = int(H * 0.08), int(H * 0.40)
-        else: Y_INI, Y_FIM = int(H * 0.52), int(H * 0.84)
-
-        zona = Y_FIM - Y_INI
-        y    = Y_INI + max(0, (zona - h_bloco) // 2)
-        y    = max(Y_INI, min(y, Y_FIM - h_bloco - 10))
-
-        for bi, (lns, fonte, cor, sp, est) in enumerate(blocos):
-            if bi > 0:
-                y += gap_bloco
-            esp = int(_altura_linha(fonte) * 1.10)
-            for linha in lns:
-                if est == "fundo":
-                    # Retangulo de destaque com cor da paleta
-                    pad_x, pad_y = 16, 8
-                    w_t = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
-                    h_t = _altura_linha(fonte, linha)
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    draw.rounded_rectangle(
-                        [(MARGIN - pad_x, y - pad_y), (MARGIN + w_t + pad_x, y + h_t + pad_y)],
-                        radius=8, fill=(*cor_dest, 210))
-                    _sombra(img_rgba, linha, fonte, MARGIN, y, sp)
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    _linha(draw, MARGIN, y, linha, fonte, (*MARINHO, 255), sp)
-                else:
-                    _sombra(img_rgba, linha, fonte, MARGIN, y, sp)
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    _linha(draw, MARGIN, y, linha, fonte, (*cor, 255), sp)
-                y += esp
-
+    # Tamanho pelo segmento AGILERA mais longo
+    textos_ag = [s["texto"] for s in segmentos if s["estilo"] in ("normal","agilera_est","fundo")]
+    n = max((len(t) for t in textos_ag), default=len(tema))
+    if layout == 2:
+        tam_ag = 160 if n<=8 else 140 if n<=14 else 118 if n<=20 else 96 if n<=28 else 78
     else:
-        # MODO AUTOMÁTICO: _split_tema + layout editorial
-        chave, complemento = _split_tema(tema)
-        n = len(tema)
+        tam_ag = 148 if n<=6 else 128 if n<=10 else 108 if n<=16 else 90 if n<=24 else 76 if n<=34 else 64
 
-        if layout == 2:
-            tam_ag = 160 if n <= 8 else 140 if n <= 14 else 118 if n <= 20 else 96 if n <= 28 else 78
-        else:
-            tam_ag = 148 if n <= 6 else 128 if n <= 10 else 108 if n <= 16 else \
-                      90 if n <= 24 else  76 if n <= 34 else 64
+    tam_ml    = max(44, int(tam_ag*0.58))
+    ag_sp     = -3 if tam_ag >= 100 else -2
+    ag_est_sp = max(4, int(tam_ag*0.06))
+    fa = f_display(tam_ag); fm = f_corpo(tam_ml); fb = f_bold(tam_ml)
 
-        tam_ml = max(44, int(tam_ag * 0.58))
-        ag_sp  = -3 if tam_ag >= 100 else -2
-        fa     = f_display(tam_ag)
-        fm     = f_corpo(tam_ml)
+    blocos = []
+    for seg in segmentos:
+        txt = seg["texto"].strip(); est = seg["estilo"]
+        if not txt: continue
+        if est == "agilera_est":
+            blocos.append((_quebrar(txt, fa, MAX_PX, ag_est_sp), fa, cor_dest, ag_est_sp, est))
+        elif est == "malgun":
+            blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
+        elif est == "fundo":
+            blocos.append((_quebrar(txt, fa, MAX_PX-48, ag_sp), fa, MARINHO, ag_sp, est))
+        else:  # normal — caixa preservada, sem .upper()
+            blocos.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, BRANCO, ag_sp, est))
 
-        chave_up     = chave.upper()
-        linhas_chave = _quebrar(chave_up, fa, MAX_PX, ag_sp)
-        linhas_comp  = _quebrar(complemento, fm, MAX_PX) if complemento else []
+    if not blocos: return img_rgba.convert("RGB"), layout
 
-        esp_ag  = int(_altura_linha(fa) * 1.08)
-        esp_ml  = int(_altura_linha(fm) * 1.20)
-        gap     = int(esp_ag * 0.18)
-        h_bloco = (esp_ag * len(linhas_chave)) + \
-                  (gap + esp_ml * len(linhas_comp) if linhas_comp else 0)
+    gap_bloco = max(10, int(tam_ag*0.12))
+    h_bloco   = sum(int(_altura_linha(f)*1.10)*len(ls) for ls,f,*_ in blocos) + gap_bloco*max(0,len(blocos)-1)
 
-        if layout == 0: Y_INI, Y_FIM = int(H * 0.55), int(H * 0.86)
-        elif layout == 1: Y_INI, Y_FIM = int(H * 0.30), int(H * 0.80)
-        elif layout == 2: Y_INI, Y_FIM = int(H * 0.62), int(H * 0.90)
-        elif layout == 3: Y_INI, Y_FIM = int(H * 0.08), int(H * 0.40)
-        else: Y_INI, Y_FIM = int(H * 0.52), int(H * 0.84)
+    if layout==0: Y_INI,Y_FIM = int(H*0.55),int(H*0.86)
+    elif layout==1: Y_INI,Y_FIM = int(H*0.30),int(H*0.80)
+    elif layout==2: Y_INI,Y_FIM = int(H*0.62),int(H*0.90)
+    elif layout==3: Y_INI,Y_FIM = int(H*0.08),int(H*0.40)
+    else: Y_INI,Y_FIM = int(H*0.52),int(H*0.84)
 
-        zona = Y_FIM - Y_INI
-        y    = Y_INI + max(0, (zona - h_bloco) // 2)
-        y    = max(Y_INI, min(y, Y_FIM - h_bloco - 10))
+    zona = Y_FIM - Y_INI
+    y    = Y_INI + max(0,(zona-h_bloco)//2)
+    y    = max(Y_INI, min(y, Y_FIM-h_bloco-10))
 
-        if layout == 4:
-            max_w = max((_medir_sp(l, fa, ag_sp) if ag_sp else _medir(l, fa)) for l in linhas_chave)
-            x_inicio = max(MARGIN, W - MARGIN - max_w)
-        else:
-            x_inicio = MARGIN
-
-        for i, linha in enumerate(linhas_chave):
-            cor = cor_dest if i == 0 else BRANCO
-            _sombra(img_rgba, linha, fa, x_inicio, y, ag_sp)
-            draw = ImageDraw.Draw(img_rgba, "RGBA")
-            _linha(draw, x_inicio, y, linha, fa, (*cor, 255), ag_sp)
-            y += esp_ag
-
-        if linhas_comp:
-            y += gap
-            for linha in linhas_comp:
-                _sombra(img_rgba, linha, fm, x_inicio, y)
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
-                _linha(draw, x_inicio, y, linha, fm, (*BRANCO, 232))
-                y += esp_ml
+    for bi,(lns,fonte,cor,sp,est) in enumerate(blocos):
+        if bi > 0: y += gap_bloco
+        esp = int(_altura_linha(fonte)*1.10)
+        for linha in lns:
+            draw = ImageDraw.Draw(img_rgba,"RGBA")
+            if est == "fundo":
+                pad_x,pad_y = 18,10
+                w_t = _medir_sp(linha,fonte,sp) if sp else _medir(linha,fonte)
+                h_t = _altura_linha(fonte,linha)
+                draw.rounded_rectangle(
+                    [(MARGIN-pad_x,y-pad_y),(MARGIN+w_t+pad_x,y+h_t+pad_y)],
+                    radius=10, fill=(*cor_dest,220))
+                _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
+                draw = ImageDraw.Draw(img_rgba,"RGBA")
+                _linha(draw,MARGIN,y,linha,fonte,(*MARINHO,255),sp)
+            else:
+                _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
+                draw = ImageDraw.Draw(img_rgba,"RGBA")
+                _linha(draw,MARGIN,y,linha,fonte,(*cor,255),sp)
+            y += esp
 
     return img_rgba.convert("RGB"), layout
 
@@ -829,14 +803,10 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
         if base is None:
             print("[card] foto falhou — fundo rico")
             base = gerar_fundo_rico(cor1, cor2, seed)
-            cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-            base = adicionar_elementos_decorativos(base, cor_ac, seed)
             lum_media = luminosidade_media(base)
     else:
         print("[card] sem imagem — fundo rico")
         base = gerar_fundo_rico(cor1, cor2, seed)
-        cor_ac = PETROLEO if sum(cor1) / 3 < 120 else VERDE_NEUTRO
-        base = adicionar_elementos_decorativos(base, cor_ac, seed)
         lum_media = luminosidade_media(base)
 
     # Layout (precisamos saber antes para passar ao overlay)
