@@ -9,3 +9,4 @@ flask-cors==5.0.0
 google-auth-httplib2==0.2.0
 rembg[cpu]
 numpy
+fonttools

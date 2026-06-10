@@ -189,11 +189,77 @@ try:
     _RAQM_OK = _pil_features.check("raqm")
 except Exception:
     pass
-print(f"[raqm] {'disponivel — liga+aalt ativos' if _RAQM_OK else 'indisponivel — usando tamanho maior como fallback'}")
+print(f"[raqm] {'disponivel' if _RAQM_OK else 'indisponivel'}")
+
+import tempfile as _tempfile
+_AGILERA_EST_PATH = None  # cache da fonte ornamental
+
+def _criar_fonte_ornamental():
+    """
+    Usa fonttools para criar uma versão da AGILERA onde os glifos ornamentais
+    (feature aalt) são mapeados como padrão no cmap.
+    Resultado cacheado em arquivo temporário.
+    """
+    global _AGILERA_EST_PATH
+    if _AGILERA_EST_PATH and os.path.isfile(_AGILERA_EST_PATH):
+        return _AGILERA_EST_PATH
+    fonte_path = _resolve_font_path("AGILERA.OTF")
+    if not fonte_path:
+        return None
+    try:
+        from fonttools import ttLib
+        font  = ttLib.TTFont(fonte_path)
+        if "GSUB" not in font:
+            return None
+        gsub = font["GSUB"].table
+        # Coleta substituições aalt (Single=1 e Alternate=3)
+        aalt_subst = {}
+        for feat in gsub.FeatureList.FeatureRecord:
+            if feat.FeatureTag != "aalt":
+                continue
+            for idx in feat.Feature.LookupListIndex:
+                lk = gsub.LookupList.Lookup[idx]
+                if lk.LookupType == 1:   # Single substitution
+                    for sub in lk.SubTable:
+                        for g, alt in sub.mapping.items():
+                            if g not in aalt_subst:
+                                aalt_subst[g] = alt
+                elif lk.LookupType == 3: # Alternate substitution
+                    for sub in lk.SubTable:
+                        for g, alts in sub.alternates.items():
+                            if g not in aalt_subst and alts:
+                                aalt_subst[g] = alts[0]
+        if not aalt_subst:
+            print("[font_est] nenhuma subst aalt encontrada")
+            return None
+        # Aplica no cmap: unicode → glifo ornamental
+        for tbl in font["cmap"].tables:
+            if tbl.format in (4, 12):
+                for code, glyph in list(tbl.cmap.items()):
+                    if glyph in aalt_subst:
+                        tbl.cmap[code] = aalt_subst[glyph]
+        tmp = _tempfile.NamedTemporaryFile(suffix=".otf", delete=False)
+        font.save(tmp.name)
+        _AGILERA_EST_PATH = tmp.name
+        print(f"[font_est] ornamental OK: {len(aalt_subst)} substituições aplicadas")
+        return tmp.name
+    except Exception as e:
+        print(f"[font_est] fonttools falhou: {e}")
+        return None
 
 def f_display_est(t):
-    """AGILERA estilizada: RAQM ativa liga+aalt (conectores ornamentais).
-    Sem RAQM: tamanho 1.38x para destacar os traços naturais da fonte."""
+    """
+    AGILERA estilizada:
+    1. fonttools: aplica aalt (conectores ornamentais) — garantido
+    2. RAQM: liga+aalt via layout engine — fallback
+    3. Tamanho maior: destaca traços naturais — último recurso
+    """
+    est_path = _criar_fonte_ornamental()
+    if est_path:
+        try:
+            return ImageFont.truetype(est_path, t)
+        except Exception as e:
+            print(f"[font_est] erro ao carregar ornamental: {e}")
     p = _resolve_font_path("AGILERA.OTF")
     if p:
         if _RAQM_OK:
@@ -806,18 +872,16 @@ def desenhar_titulo(img, tema, seed):
             draw = ImageDraw.Draw(img_rgba,"RGBA")
             if est == "fundo":
                 pad_x, pad_y = 16, 10
-                # Usa o bbox real do texto para centralizar dentro do retangulo
                 try:
                     bb = fonte.getbbox(linha)
-                    # bb = (left, top, right, bottom) — top pode ser negativo
-                    txt_x0 = MARGIN - bb[0]          # compensa o left bearing
-                    txt_y0 = y - bb[1]               # sobe para alinhar ao topo real do glifo
+                    # bb = (left, top, right, bottom) relativo ao ponto de origem
+                    # bb[1] é negativo (ascendente acima da origem)
+                    # bb[3] é positivo (descendente abaixo da origem)
                     rect_x1 = MARGIN - pad_x
-                    rect_y1 = y + bb[1] - pad_y      # topo real do glifo menos padding
+                    rect_y1 = y + bb[1] - pad_y
                     rect_x2 = MARGIN + (bb[2] - bb[0]) + pad_x
-                    rect_y2 = y + bb[3] + pad_y      # base real do glifo mais padding
+                    rect_y2 = y + bb[3] + pad_y
                 except Exception:
-                    txt_x0, txt_y0 = MARGIN, y
                     rect_x1 = MARGIN - pad_x
                     rect_y1 = y - pad_y
                     rect_x2 = MARGIN + _medir(linha, fonte) + pad_x
@@ -825,7 +889,8 @@ def desenhar_titulo(img, tema, seed):
                 draw.rectangle([(rect_x1, rect_y1),(rect_x2, rect_y2)],
                                fill=(*cor_dest, 255))
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
-                draw.text((txt_x0, txt_y0), linha, font=fonte, fill=(*MARINHO, 255))
+                # Texto na posição normal — PIL usa y como origem, glifos sobem/descem a partir daí
+                _linha(draw, MARGIN, y, linha, fonte, (*MARINHO, 255), 0)
             else:
                 _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
                 draw = ImageDraw.Draw(img_rgba,"RGBA")
