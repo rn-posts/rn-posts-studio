@@ -193,14 +193,18 @@ print(f"[raqm] {'disponivel' if _RAQM_OK else 'indisponivel'}")
 
 import tempfile as _tempfile
 _AGILERA_EST_PATH = None  # cache da fonte ornamental
+_LIGA_SUBST       = {}    # cache: {"ra": "\uE000", ...} — substituições de texto
+_PUA_START        = 0xE000
 
-def _criar_fonte_ornamental():
+def _preparar_fonte_estilizada():
     """
-    Usa fonttools para criar uma versão da AGILERA onde os glifos ornamentais
-    (feature aalt) são mapeados como padrão no cmap.
-    Resultado cacheado em arquivo temporário.
+    Usa fonttools para criar uma versão ornamental da AGILERA:
+    1. Aplica aalt — glifos ornamentais como padrão
+    2. Mapeia ligaturas (liga) para caracteres PUA (U+E000+)
+       para que sejam renderáveis sem RAQM via substituição de texto
+    Resultados cacheados em globais.
     """
-    global _AGILERA_EST_PATH
+    global _AGILERA_EST_PATH, _LIGA_SUBST
     if _AGILERA_EST_PATH and os.path.isfile(_AGILERA_EST_PATH):
         return _AGILERA_EST_PATH
     fonte_path = _resolve_font_path("AGILERA.OTF")
@@ -208,53 +212,99 @@ def _criar_fonte_ornamental():
         return None
     try:
         from fonttools import ttLib
-        font  = ttLib.TTFont(fonte_path)
+        font = ttLib.TTFont(fonte_path)
         if "GSUB" not in font:
             return None
         gsub = font["GSUB"].table
-        # Coleta substituições aalt (Single=1 e Alternate=3)
+
+        # ── 1. Coleta aalt (Single=1, Alternate=3) ──
         aalt_subst = {}
         for feat in gsub.FeatureList.FeatureRecord:
             if feat.FeatureTag != "aalt":
                 continue
             for idx in feat.Feature.LookupListIndex:
                 lk = gsub.LookupList.Lookup[idx]
-                if lk.LookupType == 1:   # Single substitution
+                if lk.LookupType == 1:
                     for sub in lk.SubTable:
                         for g, alt in sub.mapping.items():
                             if g not in aalt_subst:
                                 aalt_subst[g] = alt
-                elif lk.LookupType == 3: # Alternate substitution
+                elif lk.LookupType == 3:
                     for sub in lk.SubTable:
                         for g, alts in sub.alternates.items():
                             if g not in aalt_subst and alts:
                                 aalt_subst[g] = alts[0]
-        if not aalt_subst:
-            print("[font_est] nenhuma subst aalt encontrada")
-            return None
-        # Aplica no cmap: unicode → glifo ornamental
+
+        # ── 2. Coleta liga (LookupType 4) ──
+        cmap     = font.getBestCmap() or {}
+        rev_cmap = {v: k for k, v in cmap.items()}  # glyph_name → char_code
+        liga_glyphs = {}   # seq_str → liga_glyph_name
+        for feat in gsub.FeatureList.FeatureRecord:
+            if feat.FeatureTag != "liga":
+                continue
+            for idx in feat.Feature.LookupListIndex:
+                lk = gsub.LookupList.Lookup[idx]
+                if lk.LookupType != 4:
+                    continue
+                for sub in lk.SubTable:
+                    for first_g, ligs in sub.ligatures.items():
+                        for lig in ligs:
+                            seq_glyphs = [first_g] + list(lig.Component)
+                            seq_chars  = ""
+                            ok = True
+                            for g in seq_glyphs:
+                                if g in rev_cmap:
+                                    seq_chars += chr(rev_cmap[g])
+                                else:
+                                    ok = False; break
+                            if ok and len(seq_chars) > 1:
+                                liga_glyphs[seq_chars] = lig.LigGlyph
+        print(f"[liga] {len(liga_glyphs)} pares: {list(liga_glyphs.keys())}")
+
+        # ── 3. Mapeia ligaduras para PUA ──
+        pua = _PUA_START
+        text_subst = {}
+        for seq, liga_glyph in liga_glyphs.items():
+            for tbl in font["cmap"].tables:
+                if tbl.format in (4, 12):
+                    tbl.cmap[pua] = liga_glyph
+            text_subst[seq] = chr(pua)
+            pua += 1
+
+        # ── 4. Aplica aalt no cmap ──
         for tbl in font["cmap"].tables:
             if tbl.format in (4, 12):
                 for code, glyph in list(tbl.cmap.items()):
-                    if glyph in aalt_subst:
+                    if glyph in aalt_subst and code < _PUA_START:
                         tbl.cmap[code] = aalt_subst[glyph]
+
         tmp = _tempfile.NamedTemporaryFile(suffix=".otf", delete=False)
         font.save(tmp.name)
         _AGILERA_EST_PATH = tmp.name
-        print(f"[font_est] ornamental OK: {len(aalt_subst)} substituições aplicadas")
+        _LIGA_SUBST       = text_subst
+        print(f"[font_est] OK: {len(aalt_subst)} aalt + {len(text_subst)} liga")
         return tmp.name
     except Exception as e:
         print(f"[font_est] fonttools falhou: {e}")
         return None
 
+def _aplicar_ligaturas(texto):
+    """Substitui sequências de texto por caracteres PUA de ligatura."""
+    if not _LIGA_SUBST:
+        return texto
+    # Ordena do mais longo para o mais curto (evita conflitos)
+    for seq in sorted(_LIGA_SUBST, key=len, reverse=True):
+        texto = texto.replace(seq, _LIGA_SUBST[seq])
+    return texto
+
 def f_display_est(t):
     """
     AGILERA estilizada:
-    1. fonttools: aplica aalt (conectores ornamentais) — garantido
-    2. RAQM: liga+aalt via layout engine — fallback
-    3. Tamanho maior: destaca traços naturais — último recurso
+    1. fonttools: aalt + liga via PUA
+    2. RAQM fallback
+    3. Tamanho maior como último recurso
     """
-    est_path = _criar_fonte_ornamental()
+    est_path = _preparar_fonte_estilizada()
     if est_path:
         try:
             return ImageFont.truetype(est_path, t)
@@ -840,7 +890,9 @@ def desenhar_titulo(img, tema, seed):
             # Sem RAQM: tamanho 1.38x destaca os traços elegantes da fonte
             tam_est = int(tam_ag * 1.38)
             fa_est  = f_display_est(tam_est)
-            lns     = _quebrar(txt, fa_est, MAX_PX, ag_sp)
+            # Aplica substituições de ligatura via PUA
+            txt_lig = _aplicar_ligaturas(txt)
+            lns     = _quebrar(txt_lig, fa_est, MAX_PX, ag_sp)
             blocos.append((lns, fa_est, cor_dest, ag_sp, est))
         elif est == "malgun":
             blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
@@ -886,8 +938,9 @@ def desenhar_titulo(img, tema, seed):
                     rect_y1 = y - pad_y
                     rect_x2 = MARGIN + _medir(linha, fonte) + pad_x
                     rect_y2 = y + _altura_linha(fonte, linha) + pad_y
-                draw.rectangle([(rect_x1, rect_y1),(rect_x2, rect_y2)],
-                               fill=(*cor_dest, 255))
+                draw.rounded_rectangle(
+                    [(rect_x1, rect_y1),(rect_x2, rect_y2)],
+                    radius=8, fill=(*cor_dest, 255))
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 # Texto na posição normal — PIL usa y como origem, glifos sobem/descem a partir daí
                 _linha(draw, MARGIN, y, linha, fonte, (*MARINHO, 255), 0)
