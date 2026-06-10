@@ -182,6 +182,44 @@ for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
     _p  = _resolve_font_path(_fn)
     print(f"[font] {'OK  ' if _p else 'MISS'} {_fn}" + (f" => {_p}" if _p else " <= FALTANDO!"))
 
+# Verifica suporte RAQM (ativa liga+aalt na AGILERA estilizada)
+_RAQM_OK = False
+try:
+    from PIL import features as _pil_features
+    _RAQM_OK = _pil_features.check("raqm")
+except Exception:
+    pass
+print(f"[raqm] {'disponivel — liga+aalt ativos' if _RAQM_OK else 'indisponivel — usando tamanho maior como fallback'}")
+
+def f_display_est(t):
+    """AGILERA estilizada: RAQM ativa liga+aalt (conectores ornamentais).
+    Sem RAQM: tamanho 1.38x para destacar os traços naturais da fonte."""
+    p = _resolve_font_path("AGILERA.OTF")
+    if p:
+        if _RAQM_OK:
+            try:
+                return ImageFont.truetype(p, t, layout_engine=ImageFont.Layout.RAQM)
+            except Exception:
+                pass
+        try:
+            return ImageFont.truetype(p, t)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default(size=t)
+    except Exception:
+        return ImageFont.load_default()
+
+def _linha_est(draw, x, y, texto, fonte, cor):
+    """Renderiza com liga+aalt se RAQM disponivel, caso contrario normal."""
+    if _RAQM_OK:
+        try:
+            draw.text((x, y), texto, font=fonte, fill=cor, features=["liga", "aalt"])
+            return
+        except Exception:
+            pass
+    draw.text((x, y), texto, font=fonte, fill=cor)
+
 # ── IA ────────────────────────────────────────────────────────────────────────
 ASSINATURA = (
     "\n\n\U0001f468\u200d\U0001f4bc Ronilson Nogueira\n"
@@ -732,11 +770,17 @@ def desenhar_titulo(img, tema, seed):
         txt = seg["texto"].strip(); est = seg["estilo"]
         if not txt: continue
         if est == "agilera_est":
-            blocos.append((_quebrar(txt, fa, MAX_PX, ag_est_sp), fa, cor_dest, ag_est_sp, est))
+            # RAQM: ativa liga+aalt (conectores ornamentais naturais da AGILERA)
+            # Sem RAQM: tamanho 1.38x destaca os traços elegantes da fonte
+            tam_est = int(tam_ag * 1.38)
+            fa_est  = f_display_est(tam_est)
+            lns     = _quebrar(txt, fa_est, MAX_PX, ag_sp)
+            blocos.append((lns, fa_est, cor_dest, ag_sp, est))
         elif est == "malgun":
             blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
         elif est == "fundo":
-            blocos.append((_quebrar(txt, fa, MAX_PX-48, ag_sp), fa, MARINHO, ag_sp, est))
+            # Retângulo sólido, texto em MALGUN bold escuro
+            blocos.append((_quebrar(txt, fb, MAX_PX - 48), fb, MARINHO, 0, est))
         else:  # normal — caixa preservada, sem .upper()
             blocos.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, BRANCO, ag_sp, est))
 
@@ -761,19 +805,34 @@ def desenhar_titulo(img, tema, seed):
         for linha in lns:
             draw = ImageDraw.Draw(img_rgba,"RGBA")
             if est == "fundo":
-                pad_x,pad_y = 18,10
-                w_t = _medir_sp(linha,fonte,sp) if sp else _medir(linha,fonte)
-                h_t = _altura_linha(fonte,linha)
-                draw.rounded_rectangle(
-                    [(MARGIN-pad_x,y-pad_y),(MARGIN+w_t+pad_x,y+h_t+pad_y)],
-                    radius=10, fill=(*cor_dest,220))
-                _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
-                draw = ImageDraw.Draw(img_rgba,"RGBA")
-                _linha(draw,MARGIN,y,linha,fonte,(*MARINHO,255),sp)
+                pad_x, pad_y = 16, 10
+                # Usa o bbox real do texto para centralizar dentro do retangulo
+                try:
+                    bb = fonte.getbbox(linha)
+                    # bb = (left, top, right, bottom) — top pode ser negativo
+                    txt_x0 = MARGIN - bb[0]          # compensa o left bearing
+                    txt_y0 = y - bb[1]               # sobe para alinhar ao topo real do glifo
+                    rect_x1 = MARGIN - pad_x
+                    rect_y1 = y + bb[1] - pad_y      # topo real do glifo menos padding
+                    rect_x2 = MARGIN + (bb[2] - bb[0]) + pad_x
+                    rect_y2 = y + bb[3] + pad_y      # base real do glifo mais padding
+                except Exception:
+                    txt_x0, txt_y0 = MARGIN, y
+                    rect_x1 = MARGIN - pad_x
+                    rect_y1 = y - pad_y
+                    rect_x2 = MARGIN + _medir(linha, fonte) + pad_x
+                    rect_y2 = y + _altura_linha(fonte, linha) + pad_y
+                draw.rectangle([(rect_x1, rect_y1),(rect_x2, rect_y2)],
+                               fill=(*cor_dest, 255))
+                draw = ImageDraw.Draw(img_rgba, "RGBA")
+                draw.text((txt_x0, txt_y0), linha, font=fonte, fill=(*MARINHO, 255))
             else:
                 _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
                 draw = ImageDraw.Draw(img_rgba,"RGBA")
-                _linha(draw,MARGIN,y,linha,fonte,(*cor,255),sp)
+                if est == "agilera_est":
+                    _linha_est(draw, MARGIN, y, linha, fonte, (*cor, 255))
+                else:
+                    _linha(draw,MARGIN,y,linha,fonte,(*cor,255),sp)
             y += esp
 
     return img_rgba.convert("RGB"), layout
