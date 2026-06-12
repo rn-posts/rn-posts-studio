@@ -1062,16 +1062,12 @@ def health():
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
-    rembg_ok = False
-    try:
-        get_rembg()
-        rembg_ok = True
-    except Exception:
-        pass
+    # NAO chamar get_rembg() aqui — importa numba/onnxruntime, JIT compile > 120s mata o worker
     return jsonify({
         "status": "ok", "dimensoes": f"{W}x{H}",
         "fontes": fontes, "caminhos": caminhos,
-        "rembg": rembg_ok,
+        "raqm": _RAQM_OK,
+        "liga_count": len(_LIGA_SUBST),
         "ronilson_path": PASTA_RONILSON,
     })
 
