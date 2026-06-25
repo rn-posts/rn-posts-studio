@@ -117,6 +117,51 @@ PRETO         = (20,  20,  20)
 PALETA_9      = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO, BRANCO,
                  LARANJA, VERDE_VIVO, VERDE_CITRICO, AMARELO]
 
+# ── Zona Segura Instagram 4:5 (1012×1230 centralizada em 1080×1350) ──────────
+SAFE_LEFT   = 34    # (1080 - 1012) / 2
+SAFE_RIGHT  = 1046  # 1080 - 34
+SAFE_TOP    = 60    # (1350 - 1230) / 2
+SAFE_BOTTOM = 1290  # 1350 - 60
+SAFE_W      = 1012  # largura útil
+SAFE_H      = 1230  # altura útil
+SAFE_MARGIN = SAFE_LEFT + 46  # 80px — margem interna para texto
+SAFE_MAX_PX = SAFE_W - 92     # largura máxima do texto (920px)
+
+# ── Sistema de Cores Inteligente ─────────────────────────────────────────────
+# Cores vibrantes para destaque sobre overlay escuro (bom contraste):
+CORES_DESTAQUE = [
+    LARANJA,        # 0 — energia, esperança (identidade principal)
+    AMARELO,        # 1 — otimismo, vitalidade
+    TEAL,           # 2 — frescor, dinamismo
+    VERDE_VIVO,     # 3 — renovação, crescimento
+    VERDE_CITRICO,  # 4 — jovialidade, leveza
+    BRANCO,         # 5 — leveza, transparência
+    VERDE_NEUTRO,   # 6 — natureza, equilíbrio
+    LARANJA,        # 7 — (repetição p/ balancear probabilidade)
+    AMARELO,        # 8 — (repetição p/ balancear probabilidade)
+]
+
+# Cor do texto dentro do highlight (fundo preenchido): precisa ter bom
+# contraste com a cor de destaque. Escuros sobre claros, claros sobre escuros.
+CORES_FUNDO_TEXTO = {
+    LARANJA:       MARINHO,     # texto escuro sobre fundo laranja
+    AMARELO:       MARINHO,     # texto escuro sobre fundo amarelo
+    TEAL:          BRANCO,      # texto claro sobre fundo teal
+    VERDE_VIVO:    MARINHO,     # texto escuro sobre fundo verde
+    VERDE_CITRICO: MARINHO,     # texto escuro sobre fundo verde cítrico
+    BRANCO:        MARINHO,     # texto escuro sobre fundo branco
+    VERDE_NEUTRO:  BRANCO,      # texto claro sobre fundo verde neutro
+    PETROLEO:      BRANCO,      # texto claro sobre fundo petróleo
+    MARINHO:       BRANCO,      # texto claro sobre fundo marinho
+}
+
+def _escolher_cor_destaque(seed):
+    """Escolhe cor de destaque usando seed % 9 para rotação completa."""
+    idx = seed % len(CORES_DESTAQUE)
+    cor = CORES_DESTAQUE[idx]
+    cor_fundo_txt = CORES_FUNDO_TEXTO.get(cor, MARINHO)
+    return cor, cor_fundo_txt
+
 _cards_pendentes = {}
 
 MAPA_PASTAS = {
@@ -858,12 +903,18 @@ def desenhar_titulo(img, tema, seed):
     Usa _parse_inline — funciona em linha única OU multiline com \\n.
     Caixa das letras SEMPRE preservada como digitada. Sem .upper() forçado.
     5 layouts por seed % 5.
+    
+    ZONA SEGURA: Todo texto fica dentro de 1012×1230px centralizado.
+    CORES: Rotação inteligente das 9 cores da paleta AlvoreSer.
     """
     img_rgba = img.convert("RGBA")
-    MARGIN   = 80
-    MAX_PX   = int(W * 0.84)
+    MARGIN   = SAFE_MARGIN   # 80px (dentro da zona segura)
+    MAX_PX   = SAFE_MAX_PX   # 920px (largura útil)
     layout   = seed % 5
-    cor_dest = AMARELO if seed % 2 == 0 else LARANJA
+    
+    # ── Cor de destaque rotativa (9 cores da paleta) ──
+    cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
+    print(f"[titulo] cor_dest=RGB{cor_dest} cor_fundo_txt=RGB{cor_fundo_txt}")
 
     segmentos = _parse_inline(tema)
     print(f"[titulo] layout={layout} segs={[(s['estilo'],s['texto'][:18]) for s in segmentos]}")
@@ -886,19 +937,15 @@ def desenhar_titulo(img, tema, seed):
         txt = seg["texto"].strip(); est = seg["estilo"]
         if not txt: continue
         if est == "agilera_est":
-            # RAQM: ativa liga+aalt (conectores ornamentais naturais da AGILERA)
-            # Sem RAQM: tamanho 1.38x destaca os traços elegantes da fonte
             tam_est = int(tam_ag * 1.38)
             fa_est  = f_display_est(tam_est)
-            # Aplica substituições de ligatura via PUA
             txt_lig = _aplicar_ligaturas(txt)
             lns     = _quebrar(txt_lig, fa_est, MAX_PX, ag_sp)
             blocos.append((lns, fa_est, cor_dest, ag_sp, est))
         elif est == "malgun":
             blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
         elif est == "fundo":
-            # Retângulo sólido, texto em MALGUN bold escuro
-            blocos.append((_quebrar(txt, fb, MAX_PX - 48), fb, MARINHO, 0, est))
+            blocos.append((_quebrar(txt, fb, MAX_PX - 48), fb, cor_fundo_txt, 0, est))
         else:  # normal — caixa preservada, sem .upper()
             blocos.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, BRANCO, ag_sp, est))
 
@@ -907,15 +954,19 @@ def desenhar_titulo(img, tema, seed):
     gap_bloco = max(10, int(tam_ag*0.12))
     h_bloco   = sum(int(_altura_linha(f)*1.10)*len(ls) for ls,f,*_ in blocos) + gap_bloco*max(0,len(blocos)-1)
 
-    if layout==0: Y_INI,Y_FIM = int(H*0.55),int(H*0.86)
-    elif layout==1: Y_INI,Y_FIM = int(H*0.30),int(H*0.80)
-    elif layout==2: Y_INI,Y_FIM = int(H*0.62),int(H*0.90)
-    elif layout==3: Y_INI,Y_FIM = int(H*0.08),int(H*0.40)
-    else: Y_INI,Y_FIM = int(H*0.52),int(H*0.84)
+    # ── Layouts dentro da ZONA SEGURA ──
+    # Todos os Y_INI e Y_FIM ficam dentro de [SAFE_TOP, SAFE_BOTTOM]
+    if layout==0:   Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.58)), min(SAFE_BOTTOM, int(H*0.90))
+    elif layout==1: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.55)), min(SAFE_BOTTOM, int(H*0.88))
+    elif layout==2: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.62)), min(SAFE_BOTTOM, int(H*0.92))
+    elif layout==3: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.08)), min(SAFE_BOTTOM, int(H*0.38))
+    else:           Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.56)), min(SAFE_BOTTOM, int(H*0.89))
 
     zona = Y_FIM - Y_INI
     y    = Y_INI + max(0,(zona-h_bloco)//2)
     y    = max(Y_INI, min(y, Y_FIM-h_bloco-10))
+    # Garantia final: nunca ultrapassar zona segura
+    y    = max(SAFE_TOP, min(y, SAFE_BOTTOM - h_bloco))
 
     for bi,(lns,fonte,cor,sp,est) in enumerate(blocos):
         if bi > 0: y += gap_bloco
@@ -926,9 +977,6 @@ def desenhar_titulo(img, tema, seed):
                 pad_x, pad_y = 16, 10
                 try:
                     bb = fonte.getbbox(linha)
-                    # bb = (left, top, right, bottom) relativo ao ponto de origem
-                    # bb[1] é negativo (ascendente acima da origem)
-                    # bb[3] é positivo (descendente abaixo da origem)
                     rect_x1 = MARGIN - pad_x
                     rect_y1 = y + bb[1] - pad_y
                     rect_x2 = MARGIN + (bb[2] - bb[0]) + pad_x
@@ -942,8 +990,7 @@ def desenhar_titulo(img, tema, seed):
                     [(rect_x1, rect_y1),(rect_x2, rect_y2)],
                     radius=8, fill=(*cor_dest, 255))
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
-                # Texto na posição normal — PIL usa y como origem, glifos sobem/descem a partir daí
-                _linha(draw, MARGIN, y, linha, fonte, (*MARINHO, 255), 0)
+                _linha(draw, MARGIN, y, linha, fonte, (*cor_fundo_txt, 255), 0)
             else:
                 _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
                 draw = ImageDraw.Draw(img_rgba,"RGBA")
