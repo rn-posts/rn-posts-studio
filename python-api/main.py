@@ -1,5 +1,5 @@
 """
-python-api/main.py  —  AlvoreSer Instagram Posts  —  v11
+python-api/main.py  —  AlvoreSer Instagram Posts  —  v12
 
 PIPELINE DEFINITIVO
 ===================
@@ -13,11 +13,30 @@ Overlay
   - Adaptativo: mede a luminosidade da foto e ajusta a intensidade
   - Foto clara  → overlay mais pesado para garantir legibilidade
   - Foto escura → overlay mais leve
+  - Cor escolhida por harmonia com a cor dominante da foto
+    (9 cores da paleta disponíveis, score = distância_foto × escuridão)
+  - Direção varia por seed % 4:
+      0 → gradiente na base   (padrão editorial)
+      1 → gradiente no topo   (layout invertido)
+      2 → gradiente à esquerda
+      3 → gradiente à direita
+    Layout 3 (texto no topo) força direção topo independente do seed.
 
 Tipografia
-  AGILERA → chave / palavra-chave (maiúsculo, cor destaque)
+  AGILERA → chave / palavra-chave (cor destaque, caixa preservada)
   MALGUN  → complemento / texto explicativo (branco, caixa preservada)
-  Separadores que dividem: "e", "são", "é", "como", ":", "—", "-"
+
+  Símbolos inline (prefixo na palavra):
+    (sem símbolo) → AGILERA normal, branco
+    *palavra      → AGILERA estilizada, cor destaque
+    :palavra      → MALGUN bold, branco
+    -palavra      → AGILERA com fundo preenchido (highlight)
+
+  Palavras consecutivas com o mesmo símbolo são agrupadas.
+  Caixa SEMPRE preservada como digitada — sem .upper() forçado.
+
+  Modo automático (sem símbolos): divide pelo primeiro separador natural
+  ("e", "são", "é", "como", ":", "—", "-") em (AGILERA + MALGUN).
 
 Layout (varia por seed — 5 estratégias distintas)
   0 → texto no terço inferior esquerdo  (padrão editorial)
@@ -100,7 +119,6 @@ GROQ_URL             = "https://api.groq.com/openai/v1/chat/completions"
 W, H = 1080, 1350
 CLOUDINARY_POSTS   = "AlvoreSer_Posts"
 CLOUDINARY_PREVIEW = "AlvoreSer_Preview"
-# IMPORTANTE: path exato como está no Cloudinary — case-sensitive
 PASTA_RONILSON     = "banco de imagens/ronilson"
 
 # ── Paleta AlvoreSer ──────────────────────────────────────────────────────────
@@ -118,49 +136,70 @@ PALETA_9      = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO, BRANCO,
                  LARANJA, VERDE_VIVO, VERDE_CITRICO, AMARELO]
 
 # ── Zona Segura Instagram 4:5 (1012×1230 centralizada em 1080×1350) ──────────
-SAFE_LEFT   = 34    # (1080 - 1012) / 2
-SAFE_RIGHT  = 1046  # 1080 - 34
-SAFE_TOP    = 60    # (1350 - 1230) / 2
-SAFE_BOTTOM = 1290  # 1350 - 60
-SAFE_W      = 1012  # largura útil
-SAFE_H      = 1230  # altura útil
-SAFE_MARGIN = SAFE_LEFT + 46  # 80px — margem interna para texto
-SAFE_MAX_PX = SAFE_W - 92     # largura máxima do texto (920px)
+SAFE_LEFT   = 34
+SAFE_RIGHT  = 1046
+SAFE_TOP    = 60
+SAFE_BOTTOM = 1290
+SAFE_W      = 1012
+SAFE_H      = 1230
+SAFE_MARGIN = SAFE_LEFT + 46   # 80px — margem interna para texto
+SAFE_MAX_PX = SAFE_W - 92      # 920px — largura máxima do texto
 
-# ── Sistema de Cores Inteligente ─────────────────────────────────────────────
-# Cores vibrantes para destaque sobre overlay escuro (bom contraste):
+# ── Sistema de Cores ──────────────────────────────────────────────────────────
 CORES_DESTAQUE = [
-    LARANJA,        # 0 — energia, esperança (identidade principal)
+    LARANJA,        # 0 — energia, esperança
     AMARELO,        # 1 — otimismo, vitalidade
     TEAL,           # 2 — frescor, dinamismo
     VERDE_VIVO,     # 3 — renovação, crescimento
     VERDE_CITRICO,  # 4 — jovialidade, leveza
     BRANCO,         # 5 — leveza, transparência
     VERDE_NEUTRO,   # 6 — natureza, equilíbrio
-    LARANJA,        # 7 — (repetição p/ balancear probabilidade)
-    AMARELO,        # 8 — (repetição p/ balancear probabilidade)
+    MARINHO,        # 7 — profundidade, confiança
+    PETROLEO,       # 8 — sofisticação, seriedade
 ]
 
-# Cor do texto dentro do highlight (fundo preenchido): precisa ter bom
-# contraste com a cor de destaque. Escuros sobre claros, claros sobre escuros.
 CORES_FUNDO_TEXTO = {
-    LARANJA:       MARINHO,     # texto escuro sobre fundo laranja
-    AMARELO:       MARINHO,     # texto escuro sobre fundo amarelo
-    TEAL:          BRANCO,      # texto claro sobre fundo teal
-    VERDE_VIVO:    MARINHO,     # texto escuro sobre fundo verde
-    VERDE_CITRICO: MARINHO,     # texto escuro sobre fundo verde cítrico
-    BRANCO:        MARINHO,     # texto escuro sobre fundo branco
-    VERDE_NEUTRO:  BRANCO,      # texto claro sobre fundo verde neutro
-    PETROLEO:      BRANCO,      # texto claro sobre fundo petróleo
-    MARINHO:       BRANCO,      # texto claro sobre fundo marinho
+    LARANJA:       MARINHO,
+    AMARELO:       MARINHO,
+    TEAL:          BRANCO,
+    VERDE_VIVO:    MARINHO,
+    VERDE_CITRICO: MARINHO,
+    BRANCO:        MARINHO,
+    VERDE_NEUTRO:  BRANCO,
+    PETROLEO:      BRANCO,
+    MARINHO:       BRANCO,
 }
 
 def _escolher_cor_destaque(seed):
-    """Escolhe cor de destaque usando seed % 9 para rotação completa."""
     idx = seed % len(CORES_DESTAQUE)
     cor = CORES_DESTAQUE[idx]
-    cor_fundo_txt = CORES_FUNDO_TEXTO.get(cor, MARINHO)
-    return cor, cor_fundo_txt
+    return cor, CORES_FUNDO_TEXTO.get(cor, MARINHO)
+
+# ── Overlay por harmonia com a foto ──────────────────────────────────────────
+_OVERLAY_ESCURIDAO = {
+    MARINHO:       0.92,
+    PETROLEO:      0.80,
+    TEAL:          0.60,
+    VERDE_NEUTRO:  0.55,
+    VERDE_VIVO:    0.45,
+    VERDE_CITRICO: 0.35,
+    LARANJA:       0.38,
+    AMARELO:       0.25,
+    BRANCO:        0.10,
+}
+
+def _escolher_cor_overlay(cor_dominante_foto):
+    melhor_cor   = MARINHO
+    melhor_score = -1.0
+    dist_max     = math.sqrt(255**2 * 3)
+    for cor in PALETA_9:
+        dist  = distancia_cor(cor_dominante_foto, cor) / dist_max
+        peso  = _OVERLAY_ESCURIDAO.get(cor, 0.5)
+        score = dist * peso
+        if score > melhor_score:
+            melhor_score = score
+            melhor_cor   = cor
+    return melhor_cor
 
 _cards_pendentes = {}
 
@@ -183,10 +222,10 @@ MAPA_PASTAS = {
 }
 
 # ── Fontes ────────────────────────────────────────────────────────────────────
-ROOT_DIR   = os.path.join(os.path.dirname(__file__), "..")
+ROOT_DIR    = os.path.join(os.path.dirname(__file__), "..")
 _FONTS_DIRS = [
-    os.path.join(os.path.dirname(__file__), "fonts"),   # python-api/fonts/ — garantido no Render
-    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),    # src/Brand/fonts/  — local
+    os.path.join(os.path.dirname(__file__), "fonts"),
+    os.path.join(ROOT_DIR, "src", "Brand", "fonts"),
 ]
 
 def _resolve_font_path(nome):
@@ -224,10 +263,9 @@ def f_corpo(t):   return _font("MALGUN.TTF",   t)
 def f_light(t):   return _font("MALGUNSL.TTF", t)
 
 for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
-    _p  = _resolve_font_path(_fn)
+    _p = _resolve_font_path(_fn)
     print(f"[font] {'OK  ' if _p else 'MISS'} {_fn}" + (f" => {_p}" if _p else " <= FALTANDO!"))
 
-# Verifica suporte RAQM (ativa liga+aalt na AGILERA estilizada)
 _RAQM_OK = False
 try:
     from PIL import features as _pil_features
@@ -237,18 +275,11 @@ except Exception:
 print(f"[raqm] {'disponivel' if _RAQM_OK else 'indisponivel'}")
 
 import tempfile as _tempfile
-_AGILERA_EST_PATH = None  # cache da fonte ornamental
-_LIGA_SUBST       = {}    # cache: {"ra": "\uE000", ...} — substituições de texto
+_AGILERA_EST_PATH = None
+_LIGA_SUBST       = {}
 _PUA_START        = 0xE000
 
 def _preparar_fonte_estilizada():
-    """
-    Usa fonttools para criar uma versão ornamental da AGILERA:
-    1. Aplica aalt — glifos ornamentais como padrão
-    2. Mapeia ligaturas (liga) para caracteres PUA (U+E000+)
-       para que sejam renderáveis sem RAQM via substituição de texto
-    Resultados cacheados em globais.
-    """
     global _AGILERA_EST_PATH, _LIGA_SUBST
     if _AGILERA_EST_PATH and os.path.isfile(_AGILERA_EST_PATH):
         return _AGILERA_EST_PATH
@@ -262,7 +293,6 @@ def _preparar_fonte_estilizada():
             return None
         gsub = font["GSUB"].table
 
-        # ── 1. Coleta aalt (Single=1, Alternate=3) ──
         aalt_subst = {}
         for feat in gsub.FeatureList.FeatureRecord:
             if feat.FeatureTag != "aalt":
@@ -280,10 +310,9 @@ def _preparar_fonte_estilizada():
                             if g not in aalt_subst and alts:
                                 aalt_subst[g] = alts[0]
 
-        # ── 2. Coleta liga (LookupType 4) ──
-        cmap     = font.getBestCmap() or {}
-        rev_cmap = {v: k for k, v in cmap.items()}  # glyph_name → char_code
-        liga_glyphs = {}   # seq_str → liga_glyph_name
+        cmap        = font.getBestCmap() or {}
+        rev_cmap    = {v: k for k, v in cmap.items()}
+        liga_glyphs = {}
         for feat in gsub.FeatureList.FeatureRecord:
             if feat.FeatureTag != "liga":
                 continue
@@ -306,8 +335,7 @@ def _preparar_fonte_estilizada():
                                 liga_glyphs[seq_chars] = lig.LigGlyph
         print(f"[liga] {len(liga_glyphs)} pares: {list(liga_glyphs.keys())}")
 
-        # ── 3. Mapeia ligaduras para PUA ──
-        pua = _PUA_START
+        pua        = _PUA_START
         text_subst = {}
         for seq, liga_glyph in liga_glyphs.items():
             for tbl in font["cmap"].tables:
@@ -316,7 +344,6 @@ def _preparar_fonte_estilizada():
             text_subst[seq] = chr(pua)
             pua += 1
 
-        # ── 4. Aplica aalt no cmap ──
         for tbl in font["cmap"].tables:
             if tbl.format in (4, 12):
                 for code, glyph in list(tbl.cmap.items()):
@@ -334,21 +361,13 @@ def _preparar_fonte_estilizada():
         return None
 
 def _aplicar_ligaturas(texto):
-    """Substitui sequências de texto por caracteres PUA de ligatura."""
     if not _LIGA_SUBST:
         return texto
-    # Ordena do mais longo para o mais curto (evita conflitos)
     for seq in sorted(_LIGA_SUBST, key=len, reverse=True):
         texto = texto.replace(seq, _LIGA_SUBST[seq])
     return texto
 
 def f_display_est(t):
-    """
-    AGILERA estilizada:
-    1. fonttools: aalt + liga via PUA
-    2. RAQM fallback
-    3. Tamanho maior como último recurso
-    """
     est_path = _preparar_fonte_estilizada()
     if est_path:
         try:
@@ -372,7 +391,6 @@ def f_display_est(t):
         return ImageFont.load_default()
 
 def _linha_est(draw, x, y, texto, fonte, cor):
-    """Renderiza com liga+aalt se RAQM disponivel, caso contrario normal."""
     if _RAQM_OK:
         try:
             draw.text((x, y), texto, font=fonte, fill=cor, features=["liga", "aalt"])
@@ -511,24 +529,22 @@ def distancia_cor(c1, c2):
     return sum((a - b)**2 for a, b in zip(c1, c2)) ** 0.5
 
 def cores_fundo(img):
-    p   = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
-    cf  = tuple(sum(x[i] for x in p) // len(p) for i in range(3))
+    p    = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
+    cf   = tuple(sum(x[i] for x in p) // len(p) for i in range(3))
     ord_ = sorted([c for c in PALETA_9 if c != LARANJA],
                   key=lambda c: distancia_cor(cf, c), reverse=True)
     return (MARINHO, PETROLEO) if sum(cf) / 3 < 60 else (ord_[0], ord_[1])
 
 def luminosidade_media(img):
-    """Retorna a luminosidade média da imagem (0–255)."""
     arr = np.array(img.convert("RGB").resize((80, 100))).astype(np.float32)
     return float(arr.mean())
 
+def cor_dominante(img):
+    p = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
+    return tuple(sum(x[i] for x in p) // len(p) for i in range(3))
+
 def eh_foto_ronilson(pid):
-    """
-    Detecta fotos do Ronilson comparando o public_id de forma case-insensitive.
-    O path no Cloudinary pode ser 'banco de imagens/ronilson/...'
-    """
-    pid_low = pid.lower().replace("\\", "/")
-    return "ronilson" in pid_low
+    return "ronilson" in pid.lower().replace("\\", "/")
 
 def remover_fundo_rembg(img):
     buf = io.BytesIO()
@@ -548,7 +564,7 @@ def gerar_fundo_rico(cor1, cor2, seed):
     cy = H * rng.uniform(0.10, 0.35)
     ys, xs = np.ogrid[:H, :W]
     dist2 = ((xs - cx) / (W * 0.55))**2 + ((ys - cy) / (H * 0.45))**2
-    luz = np.exp(-dist2 * 1.2) * rng.uniform(20, 35)
+    luz   = np.exp(-dist2 * 1.2) * rng.uniform(20, 35)
     arr[:, :, 0] = np.clip(arr[:, :, 0] + luz,       0, 255)
     arr[:, :, 1] = np.clip(arr[:, :, 1] + luz * 0.8, 0, 255)
     arr[:, :, 2] = np.clip(arr[:, :, 2] + luz * 0.6, 0, 255)
@@ -556,12 +572,8 @@ def gerar_fundo_rico(cor1, cor2, seed):
     arr   = np.clip(arr + ruido, 0, 255).astype(np.uint8)
     return Image.fromarray(arr).filter(ImageFilter.GaussianBlur(1))
 
-# ── Elementos decorativos (variáveis por seed) ────────────────────────────────
+# ── Elementos decorativos ─────────────────────────────────────────────────────
 def adicionar_elementos_decorativos(img, cor_acento, seed):
-    """
-    5 estratégias decorativas diferentes, escolhidas pela seed.
-    Nenhuma domina o card — são acentos da identidade visual.
-    """
     estrategia = seed % 5
     rng  = random.Random(seed)
     rgba = img.convert("RGBA")
@@ -578,16 +590,11 @@ def adicionar_elementos_decorativos(img, cor_acento, seed):
             draw.line(pts, fill=(*cor, opacidade), width=largura)
 
     if estrategia == 0:
-        # Duas linhas sinusoidais (topo + base)
         linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac)
         linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac)
-
     elif estrategia == 1:
-        # Apenas base
         linha_seno(rng.uniform(0.92, 0.96), cor_acento, opac + 10, largura=6)
-
     elif estrategia == 2:
-        # Linha lateral esquerda vertical
         x_lat = int(W * rng.uniform(0.04, 0.07))
         y0    = int(H * 0.08)
         y1    = int(H * 0.92)
@@ -596,17 +603,12 @@ def adicionar_elementos_decorativos(img, cor_acento, seed):
                  for y in range(y0, y1, 4)]
         if len(pts) > 1:
             draw.line(pts, fill=(*cor_acento, opac), width=5)
-
     elif estrategia == 3:
-        # Sem linhas — só foto + texto (clean)
         pass
-
-    else:  # 4
-        # Duas linhas mais grossas + bloco translúcido na borda esquerda
+    else:
         linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac, largura=7)
         linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac, largura=7)
-        draw.rectangle([(0, 0), (int(W * 0.008), H)],
-                       fill=(*cor_acento, opac + 20))
+        draw.rectangle([(0, 0), (int(W * 0.008), H)], fill=(*cor_acento, opac + 20))
 
     return rgba.convert("RGB")
 
@@ -615,21 +617,17 @@ def color_grade_editorial(img, seed):
     rng = random.Random(seed)
     arr = np.array(img.convert("RGB")).astype(np.float32)
     lum = arr.mean(axis=2, keepdims=True) / 255.0
-    # Sombras frias (harmoniza MARINHO)
     mask_s = np.clip(1.0 - lum * 2.5, 0, 1)
     arr[:, :, 0] *= 1 + (0.92 - 1) * mask_s[:, :, 0]
     arr[:, :, 1] *= 1 + (0.96 - 1) * mask_s[:, :, 0]
     arr[:, :, 2] *= 1 + (1.06 - 1) * mask_s[:, :, 0]
-    # Meio-tons quentes (harmoniza LARANJA)
     mask_m = np.clip(1.0 - abs(lum - 0.45) * 4, 0, 1)
     arr[:, :, 0] = np.clip(arr[:, :, 0] + 6 * mask_m[:, :, 0], 0, 255)
     arr[:, :, 1] = np.clip(arr[:, :, 1] + 3 * mask_m[:, :, 0], 0, 255)
     arr[:, :, 2] = np.clip(arr[:, :, 2] - 4 * mask_m[:, :, 0], 0, 255)
-    # Grain
     grain = np.random.RandomState(seed + 1).normal(0, rng.uniform(2.5, 4.5), arr.shape)
     arr   = np.clip(arr + grain, 0, 255)
     out   = Image.fromarray(arr.astype(np.uint8))
-    # Unsharp mask leve
     blur  = out.filter(ImageFilter.GaussianBlur(1.8))
     ao    = np.array(out).astype(np.float32)
     ab    = np.array(blur).astype(np.float32)
@@ -702,10 +700,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         img   = img.resize((nw, nh), Image.Resampling.LANCZOS)
         l     = (nw - W) // 2; t = (nh - H) // 2
         img   = img.crop((l, t, l + W, t + H))
-
         if eh_foto_ronilson(pid):
             print(f"[foto] Ronilson detectado — aplicando rembg: {pid}")
-            fundo  = gerar_fundo_rico(cor1, cor2, seed)
+            fundo = gerar_fundo_rico(cor1, cor2, seed)
             try:
                 rgba = remover_fundo_rembg(img)
                 img  = compor_pessoa(rgba, fundo)
@@ -719,21 +716,13 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         else:
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
-
         return img
     except Exception as e:
         print(f"[foto] ERRO: {e}")
         return None
 
-# ── Overlay adaptativo ────────────────────────────────────────────────────────
-def aplicar_overlay(img, lum_media, layout):
-    """
-    Overlay adaptativo:
-    - Foto clara (lum > 140) → overlay mais intenso
-    - Foto escura (lum < 80) → overlay mais suave
-    - Ajuste de altura baseado no layout (texto em cima = overlay no topo tbm)
-    """
-    # Intensidade adaptativa
+# ── Overlay adaptativo com cor harmoniosa e direção variável ──────────────────
+def aplicar_overlay(img, lum_media, layout, seed=0, cor_dominante_foto=None):
     if lum_media > 160:
         alpha_max = 215
     elif lum_media > 120:
@@ -743,45 +732,65 @@ def aplicar_overlay(img, lum_media, layout):
     else:
         alpha_max = 140
 
+    cor_ov = _escolher_cor_overlay(cor_dominante_foto) if cor_dominante_foto else MARINHO
+    print(f"[overlay] cor=RGB{cor_ov} lum={lum_media:.0f} alpha_max={alpha_max}")
+
+    escuridao = _OVERLAY_ESCURIDAO.get(cor_ov, 0.5)
+    if escuridao < 0.4:
+        alpha_max = min(255, int(alpha_max * 1.25))
+
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw    = ImageDraw.Draw(overlay)
 
-    if layout == 3:
-        # Texto no topo → overlay no topo também
+    direcao = 1 if layout == 3 else seed % 4
+
+    if direcao == 1:
         altura = int(H * 0.42)
         for y in range(altura):
             prog  = 1.0 - y / altura
             alpha = int((prog ** 1.5) * alpha_max)
-            draw.line([(0, y), (W, y)], fill=(*MARINHO, alpha))
+            draw.line([(0, y), (W, y)], fill=(*cor_ov, alpha))
+    elif direcao == 2:
+        largura = int(W * 0.60)
+        for x in range(largura):
+            prog  = 1.0 - x / largura
+            alpha = int((prog ** 1.5) * alpha_max)
+            draw.line([(x, 0), (x, H)], fill=(*cor_ov, alpha))
+    elif direcao == 3:
+        largura = int(W * 0.60)
+        for x in range(largura):
+            prog  = 1.0 - x / largura
+            alpha = int((prog ** 1.5) * alpha_max)
+            draw.line([(W - largura + x, 0), (W - largura + x, H)], fill=(*cor_ov, alpha))
     else:
-        # Overlay padrão na base (cobre zona do texto)
         altura = int(H * 0.50)
         for y in range(altura):
             prog  = y / altura
             alpha = int((prog ** 1.4) * alpha_max)
-            draw.line([(0, H - altura + y), (W, H - altura + y)],
-                      fill=(*MARINHO, alpha))
+            draw.line([(0, H - altura + y), (W, H - altura + y)], fill=(*cor_ov, alpha))
 
     return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
 # ── Tipografia ────────────────────────────────────────────────────────────────
 #
-# MODO AUTOMÁTICO (tema sem \n):
-#   Divide na primeira ocorrência de separadores naturais ("e", "são", "é", etc.)
-#   Primeira parte → AGILERA (título, maiúsculo, cor destaque)
-#   Segunda parte  → MALGUN (complemento, branco)
+# _parse_inline: interpreta símbolos de controle inline no tema.
 #
-# MODO MANUAL (tema com \n — linhas separadas):
-#   Cada linha tem um símbolo de controle no início:
+# Símbolos (prefixo colado à palavra):
 #   (sem símbolo) → AGILERA normal, branco
-#   *             → AGILERA estilizada (letter-spacing expandido), cor destaque
-#   :             → MALGUN bold, branco
-#   -             → AGILERA com fundo preenchido (highlight)
+#   *palavra      → AGILERA estilizada, cor destaque
+#   :palavra      → MALGUN bold, branco
+#   -palavra      → fundo preenchido (highlight)
+#
+# Palavras consecutivas com o MESMO símbolo são agrupadas em um segmento.
+# Mudança de símbolo abre novo segmento.
+# Caixa SEMPRE preservada — nunca aplica .upper().
+# Sem nenhum símbolo → modo automático (_split_tema).
 
 SEPARADORES = [" e ", " s\u00e3o ", " \u00e9 ", " como ", ": ", " \u2014 ", " - "]
+_SIMBOLOS   = {"*": "agilera_est", ":": "malgun", "-": "fundo"}
 
 def _split_tema(tema):
-    """Modo automático: divide em (chave, complemento) pelos separadores naturais."""
+    """Modo automático: divide em (chave, complemento) pelo primeiro separador."""
     t = tema.strip()
     for sep in SEPARADORES:
         idx = t.lower().find(sep.lower())
@@ -789,93 +798,68 @@ def _split_tema(tema):
             return t[:idx].strip(), t[idx:].strip()
     return t, ""
 
-import re as _re
-
 def _parse_inline(tema):
     """
-    Analisa o tema com símbolos inline — funciona em linha única OU com \\n.
+    Interpreta símbolos inline token a token.
 
-    Símbolos (no início de uma palavra ou sozinhos):
-      (sem símbolo)  → AGILERA normal, caixa preservada
-      *palavra       → AGILERA estilizada (letter-spacing expandido, cor destaque)
-      :palavra       → MALGUN bold, branco
-      -palavra       → AGILERA com fundo preenchido (highlight)
-
-    Também interpreta ':' sozinho após uma palavra como abertura de segmento malgun:
-      "*Generalizada: Uma desordem" → agilera_est:"Generalizada" + malgun:"Uma desordem"
-
-    Caixa das letras é SEMPRE preservada como digitada.
+    Regra:
+    - Token começa com símbolo (* : -) → estilo do símbolo, texto = resto do token.
+    - Token sem símbolo → estilo "normal".
+    - Tokens consecutivos com mesmo estilo são agrupados no mesmo segmento.
+    - Mudança de estilo fecha o segmento atual e abre um novo.
+    - Caixa sempre preservada.
+    - Se nenhum símbolo for encontrado → retorna segmentos do modo automático.
     """
-    MAPA = {"*": "agilera_est", ":": "malgun", "-": "fundo"}
-
-    # Junta todas as linhas em uma só (suporte a multiline via \n)
-    texto = " ".join(l.strip() for l in tema.split("\n") if l.strip())
-
-    # "palavra: " (trailing colon) → "palavra : " para virar separador standalone
-    texto = _re.sub(r'(\S):\s+', r'\1 : ', texto)
-
+    # Junta linhas (suporte a \n no tema)
+    texto  = " ".join(l.strip() for l in tema.split("\n") if l.strip())
     tokens = texto.split()
-    segmentos = []
-    estilo_atual = "normal"
+
+    segmentos      = []
+    estilo_atual   = None
     palavras_atual = []
 
     for token in tokens:
-        if token in MAPA:
-            # Símbolo standalone (ex: ":" isolado)
+        if not token:
+            continue
+
+        if token[0] in _SIMBOLOS and len(token) > 1:
+            # Símbolo prefixado na palavra: "*Essencial" → est="agilera_est", txt="Essencial"
+            novo_estilo = _SIMBOLOS[token[0]]
+            palavra     = token[1:]
+        elif token in _SIMBOLOS:
+            # Símbolo sozinho (raro) — muda o estilo sem adicionar palavra
             if palavras_atual:
-                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
+                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual or "normal"})
                 palavras_atual = []
-            estilo_atual = MAPA[token]
-        elif len(token) > 1 and token[0] in MAPA:
-            # Símbolo no início do token (ex: "*Generalizada", ":Uma")
-            if palavras_atual:
-                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
-                palavras_atual = []
-            estilo_atual = MAPA[token[0]]
-            palavras_atual = [token[1:]]
+            estilo_atual = _SIMBOLOS[token]
+            continue
         else:
-            palavras_atual.append(token)
+            novo_estilo = "normal"
+            palavra     = token
 
+        if novo_estilo == estilo_atual:
+            # Mesmo estilo — acumula no segmento atual
+            palavras_atual.append(palavra)
+        else:
+            # Estilo diferente — fecha segmento anterior e abre novo
+            if palavras_atual:
+                segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual or "normal"})
+            estilo_atual   = novo_estilo
+            palavras_atual = [palavra]
+
+    # Fecha o último segmento
     if palavras_atual:
-        segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual})
+        segmentos.append({"texto": " ".join(palavras_atual), "estilo": estilo_atual or "normal"})
 
-    # Se não encontrou nenhum símbolo, usa modo automático (_split_tema)
-    tem_simbolo = any(s["estilo"] != "normal" for s in segmentos)
-    if not tem_simbolo:
+    # Sem símbolos → modo automático
+    if not any(s["estilo"] != "normal" for s in segmentos):
         chave, comp = _split_tema(tema.strip())
-        resultado = [{"texto": chave, "estilo": "normal"}]
+        resultado   = [{"texto": chave, "estilo": "normal"}]
         if comp:
             resultado.append({"texto": comp, "estilo": "malgun"})
         return resultado
 
     return segmentos or [{"texto": tema.strip(), "estilo": "normal"}]
-
-def _parse_segmentos(tema):
-    """
-    Modo manual (tema com \\n).
-    Retorna lista de dicts: [{"texto": str, "estilo": str}, ...]
-    Estilos: "normal" | "agilera_est" | "malgun" | "fundo"
-    """
-    segmentos = []
-    for linha in tema.split("\n"):
-        l = linha.strip()
-        if not l:
-            continue
-        if l.startswith("*"):
-            txt = l[1:].strip()
-            if txt:
-                segmentos.append({"texto": txt, "estilo": "agilera_est"})
-        elif l.startswith(":"):
-            txt = l[1:].strip()
-            if txt:
-                segmentos.append({"texto": txt, "estilo": "malgun"})
-        elif l.startswith("-"):
-            txt = l[1:].strip()
-            if txt:
-                segmentos.append({"texto": txt, "estilo": "fundo"})
-        else:
-            segmentos.append({"texto": l, "estilo": "normal"})
-    return segmentos if segmentos else [{"texto": tema.strip(), "estilo": "normal"}]
 
 def _sombra(img_rgba, texto, fonte, x, y, sp=0):
     for (ox, oy), blur, opac in [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]:
@@ -900,42 +884,39 @@ def _linha(draw, x, y, texto, fonte, cor, sp=0):
 
 def desenhar_titulo(img, tema, seed):
     """
-    Usa _parse_inline — funciona em linha única OU multiline com \\n.
-    Caixa das letras SEMPRE preservada como digitada. Sem .upper() forçado.
-    5 layouts por seed % 5.
-    
-    ZONA SEGURA: Todo texto fica dentro de 1012×1230px centralizado.
-    CORES: Rotação inteligente das 9 cores da paleta AlvoreSer.
+    Desenha o texto usando _parse_inline — suporta linha única ou multiline com \\n.
+    Caixa SEMPRE preservada. 5 layouts por seed % 5.
     """
     img_rgba = img.convert("RGBA")
-    MARGIN   = SAFE_MARGIN   # 80px (dentro da zona segura)
-    MAX_PX   = SAFE_MAX_PX   # 920px (largura útil)
+    MARGIN   = SAFE_MARGIN
+    MAX_PX   = SAFE_MAX_PX
     layout   = seed % 5
-    
-    # ── Cor de destaque rotativa (9 cores da paleta) ──
+
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
     print(f"[titulo] cor_dest=RGB{cor_dest} cor_fundo_txt=RGB{cor_fundo_txt}")
 
     segmentos = _parse_inline(tema)
-    print(f"[titulo] layout={layout} segs={[(s['estilo'],s['texto'][:18]) for s in segmentos]}")
+    print(f"[titulo] layout={layout} segs={[(s['estilo'], s['texto'][:18]) for s in segmentos]}")
 
-    # Tamanho pelo segmento AGILERA mais longo
-    textos_ag = [s["texto"] for s in segmentos if s["estilo"] in ("normal","agilera_est","fundo")]
+    # Tamanho base pelo segmento AGILERA mais longo
+    textos_ag = [s["texto"] for s in segmentos if s["estilo"] in ("normal", "agilera_est", "fundo")]
     n = max((len(t) for t in textos_ag), default=len(tema))
     if layout == 2:
-        tam_ag = 160 if n<=8 else 140 if n<=14 else 118 if n<=20 else 96 if n<=28 else 78
+        tam_ag = 160 if n <= 8 else 140 if n <= 14 else 118 if n <= 20 else 96 if n <= 28 else 78
     else:
-        tam_ag = 148 if n<=6 else 128 if n<=10 else 108 if n<=16 else 90 if n<=24 else 76 if n<=34 else 64
+        tam_ag = 148 if n <= 6 else 128 if n <= 10 else 108 if n <= 16 else 90 if n <= 24 else 76 if n <= 34 else 64
 
-    tam_ml    = max(44, int(tam_ag*0.58))
+    tam_ml    = max(44, int(tam_ag * 0.58))
     ag_sp     = -3 if tam_ag >= 100 else -2
-    ag_est_sp = max(4, int(tam_ag*0.06))
+    ag_est_sp = max(4, int(tam_ag * 0.06))
     fa = f_display(tam_ag); fm = f_corpo(tam_ml); fb = f_bold(tam_ml)
 
     blocos = []
     for seg in segmentos:
-        txt = seg["texto"].strip(); est = seg["estilo"]
-        if not txt: continue
+        txt = seg["texto"].strip()
+        est = seg["estilo"]
+        if not txt:
+            continue
         if est == "agilera_est":
             tam_est = int(tam_ag * 1.38)
             fa_est  = f_display_est(tam_est)
@@ -946,37 +927,35 @@ def desenhar_titulo(img, tema, seed):
             blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
         elif est == "fundo":
             blocos.append((_quebrar(txt, fb, MAX_PX - 48), fb, cor_fundo_txt, 0, est))
-        else:  # normal — caixa preservada, sem .upper()
+        else:  # normal — AGILERA, branco, caixa preservada
             blocos.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, BRANCO, ag_sp, est))
 
-    if not blocos: return img_rgba.convert("RGB"), layout
+    if not blocos:
+        return img_rgba.convert("RGB"), layout
 
-    gap_bloco = max(10, int(tam_ag*0.12))
-    h_bloco   = sum(int(_altura_linha(f)*1.10)*len(ls) for ls,f,*_ in blocos) + gap_bloco*max(0,len(blocos)-1)
+    gap_bloco = max(10, int(tam_ag * 0.12))
+    h_bloco   = sum(int(_altura_linha(f) * 1.10) * len(ls) for ls, f, *_ in blocos) + gap_bloco * max(0, len(blocos) - 1)
 
-    # ── Layouts dentro da ZONA SEGURA ──
-    # Todos os Y_INI e Y_FIM ficam dentro de [SAFE_TOP, SAFE_BOTTOM]
-    if layout==0:   Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.58)), min(SAFE_BOTTOM, int(H*0.90))
-    elif layout==1: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.55)), min(SAFE_BOTTOM, int(H*0.88))
-    elif layout==2: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.62)), min(SAFE_BOTTOM, int(H*0.92))
-    elif layout==3: Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.08)), min(SAFE_BOTTOM, int(H*0.38))
-    else:           Y_INI,Y_FIM = max(SAFE_TOP, int(H*0.56)), min(SAFE_BOTTOM, int(H*0.89))
+    if layout == 0:   Y_INI, Y_FIM = max(SAFE_TOP, int(H * 0.58)), min(SAFE_BOTTOM, int(H * 0.90))
+    elif layout == 1: Y_INI, Y_FIM = max(SAFE_TOP, int(H * 0.55)), min(SAFE_BOTTOM, int(H * 0.88))
+    elif layout == 2: Y_INI, Y_FIM = max(SAFE_TOP, int(H * 0.62)), min(SAFE_BOTTOM, int(H * 0.92))
+    elif layout == 3: Y_INI, Y_FIM = max(SAFE_TOP, int(H * 0.08)), min(SAFE_BOTTOM, int(H * 0.38))
+    else:             Y_INI, Y_FIM = max(SAFE_TOP, int(H * 0.56)), min(SAFE_BOTTOM, int(H * 0.89))
 
     zona = Y_FIM - Y_INI
-    y    = Y_INI + max(0,(zona-h_bloco)//2)
-    y    = max(Y_INI, min(y, Y_FIM-h_bloco-10))
-    # Garantia final: nunca ultrapassar zona segura
+    y    = Y_INI + max(0, (zona - h_bloco) // 2)
     y    = max(SAFE_TOP, min(y, SAFE_BOTTOM - h_bloco))
 
-    for bi,(lns,fonte,cor,sp,est) in enumerate(blocos):
-        if bi > 0: y += gap_bloco
-        esp = int(_altura_linha(fonte)*1.10)
+    for bi, (lns, fonte, cor, sp, est) in enumerate(blocos):
+        if bi > 0:
+            y += gap_bloco
+        esp = int(_altura_linha(fonte) * 1.10)
         for linha in lns:
-            draw = ImageDraw.Draw(img_rgba,"RGBA")
+            draw = ImageDraw.Draw(img_rgba, "RGBA")
             if est == "fundo":
                 pad_x, pad_y = 16, 10
                 try:
-                    bb = fonte.getbbox(linha)
+                    bb      = fonte.getbbox(linha)
                     rect_x1 = MARGIN - pad_x
                     rect_y1 = y + bb[1] - pad_y
                     rect_x2 = MARGIN + (bb[2] - bb[0]) + pad_x
@@ -987,17 +966,17 @@ def desenhar_titulo(img, tema, seed):
                     rect_x2 = MARGIN + _medir(linha, fonte) + pad_x
                     rect_y2 = y + _altura_linha(fonte, linha) + pad_y
                 draw.rounded_rectangle(
-                    [(rect_x1, rect_y1),(rect_x2, rect_y2)],
+                    [(rect_x1, rect_y1), (rect_x2, rect_y2)],
                     radius=8, fill=(*cor_dest, 255))
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 _linha(draw, MARGIN, y, linha, fonte, (*cor_fundo_txt, 255), 0)
             else:
-                _sombra(img_rgba,linha,fonte,MARGIN,y,sp)
-                draw = ImageDraw.Draw(img_rgba,"RGBA")
+                _sombra(img_rgba, linha, fonte, MARGIN, y, sp)
+                draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "agilera_est":
                     _linha_est(draw, MARGIN, y, linha, fonte, (*cor, 255))
                 else:
-                    _linha(draw,MARGIN,y,linha,fonte,(*cor,255),sp)
+                    _linha(draw, MARGIN, y, linha, fonte, (*cor, 255), sp)
             y += esp
 
     return img_rgba.convert("RGB"), layout
@@ -1006,10 +985,11 @@ def desenhar_titulo(img, tema, seed):
 def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     if seed is None:
         seed = random.randint(0, 999999)
-    print(f"[card] tema='{tema}' seed={seed} layout={seed % 5} decore={seed % 5} cloudinary={'sim' if imagem_url else 'NAO'}")
+    print(f"[card] tema='{tema}' seed={seed} layout={seed % 5} cloudinary={'sim' if imagem_url else 'NAO'}")
 
-    cor1, cor2  = MARINHO, PETROLEO
-    lum_media   = 100.0  # valor neutro default
+    cor1, cor2 = MARINHO, PETROLEO
+    lum_media  = 100.0
+    cor_dom    = None
 
     if imagem_url:
         try:
@@ -1018,28 +998,25 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
             tmp       = Image.open(io.BytesIO(r.content)).convert("RGB").resize((120, 150), Image.Resampling.LANCZOS)
             cor1, cor2 = cores_fundo(tmp)
             lum_media  = luminosidade_media(tmp)
+            cor_dom    = cor_dominante(tmp)
         except Exception as e:
             print(f"[cor] {e}")
 
-    # Base visual
     if imagem_url:
         base = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
             print("[card] foto falhou — fundo rico")
-            base = gerar_fundo_rico(cor1, cor2, seed)
+            base      = gerar_fundo_rico(cor1, cor2, seed)
             lum_media = luminosidade_media(base)
+            cor_dom   = cor_dominante(base)
     else:
         print("[card] sem imagem — fundo rico")
-        base = gerar_fundo_rico(cor1, cor2, seed)
+        base      = gerar_fundo_rico(cor1, cor2, seed)
         lum_media = luminosidade_media(base)
+        cor_dom   = cor_dominante(base)
 
-    # Layout (precisamos saber antes para passar ao overlay)
     layout = seed % 5
-
-    # Overlay adaptativo
-    base = aplicar_overlay(base, lum_media, layout)
-
-    # Título
+    base   = aplicar_overlay(base, lum_media, layout, seed=seed, cor_dominante_foto=cor_dom)
     base, _ = desenhar_titulo(base, tema, seed)
     return base
 
@@ -1109,7 +1086,6 @@ def health():
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
-    # NAO chamar get_rembg() aqui — importa numba/onnxruntime, JIT compile > 120s mata o worker
     return jsonify({
         "status": "ok", "dimensoes": f"{W}x{H}",
         "fontes": fontes, "caminhos": caminhos,
