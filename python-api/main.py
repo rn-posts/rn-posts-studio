@@ -1,35 +1,21 @@
 """
-python-api/main.py  —  AlvoreSer Instagram Posts  —  v13
+python-api/main.py  —  AlvoreSer Instagram Posts  —  v14
 
-PIPELINE DEFINITIVO
-===================
-Imagem
-  1. Busca Cloudinary pela pasta temática (prioridade) ou geral
-  2. Ronilson  → rembg remove fundo → compõe sobre fundo da marca
-  3. Editorial → color grade cinematográfico + vinheta + split toning
-  4. Fallback  → fundo rico gradiente quando Cloudinary não retorna nada
+CORREÇÕES v14
+=============
+- Overlay lateral (esq/dir) proibido em fotos com pessoa (Ronilson)
+- Overlay lateral suavizado: largura reduzida, gradiente mais suave
+- Segmento 'fundo' (-palavra) sempre quebra linha por palavra, nunca transborda
+- *Essencial *Autismo na mesma linha corrigido — quebra quando não cabe
+- MALGUN pode receber cor destaque quando contrasta bem com overlay
+- Texto nunca sai fora da zona segura
 
-Overlay
-  - Cor escolhida entre as 9 da paleta pela maior distância perceptual
-    em relação à cor dominante da foto — garante contraste visível
-  - Cores escuras (MARINHO, PETRÓLEO) têm prioridade quando a foto é clara
-  - Cores claras (AMARELO, VERDE_CITRICO) têm prioridade quando a foto é escura
-  - Alpha adaptativo à luminosidade da foto
-  - Direção varia por seed % 4: base / topo / esquerda / direita
-  - Layout 3 (texto no topo) força direção topo
-
-Tipografia
-  (sem símbolo) → AGILERA normal, cor destaque
-  *palavra      → AGILERA estilizada (liga+aalt), cor destaque
-  :palavra      → MALGUN bold, branco
-  -palavra      → fundo preenchido (highlight), cor contraste
-
-Layout (seed % 5) — texto sempre no terço inferior da imagem
-  0 → inferior esquerdo  (padrão)
-  1 → inferior centro
-  2 → inferior esquerdo  (fonte maior)
-  3 → superior esquerdo  (invertido)
-  4 → inferior esquerdo  (fonte menor, mais linhas)
+PIPELINE
+========
+Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
+Overlay: cor da paleta por contraste com foto, nunca igual ao texto, direção por seed
+Tipografia: (sem) AGILERA cor-destaque | * AGILERA est. | : MALGUN | - fundo preenchido
+Layout: texto fixo no terço inferior (62–93%), layout 3 no topo
 """
 
 import os, io, uuid, random, json, math, base64
@@ -42,7 +28,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageCho
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# ── rembg (lazy load) ─────────────────────────────────────────────────────────
 _rembg_remove = None
 def get_rembg():
     global _rembg_remove
@@ -51,15 +36,11 @@ def get_rembg():
         _rembg_remove = _r
     return _rembg_remove
 
-# ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder="../dist", static_url_path="/")
 
 ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://localhost:5000",
-    "https://rn-posts.onrender.com",
-    "https://alvoreser-python-api.onrender.com",
+    "http://localhost:5173", "http://localhost:3000", "http://localhost:5000",
+    "https://rn-posts.onrender.com", "https://alvoreser-python-api.onrender.com",
 ]
 CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
@@ -74,12 +55,10 @@ def add_cors(response):
 
 def _dist_index_path():
     folder = app.static_folder
-    if not folder:
-        return None
+    if not folder: return None
     p = os.path.join(os.path.abspath(folder), "index.html")
     return p if os.path.isfile(p) else None
 
-# ── Cloudinary config ─────────────────────────────────────────────────────────
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key   =os.getenv("CLOUDINARY_API_KEY"),
@@ -98,7 +77,7 @@ CLOUDINARY_POSTS   = "AlvoreSer_Posts"
 CLOUDINARY_PREVIEW = "AlvoreSer_Preview"
 PASTA_RONILSON     = "banco de imagens/ronilson"
 
-# ── Paleta AlvoreSer ──────────────────────────────────────────────────────────
+# ── Paleta ────────────────────────────────────────────────────────────────────
 MARINHO       = (2,   64,  89)
 PETROLEO      = (27,  121, 125)
 TEAL          = (4,   157, 191)
@@ -108,107 +87,68 @@ LARANJA       = (249, 171, 11)
 VERDE_VIVO    = (122, 181, 0)
 VERDE_CITRICO = (146, 204, 29)
 AMARELO       = (255, 221, 0)
-PRETO         = (20,  20,  20)
 PALETA_9      = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO, BRANCO,
                  LARANJA, VERDE_VIVO, VERDE_CITRICO, AMARELO]
 
-# ── Zona Segura Instagram 4:5 ─────────────────────────────────────────────────
-SAFE_LEFT   = 34
-SAFE_RIGHT  = 1046
-SAFE_TOP    = 60
-SAFE_BOTTOM = 1290
-SAFE_W      = 1012
-SAFE_H      = 1230
-SAFE_MARGIN = SAFE_LEFT + 46
-SAFE_MAX_PX = SAFE_W - 92
+# Luminosidade perceptual de cada cor (0=escuro, 1=claro)
+_LUM_COR = {
+    MARINHO: 0.08, PETROLEO: 0.22, TEAL: 0.45, VERDE_NEUTRO: 0.52,
+    VERDE_VIVO: 0.55, VERDE_CITRICO: 0.62, LARANJA: 0.65,
+    AMARELO: 0.82, BRANCO: 0.95,
+}
 
-# ── Cores de destaque (9 distintas, uma por seed % 9) ────────────────────────
+# ── Zona Segura ───────────────────────────────────────────────────────────────
+SAFE_LEFT   = 34;  SAFE_RIGHT  = 1046
+SAFE_TOP    = 60;  SAFE_BOTTOM = 1290
+SAFE_W      = 1012; SAFE_H     = 1230
+SAFE_MARGIN = SAFE_LEFT + 46   # 80px
+SAFE_MAX_PX = SAFE_W - 92      # 920px
+
+# ── Cores de destaque ─────────────────────────────────────────────────────────
 CORES_DESTAQUE = [
-    LARANJA,       # 0
-    AMARELO,       # 1
-    TEAL,          # 2
-    VERDE_VIVO,    # 3
-    VERDE_CITRICO, # 4
-    BRANCO,        # 5
-    VERDE_NEUTRO,  # 6
-    MARINHO,       # 7
-    PETROLEO,      # 8
+    LARANJA, AMARELO, TEAL, VERDE_VIVO, VERDE_CITRICO,
+    BRANCO, VERDE_NEUTRO, MARINHO, PETROLEO,
 ]
-
-# Cor do texto dentro do highlight (fundo preenchido)
 CORES_FUNDO_TEXTO = {
-    LARANJA:       MARINHO,
-    AMARELO:       MARINHO,
-    TEAL:          BRANCO,
-    VERDE_VIVO:    MARINHO,
-    VERDE_CITRICO: MARINHO,
-    BRANCO:        MARINHO,
-    VERDE_NEUTRO:  BRANCO,
-    PETROLEO:      BRANCO,
-    MARINHO:       BRANCO,
+    LARANJA: MARINHO, AMARELO: MARINHO, TEAL: BRANCO,
+    VERDE_VIVO: MARINHO, VERDE_CITRICO: MARINHO, BRANCO: MARINHO,
+    VERDE_NEUTRO: BRANCO, PETROLEO: BRANCO, MARINHO: BRANCO,
 }
 
 def _escolher_cor_destaque(seed):
     cor = CORES_DESTAQUE[seed % 9]
     return cor, CORES_FUNDO_TEXTO.get(cor, MARINHO)
 
-# ── Luminosidade de cada cor da paleta (0=escuro, 1=claro) ───────────────────
-_LUM_COR = {
-    MARINHO:       0.08,
-    PETROLEO:      0.22,
-    TEAL:          0.45,
-    VERDE_NEUTRO:  0.52,
-    VERDE_VIVO:    0.55,
-    VERDE_CITRICO: 0.62,
-    LARANJA:       0.65,
-    AMARELO:       0.82,
-    BRANCO:        0.95,
-}
-
 def distancia_cor(c1, c2):
-    return math.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
+    return math.sqrt(sum((a - b)**2 for a, b in zip(c1, c2)))
 
 def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto):
     """
-    Escolhe a cor do overlay entre as 9 da paleta seguindo estas regras:
-    1. Nunca igual à cor de destaque do texto (evita texto invisível)
-    2. Score = distância_da_foto × bonus_contraste_lum
-       — foto clara  → favorece cores escuras (MARINHO, PETRÓLEO)
-       — foto escura → favorece cores médias (TEAL, PETRÓLEO)
-    3. Retorna sempre uma cor com boa legibilidade para o texto branco/claro
+    Escolhe overlay que:
+    1. Nunca é igual à cor de destaque do texto
+    2. Foto clara → overlay escuro; foto escura → overlay médio
+    3. Maximiza distância perceptual da foto
     """
-    lum_foto = sum(cor_dominante_foto) / (3 * 255)  # 0=escuro, 1=claro
-    dist_max = math.sqrt(255 ** 2 * 3)
-
-    melhor_cor   = MARINHO
-    melhor_score = -1.0
+    lum_foto = sum(cor_dominante_foto) / (3 * 255)
+    dist_max = math.sqrt(255**2 * 3)
+    melhor_cor, melhor_score = MARINHO, -1.0
 
     for cor in PALETA_9:
-        # Nunca usar a mesma cor do destaque (texto some)
         if cor == cor_destaque_texto:
             continue
-
-        dist = distancia_cor(cor_dominante_foto, cor) / dist_max  # 0–1
-
+        dist   = distancia_cor(cor_dominante_foto, cor) / dist_max
         lum_ov = _LUM_COR.get(cor, 0.5)
-
-        # Foto clara → overlay escuro (alto contraste)
-        # Foto escura → overlay médio (não some na foto)
         if lum_foto > 0.5:
-            # Prefere escuro: penaliza cores claras
-            bonus = 1.0 - lum_ov
+            bonus = 1.0 - lum_ov          # foto clara → overlay escuro
         else:
-            # Prefere médio: penaliza extremos (muito escuro ou muito claro)
-            bonus = 1.0 - abs(lum_ov - 0.45) * 2
-
+            bonus = 1.0 - abs(lum_ov - 0.40) * 2  # foto escura → overlay médio
         bonus = max(0.05, bonus)
         score = dist * bonus
-
         if score > melhor_score:
             melhor_score = score
             melhor_cor   = cor
 
-    print(f"[overlay_cor] dom={cor_dominante_foto} lum_foto={lum_foto:.2f} → {melhor_cor}")
+    print(f"[overlay_cor] dom={cor_dominante_foto} lum={lum_foto:.2f} → {melhor_cor}")
     return melhor_cor
 
 _cards_pendentes = {}
@@ -241,30 +181,22 @@ _FONTS_DIRS = [
 def _resolve_font_path(nome):
     low = nome.lower()
     for base in _FONTS_DIRS:
-        if not os.path.isdir(base):
-            continue
+        if not os.path.isdir(base): continue
         p = os.path.join(base, nome)
-        if os.path.isfile(p):
-            return p
+        if os.path.isfile(p): return p
         try:
             for f in os.listdir(base):
-                if f.lower() == low:
-                    return os.path.join(base, f)
-        except Exception:
-            pass
+                if f.lower() == low: return os.path.join(base, f)
+        except Exception: pass
     return None
 
 def _font(nome, tam):
     p = _resolve_font_path(nome)
     if p:
-        try:
-            return ImageFont.truetype(p, tam)
-        except Exception as e:
-            print(f"[font] erro {p}: {e}")
-    try:
-        return ImageFont.load_default(size=tam)
-    except Exception:
-        return ImageFont.load_default()
+        try: return ImageFont.truetype(p, tam)
+        except Exception as e: print(f"[font] erro {p}: {e}")
+    try: return ImageFont.load_default(size=tam)
+    except Exception: return ImageFont.load_default()
 
 def f_display(t): return _font("AGILERA.OTF",  t)
 def f_bold(t):    return _font("MALGUNBD.TTF", t)
@@ -273,14 +205,13 @@ def f_light(t):   return _font("MALGUNSL.TTF", t)
 
 for _fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]:
     _p = _resolve_font_path(_fn)
-    print(f"[font] {'OK  ' if _p else 'MISS'} {_fn}" + (f" => {_p}" if _p else " <= FALTANDO!"))
+    print(f"[font] {'OK  ' if _p else 'MISS'} {_fn}" + (f" => {_p}" if _p else ""))
 
 _RAQM_OK = False
 try:
     from PIL import features as _pil_features
     _RAQM_OK = _pil_features.check("raqm")
-except Exception:
-    pass
+except Exception: pass
 print(f"[raqm] {'disponivel' if _RAQM_OK else 'indisponivel'}")
 
 import tempfile as _tempfile
@@ -293,42 +224,35 @@ def _preparar_fonte_estilizada():
     if _AGILERA_EST_PATH and os.path.isfile(_AGILERA_EST_PATH):
         return _AGILERA_EST_PATH
     fonte_path = _resolve_font_path("AGILERA.OTF")
-    if not fonte_path:
-        return None
+    if not fonte_path: return None
     try:
         from fonttools import ttLib
         font = ttLib.TTFont(fonte_path)
-        if "GSUB" not in font:
-            return None
+        if "GSUB" not in font: return None
         gsub = font["GSUB"].table
 
         aalt_subst = {}
         for feat in gsub.FeatureList.FeatureRecord:
-            if feat.FeatureTag != "aalt":
-                continue
+            if feat.FeatureTag != "aalt": continue
             for idx in feat.Feature.LookupListIndex:
                 lk = gsub.LookupList.Lookup[idx]
                 if lk.LookupType == 1:
                     for sub in lk.SubTable:
                         for g, alt in sub.mapping.items():
-                            if g not in aalt_subst:
-                                aalt_subst[g] = alt
+                            if g not in aalt_subst: aalt_subst[g] = alt
                 elif lk.LookupType == 3:
                     for sub in lk.SubTable:
                         for g, alts in sub.alternates.items():
-                            if g not in aalt_subst and alts:
-                                aalt_subst[g] = alts[0]
+                            if g not in aalt_subst and alts: aalt_subst[g] = alts[0]
 
         cmap        = font.getBestCmap() or {}
         rev_cmap    = {v: k for k, v in cmap.items()}
         liga_glyphs = {}
         for feat in gsub.FeatureList.FeatureRecord:
-            if feat.FeatureTag != "liga":
-                continue
+            if feat.FeatureTag != "liga": continue
             for idx in feat.Feature.LookupListIndex:
                 lk = gsub.LookupList.Lookup[idx]
-                if lk.LookupType != 4:
-                    continue
+                if lk.LookupType != 4: continue
                 for sub in lk.SubTable:
                     for first_g, ligs in sub.ligatures.items():
                         for lig in ligs:
@@ -336,22 +260,17 @@ def _preparar_fonte_estilizada():
                             seq_chars  = ""
                             ok = True
                             for g in seq_glyphs:
-                                if g in rev_cmap:
-                                    seq_chars += chr(rev_cmap[g])
-                                else:
-                                    ok = False; break
+                                if g in rev_cmap: seq_chars += chr(rev_cmap[g])
+                                else: ok = False; break
                             if ok and len(seq_chars) > 1:
                                 liga_glyphs[seq_chars] = lig.LigGlyph
         print(f"[liga] {len(liga_glyphs)} pares")
 
-        pua        = _PUA_START
-        text_subst = {}
+        pua = _PUA_START; text_subst = {}
         for seq, liga_glyph in liga_glyphs.items():
             for tbl in font["cmap"].tables:
-                if tbl.format in (4, 12):
-                    tbl.cmap[pua] = liga_glyph
-            text_subst[seq] = chr(pua)
-            pua += 1
+                if tbl.format in (4, 12): tbl.cmap[pua] = liga_glyph
+            text_subst[seq] = chr(pua); pua += 1
 
         for tbl in font["cmap"].tables:
             if tbl.format in (4, 12):
@@ -366,12 +285,10 @@ def _preparar_fonte_estilizada():
         print(f"[font_est] OK: {len(aalt_subst)} aalt + {len(text_subst)} liga")
         return tmp.name
     except Exception as e:
-        print(f"[font_est] fonttools falhou: {e}")
-        return None
+        print(f"[font_est] falhou: {e}"); return None
 
 def _aplicar_ligaturas(texto):
-    if not _LIGA_SUBST:
-        return texto
+    if not _LIGA_SUBST: return texto
     for seq in sorted(_LIGA_SUBST, key=len, reverse=True):
         texto = texto.replace(seq, _LIGA_SUBST[seq])
     return texto
@@ -379,33 +296,24 @@ def _aplicar_ligaturas(texto):
 def f_display_est(t):
     est_path = _preparar_fonte_estilizada()
     if est_path:
-        try:
-            return ImageFont.truetype(est_path, t)
-        except Exception as e:
-            print(f"[font_est] erro: {e}")
+        try: return ImageFont.truetype(est_path, t)
+        except Exception as e: print(f"[font_est] erro: {e}")
     p = _resolve_font_path("AGILERA.OTF")
     if p:
         if _RAQM_OK:
-            try:
-                return ImageFont.truetype(p, t, layout_engine=ImageFont.Layout.RAQM)
-            except Exception:
-                pass
-        try:
-            return ImageFont.truetype(p, t)
-        except Exception:
-            pass
-    try:
-        return ImageFont.load_default(size=t)
-    except Exception:
-        return ImageFont.load_default()
+            try: return ImageFont.truetype(p, t, layout_engine=ImageFont.Layout.RAQM)
+            except Exception: pass
+        try: return ImageFont.truetype(p, t)
+        except Exception: pass
+    try: return ImageFont.load_default(size=t)
+    except Exception: return ImageFont.load_default()
 
 def _linha_est(draw, x, y, texto, fonte, cor):
     if _RAQM_OK:
         try:
             draw.text((x, y), texto, font=fonte, fill=cor, features=["liga", "aalt"])
             return
-        except Exception:
-            pass
+        except Exception: pass
     draw.text((x, y), texto, font=fonte, fill=cor)
 
 # ── IA ────────────────────────────────────────────────────────────────────────
@@ -426,8 +334,7 @@ PROMPT_LEGENDA = (
 GROQ_MODELOS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-4-scout"]
 
 def _groq_legenda(tema):
-    if not GROQ_API_KEY:
-        raise Exception("GROQ_API_KEY nao configurada")
+    if not GROQ_API_KEY: raise Exception("GROQ_API_KEY nao configurada")
     ultimo = None
     for m in GROQ_MODELOS:
         try:
@@ -437,27 +344,22 @@ def _groq_legenda(tema):
                 timeout=20)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            ultimo = e
+        except Exception as e: ultimo = e
     raise Exception(f"Groq falhou: {ultimo}")
 
 def _gemini_legenda(tema):
-    if not GEMINI_API_KEY:
-        raise Exception("GEMINI_API_KEY nao configurada")
+    if not GEMINI_API_KEY: raise Exception("GEMINI_API_KEY nao configurada")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     r = requests.post(url, json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}]}, timeout=25)
-    if r.status_code == 429:
-        raise Exception("Gemini 429")
+    if r.status_code == 429: raise Exception("Gemini 429")
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 def gerar_legenda_ia(tema):
     erros = []
     for fn in [_groq_legenda, _gemini_legenda]:
-        try:
-            return fn(tema) + ASSINATURA
-        except Exception as e:
-            erros.append(str(e))
+        try: return fn(tema) + ASSINATURA
+        except Exception as e: erros.append(str(e))
     raise Exception("IAs falharam: " + " | ".join(erros))
 
 # ── Cloudinary ────────────────────────────────────────────────────────────────
@@ -465,8 +367,7 @@ def buscar_imagem(tema=""):
     t     = tema.lower()
     todas = list(set(MAPA_PASTAS.values()))
     pasta = next((MAPA_PASTAS[k] for k in MAPA_PASTAS if k in t), None)
-    if pasta:
-        todas = [pasta] + [p for p in todas if p != pasta]
+    if pasta: todas = [pasta] + [p for p in todas if p != pasta]
     for p in todas:
         try:
             res = cloudinary.api.resources(type="upload", prefix=p + "/", max_results=50)
@@ -477,8 +378,7 @@ def buscar_imagem(tema=""):
                 c = random.choice(rec)
                 print(f"[busca] {c.get('public_id')}")
                 return c.get("secure_url"), c.get("public_id", "")
-        except Exception as e:
-            print(f"[busca] pasta '{p}': {e}")
+        except Exception as e: print(f"[busca] '{p}': {e}")
     try:
         res = cloudinary.api.resources(type="upload", max_results=50)
         rec = [r for r in res.get("resources", [])
@@ -486,36 +386,28 @@ def buscar_imagem(tema=""):
                and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
         if rec:
             c = random.choice(rec)
-            print(f"[busca] fallback: {c.get('public_id')}")
             return c.get("secure_url"), c.get("public_id", "")
-    except Exception as e:
-        print(f"[busca] fallback erro: {e}")
+    except Exception as e: print(f"[busca] fallback: {e}")
     return None, ""
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
 def _medir(texto, fonte):
     try:
-        bb = fonte.getbbox(texto)
-        return bb[2] - bb[0]
-    except Exception:
-        return len(texto) * 30
+        bb = fonte.getbbox(texto); return bb[2] - bb[0]
+    except Exception: return len(texto) * 30
 
 def _medir_sp(texto, fonte, sp):
     total = 0
     for ch in texto:
         try:
-            bb = fonte.getbbox(ch)
-            total += (bb[2] - bb[0]) + sp
-        except Exception:
-            total += 30 + sp
+            bb = fonte.getbbox(ch); total += (bb[2] - bb[0]) + sp
+        except Exception: total += 30 + sp
     return max(0, total - sp)
 
 def _altura_linha(fonte, texto="Ag"):
     try:
-        bb = fonte.getbbox(texto)
-        return bb[3] - bb[1]
-    except Exception:
-        return 50
+        bb = fonte.getbbox(texto); return bb[3] - bb[1]
+    except Exception: return 50
 
 def _quebrar(texto, fonte, max_px, sp=0):
     palavras = texto.split()
@@ -523,14 +415,11 @@ def _quebrar(texto, fonte, max_px, sp=0):
     for p in palavras:
         cand = " ".join(atual + [p])
         w = _medir_sp(cand, fonte, sp) if sp else _medir(cand, fonte)
-        if w <= max_px:
-            atual.append(p)
+        if w <= max_px: atual.append(p)
         else:
-            if atual:
-                linhas.append(" ".join(atual))
+            if atual: linhas.append(" ".join(atual))
             atual = [p]
-    if atual:
-        linhas.append(" ".join(atual))
+    if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
 def cores_fundo(img):
@@ -554,10 +443,9 @@ def eh_foto_ronilson(pid):
 def remover_fundo_rembg(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    resultado = get_rembg()(buf.getvalue())
-    return Image.open(io.BytesIO(resultado)).convert("RGBA")
+    return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
 
-# ── Fundo rico (fallback) ─────────────────────────────────────────────────────
+# ── Fundo rico ────────────────────────────────────────────────────────────────
 def gerar_fundo_rico(cor1, cor2, seed):
     rng = random.Random(seed)
     arr = np.zeros((H, W, 3), dtype=np.float32)
@@ -565,8 +453,7 @@ def gerar_fundo_rico(cor1, cor2, seed):
         t = y / H
         for ch in range(3):
             arr[y, :, ch] = cor1[ch] * (1 - t) + cor2[ch] * t
-    cx = W * rng.uniform(0.30, 0.70)
-    cy = H * rng.uniform(0.10, 0.35)
+    cx = W * rng.uniform(0.30, 0.70); cy = H * rng.uniform(0.10, 0.35)
     ys, xs = np.ogrid[:H, :W]
     dist2  = ((xs - cx) / (W * 0.55))**2 + ((ys - cy) / (H * 0.45))**2
     luz    = np.exp(-dist2 * 1.2) * rng.uniform(20, 35)
@@ -577,47 +464,7 @@ def gerar_fundo_rico(cor1, cor2, seed):
     arr   = np.clip(arr + ruido, 0, 255).astype(np.uint8)
     return Image.fromarray(arr).filter(ImageFilter.GaussianBlur(1))
 
-# ── Elementos decorativos ─────────────────────────────────────────────────────
-def adicionar_elementos_decorativos(img, cor_acento, seed):
-    estrategia = seed % 5
-    rng  = random.Random(seed)
-    rgba = img.convert("RGBA")
-    draw = ImageDraw.Draw(rgba, "RGBA")
-    opac = rng.randint(35, 60)
-
-    def linha_seno(base_frac, cor, opacidade, largura=5):
-        base_y = H * base_frac
-        amp    = H * rng.uniform(0.02, 0.045)
-        fase   = rng.uniform(0, math.pi * 2)
-        pts    = [(x, int(base_y + amp * math.sin(x / W * math.pi * 1.5 + fase)))
-                  for x in range(0, W + 1, 4)]
-        if len(pts) > 1:
-            draw.line(pts, fill=(*cor, opacidade), width=largura)
-
-    if estrategia == 0:
-        linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac)
-        linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac)
-    elif estrategia == 1:
-        linha_seno(rng.uniform(0.92, 0.96), cor_acento, opac + 10, largura=6)
-    elif estrategia == 2:
-        x_lat = int(W * rng.uniform(0.04, 0.07))
-        y0    = int(H * 0.08)
-        y1    = int(H * 0.92)
-        amp   = W * rng.uniform(0.008, 0.018)
-        pts   = [(int(x_lat + amp * math.sin(y / H * math.pi * 3 + rng.uniform(0, math.pi))), y)
-                 for y in range(y0, y1, 4)]
-        if len(pts) > 1:
-            draw.line(pts, fill=(*cor_acento, opac), width=5)
-    elif estrategia == 3:
-        pass
-    else:
-        linha_seno(rng.uniform(0.03, 0.06), cor_acento, opac, largura=7)
-        linha_seno(rng.uniform(0.93, 0.97), cor_acento, opac, largura=7)
-        draw.rectangle([(0, 0), (int(W * 0.008), H)], fill=(*cor_acento, opac + 20))
-
-    return rgba.convert("RGB")
-
-# ── Color grade editorial ─────────────────────────────────────────────────────
+# ── Color grade ───────────────────────────────────────────────────────────────
 def color_grade_editorial(img, seed):
     rng = random.Random(seed)
     arr = np.array(img.convert("RGB")).astype(np.float32)
@@ -675,7 +522,6 @@ def tratar_foto_editorial(img, cor_paleta, seed):
     img = aplicar_vinheta(img, seed)
     return img
 
-# ── Composição Ronilson ────────────────────────────────────────────────────────
 def compor_pessoa(pessoa_rgba, fundo_rgb):
     pw, ph = pessoa_rgba.size
     nw     = int(pw * H / ph)
@@ -694,17 +540,15 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB")
 
-# ── preparar_foto ─────────────────────────────────────────────────────────────
 def preparar_foto(url, pid, cor1, cor2, seed):
     try:
-        r = requests.get(url, timeout=25)
-        r.raise_for_status()
+        r = requests.get(url, timeout=25); r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
         ratio = max(W / img.width, H / img.height)
         nw, nh = int(img.width * ratio), int(img.height * ratio)
         img   = img.resize((nw, nh), Image.Resampling.LANCZOS)
-        l     = (nw - W) // 2; t = (nh - H) // 2
-        img   = img.crop((l, t, l + W, t + H))
+        l = (nw - W) // 2; t = (nh - H) // 2
+        img = img.crop((l, t, l + W, t + H))
         if eh_foto_ronilson(pid):
             print(f"[foto] Ronilson: {pid}")
             fundo = gerar_fundo_rico(cor1, cor2, seed)
@@ -714,7 +558,7 @@ def preparar_foto(url, pid, cor1, cor2, seed):
                 img  = aplicar_split_toning(img)
                 img  = ImageEnhance.Contrast(img).enhance(1.08)
             except Exception as e:
-                print(f"[foto] rembg falhou ({e}) — blend")
+                print(f"[foto] rembg falhou ({e})")
                 img = Image.blend(fundo, img, alpha=0.60)
                 img = aplicar_split_toning(img)
         else:
@@ -722,65 +566,106 @@ def preparar_foto(url, pid, cor1, cor2, seed):
             img = tratar_foto_editorial(img, cor1, seed)
         return img
     except Exception as e:
-        print(f"[foto] ERRO: {e}")
-        return None
+        print(f"[foto] ERRO: {e}"); return None
 
-# ── Overlay adaptativo ────────────────────────────────────────────────────────
+# ── Overlay ───────────────────────────────────────────────────────────────────
+def _detectar_lado_conteudo(img):
+    """
+    Detecta em qual lado da imagem está o conteúdo principal (rosto/pessoa).
+    Divide a imagem em quadrantes e mede onde está a maior luminosidade.
+
+    Retorna:
+      'esquerda' → conteúdo à esq  → overlay deve ir à direita
+      'direita'  → conteúdo à dir  → overlay deve ir à esquerda
+      'topo'     → conteúdo no alto → overlay na base
+      'base'     → conteúdo embaixo → overlay no topo
+      'centro'   → distribuído       → base (padrão)
+    """
+    arr = np.array(img.convert("RGB").resize((40, 50))).astype(np.float32)
+    lum = arr.mean(axis=2)  # 50 linhas × 40 colunas
+
+    esq = lum[:, :20].mean()
+    dir_ = lum[:, 20:].mean()
+    top = lum[:25, :].mean()
+    bas = lum[25:, :].mean()
+
+    diff_h = abs(esq - dir_)
+    diff_v = abs(top - bas)
+
+    if diff_h >= diff_v:
+        if esq > dir_ + 8:   return "esquerda"
+        elif dir_ > esq + 8: return "direita"
+        else:                return "centro"
+    else:
+        if top > bas + 8:   return "topo"
+        elif bas > top + 8: return "base"
+        else:               return "centro"
+
+
 def aplicar_overlay(img, lum_media, layout, seed=0,
-                    cor_dominante_foto=None, cor_destaque_texto=None):
+                    cor_dominante_foto=None, cor_destaque_texto=None,
+                    tem_pessoa=False):
     """
-    Overlay com cor da paleta escolhida para contrastar com a foto
-    e nunca coincidir com a cor de destaque do texto.
-    Direção: seed % 4 → base / topo / esquerda / direita.
-    Layout 3 sempre força topo.
+    Direções disponíveis: base(0), topo(1), esquerda(2), direita(3).
+    - Layout 3 → sempre topo
+    - tem_pessoa=True → detecta lado do rosto e aplica overlay no lado oposto
+    - Sem pessoa → direção por seed % 4
+    - Overlay lateral usa gradiente suave (50% da largura, curva 1.8)
     """
-    if lum_media > 160:
-        alpha_max = 220
-    elif lum_media > 120:
-        alpha_max = 195
-    elif lum_media > 80:
-        alpha_max = 170
-    else:
-        alpha_max = 148
+    if lum_media > 160:   alpha_max = 218
+    elif lum_media > 120: alpha_max = 192
+    elif lum_media > 80:  alpha_max = 168
+    else:                 alpha_max = 148
 
-    if cor_dominante_foto is not None:
-        cor_ov = _escolher_cor_overlay(cor_dominante_foto,
-                                       cor_destaque_texto or LARANJA)
-    else:
-        cor_ov = MARINHO
+    cor_ov = (_escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto or LARANJA)
+              if cor_dominante_foto else MARINHO)
+    print(f"[overlay] cor={cor_ov} lum={lum_media:.0f} alpha={alpha_max}")
 
-    print(f"[overlay] cor=RGB{cor_ov} lum={lum_media:.0f} alpha={alpha_max}")
-
-    # Cores claras como overlay precisam de alpha maior
     lum_ov = _LUM_COR.get(cor_ov, 0.5)
     if lum_ov > 0.5:
         alpha_max = min(255, int(alpha_max * 1.30))
 
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw    = ImageDraw.Draw(overlay)
-    direcao = 1 if layout == 3 else seed % 4
+
+    if layout == 3:
+        direcao = 1  # topo forçado
+    elif tem_pessoa:
+        # Detecta onde está o rosto e aplica overlay no lado oposto
+        lado = _detectar_lado_conteudo(img)
+        mapa = {"esquerda": 3, "direita": 2, "topo": 0, "base": 1, "centro": 0}
+        direcao = mapa.get(lado, 0)
+        print(f"[overlay] pessoa lado={lado} → direcao={direcao}")
+    else:
+        direcao = seed % 4
 
     if direcao == 1:
-        altura = int(H * 0.45)
+        # Topo
+        altura = int(H * 0.48)
         for y in range(altura):
             prog  = 1.0 - y / altura
-            alpha = int((prog ** 1.4) * alpha_max)
+            alpha = int((prog ** 1.5) * alpha_max)
             draw.line([(0, y), (W, y)], fill=(*cor_ov, alpha))
+
     elif direcao == 2:
-        largura = int(W * 0.65)
+        # Esquerda — gradiente suave, cobre 50% da largura
+        largura = int(W * 0.50)
         for x in range(largura):
             prog  = 1.0 - x / largura
-            alpha = int((prog ** 1.4) * alpha_max)
+            alpha = int((prog ** 1.8) * alpha_max)
             draw.line([(x, 0), (x, H)], fill=(*cor_ov, alpha))
+
     elif direcao == 3:
-        largura = int(W * 0.65)
+        # Direita — gradiente suave, cobre 50% da largura
+        largura = int(W * 0.50)
         for x in range(largura):
             prog  = 1.0 - x / largura
-            alpha = int((prog ** 1.4) * alpha_max)
+            alpha = int((prog ** 1.8) * alpha_max)
             draw.line([(W - largura + x, 0), (W - largura + x, H)],
                       fill=(*cor_ov, alpha))
+
     else:
-        # base — padrão editorial, cobre bem o terço inferior
+        # Base — padrão editorial, cobre 55% inferior
         altura = int(H * 0.55)
         for y in range(altura):
             prog  = y / altura
@@ -790,7 +675,7 @@ def aplicar_overlay(img, lum_media, layout, seed=0,
 
     return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
-# ── Parser de símbolos inline ─────────────────────────────────────────────────
+# ── Parser ────────────────────────────────────────────────────────────────────
 SEPARADORES = [" e ", " s\u00e3o ", " \u00e9 ", " como ", ": ", " \u2014 ", " - "]
 _SIMBOLOS   = {"*": "agilera_est", ":": "malgun", "-": "fundo"}
 
@@ -798,42 +683,33 @@ def _split_tema(tema):
     t = tema.strip()
     for sep in SEPARADORES:
         idx = t.lower().find(sep.lower())
-        if idx > 0:
-            return t[:idx].strip(), t[idx:].strip()
+        if idx > 0: return t[:idx].strip(), t[idx:].strip()
     return t, ""
 
 def _parse_inline(tema):
     """
-    Token a token:
-      (sem símbolo) → normal   (AGILERA, cor destaque)
-      *palavra      → agilera_est
-      :palavra      → malgun
-      -palavra      → fundo
-    Tokens consecutivos com mesmo estilo agrupados. Caixa preservada.
+    Token a token — símbolos prefixados na palavra.
+    Tokens com mesmo estilo são agrupados.
+    Sem símbolos → modo automático (_split_tema).
     """
     texto  = " ".join(l.strip() for l in tema.split("\n") if l.strip())
     tokens = texto.split()
-
     segmentos      = []
     estilo_atual   = None
     palavras_atual = []
 
     for token in tokens:
-        if not token:
-            continue
+        if not token: continue
         if token[0] in _SIMBOLOS and len(token) > 1:
-            novo_estilo = _SIMBOLOS[token[0]]
-            palavra     = token[1:]
+            novo_estilo = _SIMBOLOS[token[0]]; palavra = token[1:]
         elif token in _SIMBOLOS:
             if palavras_atual:
                 segmentos.append({"texto": " ".join(palavras_atual),
                                   "estilo": estilo_atual or "normal"})
                 palavras_atual = []
-            estilo_atual = _SIMBOLOS[token]
-            continue
+            estilo_atual = _SIMBOLOS[token]; continue
         else:
-            novo_estilo = "normal"
-            palavra     = token
+            novo_estilo = "normal"; palavra = token
 
         if novo_estilo == estilo_atual:
             palavras_atual.append(palavra)
@@ -841,24 +717,21 @@ def _parse_inline(tema):
             if palavras_atual:
                 segmentos.append({"texto": " ".join(palavras_atual),
                                   "estilo": estilo_atual or "normal"})
-            estilo_atual   = novo_estilo
-            palavras_atual = [palavra]
+            estilo_atual = novo_estilo; palavras_atual = [palavra]
 
     if palavras_atual:
         segmentos.append({"texto": " ".join(palavras_atual),
                           "estilo": estilo_atual or "normal"})
 
-    # Sem símbolos → modo automático
     if not any(s["estilo"] != "normal" for s in segmentos):
         chave, comp = _split_tema(tema.strip())
         resultado   = [{"texto": chave, "estilo": "normal"}]
-        if comp:
-            resultado.append({"texto": comp, "estilo": "malgun"})
+        if comp: resultado.append({"texto": comp, "estilo": "malgun"})
         return resultado
 
     return segmentos or [{"texto": tema.strip(), "estilo": "normal"}]
 
-# ── Desenho de texto ──────────────────────────────────────────────────────────
+# ── Texto ─────────────────────────────────────────────────────────────────────
 def _sombra(img_rgba, texto, fonte, x, y, sp=0):
     for (ox, oy), blur, opac in [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -869,28 +742,26 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0):
 
 def _linha(draw, x, y, texto, fonte, cor, sp=0):
     if sp == 0:
-        draw.text((x, y), texto, font=fonte, fill=cor)
-        return
+        draw.text((x, y), texto, font=fonte, fill=cor); return
     cursor = x
     for ch in texto:
         draw.text((cursor, y), ch, font=fonte, fill=cor)
         try:
-            bb = fonte.getbbox(ch)
-            cursor += (bb[2] - bb[0]) + sp
-        except Exception:
-            cursor += 30 + sp
+            bb = fonte.getbbox(ch); cursor += (bb[2] - bb[0]) + sp
+        except Exception: cursor += 30 + sp
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
     """
-    Renderiza os segmentos do tema sobre a imagem.
+    Renderiza segmentos do tema.
 
-    Layouts (seed % 5) — todos posicionam o texto no terço inferior,
-    garantindo que a foto respire acima:
-      0 → inferior esq, tamanho padrão
-      1 → inferior esq, tamanho ligeiramente menor (mais linhas ok)
-      2 → inferior esq, fonte grande (títulos curtos)
-      3 → superior esq (invertido — texto no topo)
-      4 → inferior esq, tamanho compacto
+    Regras de quebra de linha:
+    - Cada segmento quebra por palavra quando não cabe na largura máxima (920px)
+    - Segmento 'fundo' (-palavra): cada palavra é um bloco separado na mesma
+      linha visual — se não couberem juntas, cada uma ocupa sua própria linha
+
+    Layout (seed % 5):
+      0,1,2,4 → terço inferior (62%–93%)
+      3       → terço superior (7%–40%)
     """
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
@@ -899,44 +770,54 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
 
     if cor_dest is None:
         cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
-    print(f"[titulo] cor_dest=RGB{cor_dest} layout={layout}")
+    print(f"[titulo] cor_dest={cor_dest} layout={layout}")
 
     segmentos = _parse_inline(tema)
     print(f"[titulo] segs={[(s['estilo'], s['texto'][:20]) for s in segmentos]}")
 
-    # Tamanho pela palavra AGILERA mais longa
+    # Tamanho base
     textos_ag = [s["texto"] for s in segmentos
                  if s["estilo"] in ("normal", "agilera_est", "fundo")]
     n = max((len(t) for t in textos_ag), default=len(tema))
 
     if layout == 2:
-        tam_ag = 155 if n <= 8 else 135 if n <= 14 else 112 if n <= 20 else 92 if n <= 28 else 76
+        tam_ag = 148 if n <= 8 else 128 if n <= 14 else 108 if n <= 20 else 88 if n <= 28 else 72
     elif layout == 4:
-        tam_ag = 100 if n <= 10 else 88 if n <= 16 else 76 if n <= 24 else 64
+        tam_ag = 96 if n <= 10 else 84 if n <= 16 else 72 if n <= 24 else 60
     else:
-        tam_ag = 138 if n <= 6 else 118 if n <= 10 else 100 if n <= 16 else 86 if n <= 24 else 72 if n <= 34 else 60
+        tam_ag = 132 if n <= 6 else 112 if n <= 10 else 96 if n <= 16 else 82 if n <= 24 else 68 if n <= 34 else 56
 
-    tam_ml    = max(42, int(tam_ag * 0.56))
+    tam_ml    = max(40, int(tam_ag * 0.56))
     ag_sp     = -3 if tam_ag >= 100 else -2
     fa  = f_display(tam_ag)
     fb  = f_bold(tam_ml)
 
+    # Monta blocos: (linhas[], fonte, cor, sp, estilo)
+    # 'fundo': cada palavra vira seu próprio bloco para alinhar na mesma linha
     blocos = []
     for seg in segmentos:
         txt = seg["texto"].strip()
         est = seg["estilo"]
-        if not txt:
-            continue
+        if not txt: continue
+
         if est == "agilera_est":
-            tam_est = int(tam_ag * 1.35)
+            tam_est = int(tam_ag * 1.32)
             fa_est  = f_display_est(tam_est)
             txt_lig = _aplicar_ligaturas(txt)
             lns     = _quebrar(txt_lig, fa_est, MAX_PX, ag_sp)
             blocos.append((lns, fa_est, cor_dest, ag_sp, est))
+
         elif est == "malgun":
-            blocos.append((_quebrar(txt, fb, MAX_PX), fb, BRANCO, 0, est))
+            # MALGUN usa branco por padrão; cor destaque se tiver bom contraste
+            lum_dest = _LUM_COR.get(cor_dest, 0.5)
+            cor_ml   = cor_dest if lum_dest > 0.45 else BRANCO
+            blocos.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est))
+
         elif est == "fundo":
-            blocos.append((_quebrar(txt, fb, MAX_PX - 48), fb, cor_fundo_txt, 0, est))
+            # Cada palavra do segmento 'fundo' é um bloco inline separado
+            for palavra in txt.split():
+                blocos.append(([palavra], fb, cor_fundo_txt, 0, "fundo"))
+
         else:
             # normal → AGILERA, cor destaque
             blocos.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, cor_dest, ag_sp, est))
@@ -944,17 +825,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
     if not blocos:
         return img_rgba.convert("RGB"), layout
 
-    gap_bloco = max(8, int(tam_ag * 0.10))
+    gap_bloco = max(6, int(tam_ag * 0.09))
     h_bloco   = (sum(int(_altura_linha(f) * 1.08) * len(ls) for ls, f, *_ in blocos)
                  + gap_bloco * max(0, len(blocos) - 1))
 
-    # Zonas de texto — layout 3 vai ao topo, demais ficam no terço inferior
     if layout == 3:
-        Y_INI = max(SAFE_TOP, int(H * 0.07))
+        Y_INI = max(SAFE_TOP,    int(H * 0.07))
         Y_FIM = min(SAFE_BOTTOM, int(H * 0.40))
     else:
-        # Sempre terço inferior: 62%–92% da altura
-        Y_INI = max(SAFE_TOP, int(H * 0.62))
+        Y_INI = max(SAFE_TOP,    int(H * 0.62))
         Y_FIM = min(SAFE_BOTTOM, int(H * 0.93))
 
     zona = Y_FIM - Y_INI
@@ -963,22 +842,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
     y    = max(SAFE_TOP, min(y, SAFE_BOTTOM - h_bloco))
 
     for bi, (lns, fonte, cor, sp, est) in enumerate(blocos):
-        if bi > 0:
-            y += gap_bloco
+        if bi > 0: y += gap_bloco
         esp = int(_altura_linha(fonte) * 1.08)
         for linha in lns:
             draw = ImageDraw.Draw(img_rgba, "RGBA")
             if est == "fundo":
                 pad_x, pad_y = 18, 10
                 try:
-                    bb      = fonte.getbbox(linha)
-                    rx1     = MARGIN - pad_x
-                    ry1     = y + bb[1] - pad_y
-                    rx2     = MARGIN + (bb[2] - bb[0]) + pad_x
-                    ry2     = y + bb[3] + pad_y
+                    bb  = fonte.getbbox(linha)
+                    rx1 = MARGIN - pad_x;       ry1 = y + bb[1] - pad_y
+                    rx2 = MARGIN + (bb[2] - bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
                 except Exception:
-                    rx1 = MARGIN - pad_x
-                    ry1 = y - pad_y
+                    rx1 = MARGIN - pad_x;       ry1 = y - pad_y
                     rx2 = MARGIN + _medir(linha, fonte) + pad_x
                     ry2 = y + _altura_linha(fonte, linha) + pad_y
                 draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
@@ -1005,45 +880,45 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     cor1, cor2 = MARINHO, PETROLEO
     lum_media  = 100.0
     cor_dom    = None
+    tem_pessoa = eh_foto_ronilson(pid)
 
     if imagem_url:
         try:
-            r = requests.get(imagem_url, timeout=15)
-            r.raise_for_status()
+            r = requests.get(imagem_url, timeout=15); r.raise_for_status()
             tmp        = Image.open(io.BytesIO(r.content)).convert("RGB")\
                               .resize((120, 150), Image.Resampling.LANCZOS)
             cor1, cor2 = cores_fundo(tmp)
             lum_media  = luminosidade_media(tmp)
             cor_dom    = cor_dominante(tmp)
-        except Exception as e:
-            print(f"[cor] {e}")
+        except Exception as e: print(f"[cor] {e}")
 
     if imagem_url:
         base = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
-            base      = gerar_fundo_rico(cor1, cor2, seed)
+            base = gerar_fundo_rico(cor1, cor2, seed)
             lum_media = luminosidade_media(base)
             cor_dom   = cor_dominante(base)
+            tem_pessoa = False
     else:
-        base      = gerar_fundo_rico(cor1, cor2, seed)
+        base = gerar_fundo_rico(cor1, cor2, seed)
         lum_media = luminosidade_media(base)
         cor_dom   = cor_dominante(base)
+        tem_pessoa = False
 
     layout = seed % 5
-
-    # Escolhe cor de destaque antes do overlay para evitar conflito
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
 
     base = aplicar_overlay(base, lum_media, layout, seed=seed,
                            cor_dominante_foto=cor_dom,
-                           cor_destaque_texto=cor_dest)
+                           cor_destaque_texto=cor_dest,
+                           tem_pessoa=tem_pessoa)
 
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
                               cor_fundo_txt=cor_fundo_txt)
     return base
 
-# ── Planilha / Upload ─────────────────────────────────────────────────────────
+# ── Planilha ──────────────────────────────────────────────────────────────────
 def get_sheets():
     creds = service_account.Credentials.from_service_account_info(
         json.loads(SERVICE_ACCOUNT_JSON), scopes=SCOPES)
@@ -1058,10 +933,8 @@ def escrever_planilha(tema, legenda, url):
         spreadsheetId=SPREADSHEET_ID, range="A:H",
         valueInputOption="RAW", insertDataOption="INSERT_ROWS",
         body={"values": [linha]}).execute()
-    try:
-        return int(res["updates"]["updatedRange"].split("!A")[1].split(":")[0])
-    except Exception:
-        return 0
+    try: return int(res["updates"]["updatedRange"].split("!A")[1].split(":")[0])
+    except Exception: return 0
 
 def atualizar_status(linha, status):
     get_sheets().spreadsheets().values().update(
@@ -1072,8 +945,7 @@ def atualizar_status(linha, status):
 def _env_first(*keys):
     for key in keys:
         val = os.getenv(key)
-        if val and str(val).strip():
-            return str(val).strip()
+        if val and str(val).strip(): return str(val).strip()
     return None
 
 @app.route("/config/firebase", methods=["GET"])
@@ -1096,38 +968,30 @@ def health():
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     caminhos = {fn: _resolve_font_path(fn) or "FALTANDO"
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
-    return jsonify({
-        "status": "ok", "dimensoes": f"{W}x{H}",
-        "fontes": fontes, "caminhos": caminhos,
-        "raqm": _RAQM_OK, "liga_count": len(_LIGA_SUBST),
-        "ronilson_path": PASTA_RONILSON,
-    })
+    return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
+                    "fontes": fontes, "caminhos": caminhos,
+                    "raqm": _RAQM_OK, "liga_count": len(_LIGA_SUBST),
+                    "ronilson_path": PASTA_RONILSON})
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
     data = request.get_json() or {}
     tema = data.get("tema", "").strip()
-    if not tema:
-        return jsonify({"erro": "Tema obrigatorio"}), 400
-    try:
-        return jsonify({"legenda": gerar_legenda_ia(tema)})
-    except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+    if not tema: return jsonify({"erro": "Tema obrigatorio"}), 400
+    try: return jsonify({"legenda": gerar_legenda_ia(tema)})
+    except Exception as e: return jsonify({"erro": str(e)}), 500
 
 @app.route("/preview-card", methods=["POST"])
 def rota_preview_card():
     data    = request.get_json() or {}
     tema    = data.get("tema",    "").strip()
     legenda = data.get("legenda", "").strip()
-    if not tema:
-        return jsonify({"erro": "Tema obrigatorio"}), 400
+    if not tema: return jsonify({"erro": "Tema obrigatorio"}), 400
 
     erros_leg = None
     if not legenda:
-        try:
-            legenda = gerar_legenda_ia(tema)
-        except Exception as e:
-            erros_leg = str(e); legenda = ""
+        try: legenda = gerar_legenda_ia(tema)
+        except Exception as e: erros_leg = str(e); legenda = ""
     if legenda and "CRP 04/57327" not in legenda:
         legenda = legenda.rstrip() + ASSINATURA
 
@@ -1152,8 +1016,7 @@ def rota_preview_card():
 
     resp = {"card_id": card_id, "preview_url": preview_url,
             "legenda": legenda, "imagem_fundo": url_img}
-    if erros_leg:
-        resp["aviso_legenda"] = erros_leg
+    if erros_leg: resp["aviso_legenda"] = erros_leg
     return jsonify(resp)
 
 @app.route("/aprovar-card", methods=["POST"])
@@ -1172,49 +1035,36 @@ def rota_aprovar_card():
             io.BytesIO(dados["card_bytes"]), public_id=uid,
             folder=CLOUDINARY_POSTS, overwrite=True, resource_type="image")
         card_url = res.get("secure_url", "")
-        if not card_url:
-            return jsonify({"erro": "Falha no upload definitivo"}), 500
+        if not card_url: return jsonify({"erro": "Falha no upload"}), 500
         del _cards_pendentes[card_id]
-    except Exception as e:
-        return jsonify({"erro": f"Erro no upload: {e}"}), 500
+    except Exception as e: return jsonify({"erro": f"Erro no upload: {e}"}), 500
     linha = 0
-    try:
-        linha = escrever_planilha(tema, legenda_final, card_url)
-    except Exception as e:
-        print(f"[planilha] ERRO: {e}")
+    try: linha = escrever_planilha(tema, legenda_final, card_url)
+    except Exception as e: print(f"[planilha] ERRO: {e}")
     return jsonify({"cloudinary_url": card_url, "linha_planilha": linha,
                     "status": "Aguardando Postagem"})
 
 @app.route("/gerar-card", methods=["POST"])
-def rota_gerar_card():
-    return rota_preview_card()
+def rota_gerar_card(): return rota_preview_card()
 
 @app.route("/atualizar-status", methods=["POST"])
 def rota_atualizar_status():
     data   = request.get_json() or {}
-    linha  = data.get("linha")
-    status = data.get("status", "Postado")
-    if not linha:
-        return jsonify({"erro": "Linha obrigatoria"}), 400
-    try:
-        atualizar_status(int(linha), status)
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+    linha  = data.get("linha"); status = data.get("status", "Postado")
+    if not linha: return jsonify({"erro": "Linha obrigatoria"}), 400
+    try: atualizar_status(int(linha), status); return jsonify({"ok": True})
+    except Exception as e: return jsonify({"erro": str(e)}), 500
 
 @app.route("/")
 def index():
-    if _dist_index_path():
-        return app.send_static_file("index.html")
+    if _dist_index_path(): return app.send_static_file("index.html")
     return jsonify({"erro": "Frontend nao compilado."}), 503
 
 @app.route("/<path:path>")
 def spa_static(path):
     dist_file = os.path.join(app.static_folder or "", path)
-    if app.static_folder and os.path.isfile(dist_file):
-        return app.send_static_file(path)
-    if _dist_index_path():
-        return app.send_static_file("index.html")
+    if app.static_folder and os.path.isfile(dist_file): return app.send_static_file(path)
+    if _dist_index_path(): return app.send_static_file("index.html")
     return jsonify({"erro": "Not Found"}), 404
 
 if __name__ == "__main__":
