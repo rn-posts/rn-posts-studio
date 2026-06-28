@@ -537,7 +537,7 @@ def tratar_foto_editorial(img, cor_paleta, seed):
     img = ImageEnhance.Sharpness(img).enhance(1.18)
     img = ImageEnhance.Brightness(img).enhance(1.02)
     img = aplicar_split_toning(img)
-    img = aplicar_vinheta(img, seed)
+    # vinheta removida — escurecia cantos desnecessariamente
     return img
 
 def compor_pessoa(pessoa_rgba, fundo_rgb):
@@ -649,10 +649,14 @@ def aplicar_overlay(img, lum_media, layout, seed=0,
     if layout == 3:
         direcao = 1  # topo forçado
     elif tem_pessoa:
-        # Detecta onde está o rosto e aplica overlay no lado oposto
         lado = _detectar_lado_conteudo(img)
-        mapa = {"esquerda": 3, "direita": 2, "topo": 0, "base": 1, "centro": 0}
+        # Para pessoa: nunca topo (atinge rosto)
+        # centro ou topo detectado → base suave
+        mapa = {"esquerda": 3, "direita": 2, "topo": 0, "base": 0, "centro": 0}
         direcao = mapa.get(lado, 0)
+        # Base com pessoa usa alpha reduzido para não pesar
+        if direcao == 0:
+            alpha_max = int(alpha_max * 0.70)
         print(f"[overlay] pessoa lado={lado} → direcao={direcao}")
     else:
         direcao = seed % 4
@@ -784,8 +788,11 @@ def _parse_inline(tema):
     return segmentos or [{"texto": tema.strip(), "estilo": "normal"}]
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
-def _sombra(img_rgba, texto, fonte, x, y, sp=0):
-    for (ox, oy), blur, opac in [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]:
+def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False):
+    # forte=True quando o overlay é claro e o texto precisa de mais contraste
+    params = [((8, 10), 22, 0.55), ((3, 4), 5, 0.75)] if forte \
+             else [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]
+    for (ox, oy), blur, opac in params:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d     = ImageDraw.Draw(layer)
         _linha(d, x + ox, y + oy, texto, fonte, (2, 20, 30, int(255 * opac)), sp)
@@ -818,23 +825,10 @@ def _cor_segmento(idx, cor_dest, seed):
         cor_sec = CORES_DESTAQUE[(seed % 9 + 5) % 9]
     return cor_sec
 
-def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
+def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None, cor_overlay=None):
     """
     Renderiza segmentos do tema com variação de cor entre segmentos.
-
-    Estilos suportados:
-      normal       → AGILERA normal, cor destaque
-      agilera_est  → AGILERA estilizada, cor destaque (varia por segmento)
-      malgun       → MALGUN bold, cor secundária ou branco
-      fundo_agilera→ fundo preenchido + AGILERA
-      fundo_malgun → fundo preenchido + MALGUN
-
-    Posicionamento (seed % 5):
-      0 → zona média-inferior  (55%–80%)
-      1 → zona média           (42%–72%)
-      2 → zona média-inferior  (58%–85%)
-      3 → zona média-superior  (25%–55%)
-      4 → zona média           (45%–75%)
+    cor_overlay: passada para ativar sombra forte quando o overlay é claro.
     """
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
@@ -843,10 +837,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
 
     if cor_dest is None:
         cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
-    print(f"[titulo] cor_dest={cor_dest} layout={layout}")
+
+    # Sombra forte quando overlay é claro (texto precisa de mais contraste)
+    lum_overlay  = _LUM_COR.get(cor_overlay, 0.3) if cor_overlay else 0.3
+    sombra_forte = lum_overlay > 0.45
+    print(f"[titulo] cor_dest={cor_dest} layout={layout} sombra_forte={sombra_forte}")
 
     segmentos = _parse_inline(tema)
-    print(f"[titulo] segs={[(s['estilo'], s['texto'][:20]) for s in segmentos]}")
 
     # Tamanho base pelo texto AGILERA mais longo
     textos_ag = [s["texto"] for s in segmentos
@@ -941,7 +938,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None):
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
             else:
-                _sombra(img_rgba, linha, fonte, MARGIN, y, sp)
+                _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "agilera_est":
                     _linha_est(draw, MARGIN, y, linha, fonte, (*cor_txt, 255))
@@ -993,9 +990,14 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
                            cor_destaque_texto=cor_dest,
                            tem_pessoa=tem_pessoa)
 
+    # Descobre qual cor de overlay foi escolhida para passar ao desenho
+    cor_ov_usada = (_escolher_cor_overlay(cor_dom, cor_dest, seed)
+                   if cor_dom else MARINHO)
+
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
-                              cor_fundo_txt=cor_fundo_txt)
+                              cor_fundo_txt=cor_fundo_txt,
+                              cor_overlay=cor_ov_usada)
     return base
 
 # ── Planilha ──────────────────────────────────────────────────────────────────
