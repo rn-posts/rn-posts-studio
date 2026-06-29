@@ -768,19 +768,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     fa     = f_display(tam_ag)
     fb     = f_bold(tam_ml)
 
-    # Cores dos blocos: normal=cor1, agilera_est=cor2, malgun=cor3
-    # Garante contraste entre blocos adjacentes
+    # Todas as 9 cores da paleta disponíveis para texto
     _paleta_blocos = [
-        LARANJA, BRANCO, AMARELO, TEAL, VERDE_NEUTRO,
-        LARANJA, BRANCO, AMARELO, TEAL,
+        LARANJA, AMARELO, VERDE_CITRICO, TEAL, VERDE_VIVO,
+        BRANCO, VERDE_NEUTRO, PETROLEO, MARINHO,
     ]
     def _cor_b(idx, estilo):
         base = (seed + idx * 4) % 9
-        cor  = _paleta_blocos[base]
-        # Nunca retorna verde-vivo ou verde-cítrico no texto
-        if cor in (VERDE_VIVO, VERDE_CITRICO, MARINHO, PETROLEO):
-            cor = LARANJA if idx % 2 == 0 else BRANCO
-        return cor
+        return _paleta_blocos[base]
 
     # Monta lista de (linhas[], fonte, cor, sp, estilo, cor_rect)
     blocos_render = []
@@ -856,21 +851,24 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
-    # Zonas de texto: zona central-baixa — não cobre rosto, não fica tão baixo
+    # Zona mínima: 55% da altura — abaixo do rosto em qualquer foto
+    Y_MIN_GLOBAL = int(H * 0.55)
+
     if not tem_pessoa:
-        Y_INI_raw = int(H * 0.52)
-        Y_FIM_raw = int(H * 0.85)
+        Y_INI_raw = int(H * 0.55)
+        Y_FIM_raw = int(H * 0.88)
     else:
         zonas = [
-            (int(H * 0.50), int(H * 0.80)),
-            (int(H * 0.48), int(H * 0.78)),
-            (int(H * 0.52), int(H * 0.82)),
-            (int(H * 0.50), int(H * 0.80)),
-            (int(H * 0.51), int(H * 0.81)),
+            (int(H * 0.55), int(H * 0.82)),
+            (int(H * 0.55), int(H * 0.80)),
+            (int(H * 0.57), int(H * 0.84)),
+            (int(H * 0.55), int(H * 0.82)),
+            (int(H * 0.56), int(H * 0.83)),
         ]
         Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
-    Y_INI = max(SAFE_TOP,    Y_INI_raw)
-    Y_FIM = min(SAFE_BOTTOM, Y_FIM_raw)
+
+    Y_INI = max(Y_MIN_GLOBAL, max(SAFE_TOP, Y_INI_raw))
+    Y_FIM = min(SAFE_BOTTOM,  Y_FIM_raw)
 
     zona = Y_FIM - Y_INI
     y    = Y_INI + max(0, (zona - h_total) // 2)
@@ -910,36 +908,71 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
                 y += esp
         else:
-            # Grupo composto (malgun + fundo + malgun) — renderiza na MESMA linha horizontal
-            # Pega apenas a primeira linha de cada bloco e coloca side-by-side
-            x_cursor = MARGIN
-            esp_entre = 10  # espaço entre elementos do grupo
+            # Grupo composto — renderiza na MESMA linha horizontal
+            # Primeiro verifica se o total cabe em MAX_PX
+            total_w = 0
+            esp_entre = 10
+            pad_x_fundo = 14
             for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
                 linha = lns[0] if lns else ""
                 if not linha: continue
-                w = _medir(linha, fonte)
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
+                w = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
                 if est == "fundo":
-                    pad_x, pad_y = 14, 8
-                    try:
-                        bb  = fonte.getbbox(linha)
-                        rx1 = x_cursor - pad_x;     ry1 = y + bb[1] - pad_y
-                        rx2 = x_cursor + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
-                    except Exception:
-                        rx1 = x_cursor - pad_x; ry1 = y - pad_y
-                        rx2 = x_cursor + w + pad_x; ry2 = y + _altura_linha(fonte) + pad_y
-                    draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                           radius=8, fill=(*(cor_rect or cor_dest), 255))
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
-                    x_cursor += w + pad_x * 2 + esp_entre
+                    total_w += w + pad_x_fundo * 2 + esp_entre
                 else:
-                    _sombra(img_rgba, linha, fonte, x_cursor, y, sp, forte=sombra_forte)
+                    total_w += w + esp_entre
+
+            if total_w > MAX_PX:
+                # Não cabe na mesma linha — renderiza cada bloco em linha separada
+                for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+                    for linha in lns:
+                        draw = ImageDraw.Draw(img_rgba, "RGBA")
+                        if est == "fundo":
+                            pad_x, pad_y = 14, 8
+                            try:
+                                bb  = fonte.getbbox(linha)
+                                rx1 = MARGIN - pad_x; ry1 = y + bb[1] - pad_y
+                                rx2 = MARGIN + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                            except Exception:
+                                rx1 = MARGIN - pad_x; ry1 = y - pad_y
+                                rx2 = MARGIN + _medir(linha, fonte) + pad_x
+                                ry2 = y + _altura_linha(fonte) + pad_y
+                            draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                                   radius=8, fill=(*(cor_rect or cor_dest), 255))
+                            draw = ImageDraw.Draw(img_rgba, "RGBA")
+                            _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
+                        else:
+                            _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
+                            draw = ImageDraw.Draw(img_rgba, "RGBA")
+                            _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
+                        y += int(_altura_linha(fonte) * 1.10)
+            else:
+                x_cursor = MARGIN
+                for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+                    linha = lns[0] if lns else ""
+                    if not linha: continue
+                    w = _medir(linha, fonte)
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), sp)
-                    x_cursor += _medir_sp(linha, fonte, sp) if sp else w
-                    x_cursor += esp_entre
-            y += esp
+                    if est == "fundo":
+                        pad_x, pad_y = pad_x_fundo, 8
+                        try:
+                            bb  = fonte.getbbox(linha)
+                            rx1 = x_cursor - pad_x;     ry1 = y + bb[1] - pad_y
+                            rx2 = x_cursor + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                        except Exception:
+                            rx1 = x_cursor - pad_x; ry1 = y - pad_y
+                            rx2 = x_cursor + w + pad_x; ry2 = y + _altura_linha(fonte) + pad_y
+                        draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                               radius=8, fill=(*(cor_rect or cor_dest), 255))
+                        draw = ImageDraw.Draw(img_rgba, "RGBA")
+                        _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
+                        x_cursor += w + pad_x * 2 + esp_entre
+                    else:
+                        _sombra(img_rgba, linha, fonte, x_cursor, y, sp, forte=sombra_forte)
+                        draw = ImageDraw.Draw(img_rgba, "RGBA")
+                        _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), sp)
+                        x_cursor += (_medir_sp(linha, fonte, sp) if sp else w) + esp_entre
+                y += esp
 
     return img_rgba.convert("RGB"), layout
 
