@@ -816,22 +816,57 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         return img_rgba.convert("RGB"), layout
 
     gap_bloco = max(8, int(tam_ag * 0.12))
-    h_total   = sum(int(_altura_linha(f) * 1.10) * len(ls)
-                    for ls, f, *_ in blocos_render) + gap_bloco * max(0, len(blocos_render) - 1)
 
-    # Zonas de texto: todas na metade INFERIOR para não cobrir rostos
-    # Para fotos editoriais (sem rembg), texto sempre na base
+    # Agrupa blocos consecutivos de mesmo nível (malgun + fundo + malgun)
+    # em "linhas compostas" para renderização horizontal coesa
+    # Regra: blocos malgun e fundo consecutivos ficam na mesma linha se cabem
+    def _agrupar_linhas_compostas(blocos_r, max_px, fb):
+        """
+        Retorna lista de grupos. Cada grupo é uma lista de blocos que serão
+        renderizados na mesma linha horizontal.
+        Blocos 'normal' e 'agilera_est' sempre ficam sozinhos.
+        Blocos 'malgun' e 'fundo' consecutivos são agrupados se cabem.
+        """
+        grupos = []
+        i = 0
+        while i < len(blocos_r):
+            lns, fonte, cor, sp, est, cor_rect = blocos_r[i]
+            if est in ("malgun", "fundo"):
+                grupo = [(lns, fonte, cor, sp, est, cor_rect)]
+                j = i + 1
+                while j < len(blocos_r):
+                    lns2, f2, c2, sp2, est2, cr2 = blocos_r[j]
+                    if est2 in ("malgun", "fundo"):
+                        grupo.append((lns2, f2, c2, sp2, est2, cr2))
+                        j += 1
+                    else:
+                        break
+                grupos.append(grupo)
+                i = j
+            else:
+                grupos.append([(lns, fonte, cor, sp, est, cor_rect)])
+                i += 1
+        return grupos
+
+    grupos = _agrupar_linhas_compostas(blocos_render, MAX_PX, fb)
+    h_total = 0
+    for grupo in grupos:
+        # Altura do grupo = máximo entre as fontes das primeiras linhas
+        alt = max(int(_altura_linha(f) * 1.10) for _, f, *_ in grupo)
+        h_total += alt
+    h_total += gap_bloco * max(0, len(grupos) - 1)
+
+    # Zonas de texto: zona central-baixa — não cobre rosto, não fica tão baixo
     if not tem_pessoa:
-        # Fotos editoriais: texto sempre na faixa inferior segura
-        Y_INI_raw = int(H * 0.62)
-        Y_FIM_raw = int(H * 0.93)
+        Y_INI_raw = int(H * 0.52)
+        Y_FIM_raw = int(H * 0.85)
     else:
         zonas = [
-            (int(H * 0.58), int(H * 0.86)),
-            (int(H * 0.52), int(H * 0.80)),
-            (int(H * 0.60), int(H * 0.88)),
-            (int(H * 0.55), int(H * 0.84)),
-            (int(H * 0.56), int(H * 0.85)),
+            (int(H * 0.50), int(H * 0.80)),
+            (int(H * 0.48), int(H * 0.78)),
+            (int(H * 0.52), int(H * 0.82)),
+            (int(H * 0.50), int(H * 0.80)),
+            (int(H * 0.51), int(H * 0.81)),
         ]
         Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
     Y_INI = max(SAFE_TOP,    Y_INI_raw)
@@ -842,32 +877,68 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
 
-    for bi, (lns, fonte, cor_txt, sp, est, cor_rect) in enumerate(blocos_render):
-        if bi > 0: y += gap_bloco
-        esp = int(_altura_linha(fonte) * 1.10)
-        for linha in lns:
-            draw = ImageDraw.Draw(img_rgba, "RGBA")
-            if est == "fundo":
-                pad_x, pad_y = 18, 10
-                try:
-                    bb  = fonte.getbbox(linha)
-                    rx1 = MARGIN - pad_x;         ry1 = y + bb[1] - pad_y
-                    rx2 = MARGIN + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
-                except Exception:
-                    rx1 = MARGIN - pad_x;  ry1 = y - pad_y
-                    rx2 = MARGIN + _medir(linha, fonte) + pad_x
-                    ry2 = y + _altura_linha(fonte) + pad_y
-                draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                       radius=8, fill=(*(cor_rect or cor_dest), 255))
+    for gi, grupo in enumerate(grupos):
+        if gi > 0: y += gap_bloco
+        lns0, f0, *_ = grupo[0]
+        esp = int(_altura_linha(f0) * 1.10)
+
+        if len(grupo) == 1:
+            # Bloco simples — renderiza normalmente (todas as suas linhas)
+            lns, fonte, cor_txt, sp, est, cor_rect = grupo[0]
+            for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
-                _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
-            else:
-                _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
-                if est == "agilera_est":
-                    _linha_est(draw, MARGIN, y, linha, fonte, (*cor_txt, 255))
+                if est == "fundo":
+                    pad_x, pad_y = 18, 10
+                    try:
+                        bb  = fonte.getbbox(linha)
+                        rx1 = MARGIN - pad_x;         ry1 = y + bb[1] - pad_y
+                        rx2 = MARGIN + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                    except Exception:
+                        rx1 = MARGIN - pad_x;  ry1 = y - pad_y
+                        rx2 = MARGIN + _medir(linha, fonte) + pad_x
+                        ry2 = y + _altura_linha(fonte) + pad_y
+                    draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                           radius=8, fill=(*(cor_rect or cor_dest), 255))
+                    draw = ImageDraw.Draw(img_rgba, "RGBA")
+                    _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
-                    _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
+                    _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
+                    draw = ImageDraw.Draw(img_rgba, "RGBA")
+                    if est == "agilera_est":
+                        _linha_est(draw, MARGIN, y, linha, fonte, (*cor_txt, 255))
+                    else:
+                        _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
+                y += esp
+        else:
+            # Grupo composto (malgun + fundo + malgun) — renderiza na MESMA linha horizontal
+            # Pega apenas a primeira linha de cada bloco e coloca side-by-side
+            x_cursor = MARGIN
+            esp_entre = 10  # espaço entre elementos do grupo
+            for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+                linha = lns[0] if lns else ""
+                if not linha: continue
+                w = _medir(linha, fonte)
+                draw = ImageDraw.Draw(img_rgba, "RGBA")
+                if est == "fundo":
+                    pad_x, pad_y = 14, 8
+                    try:
+                        bb  = fonte.getbbox(linha)
+                        rx1 = x_cursor - pad_x;     ry1 = y + bb[1] - pad_y
+                        rx2 = x_cursor + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                    except Exception:
+                        rx1 = x_cursor - pad_x; ry1 = y - pad_y
+                        rx2 = x_cursor + w + pad_x; ry2 = y + _altura_linha(fonte) + pad_y
+                    draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                           radius=8, fill=(*(cor_rect or cor_dest), 255))
+                    draw = ImageDraw.Draw(img_rgba, "RGBA")
+                    _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
+                    x_cursor += w + pad_x * 2 + esp_entre
+                else:
+                    _sombra(img_rgba, linha, fonte, x_cursor, y, sp, forte=sombra_forte)
+                    draw = ImageDraw.Draw(img_rgba, "RGBA")
+                    _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), sp)
+                    x_cursor += _medir_sp(linha, fonte, sp) if sp else w
+                    x_cursor += esp_entre
             y += esp
 
     return img_rgba.convert("RGB"), layout
