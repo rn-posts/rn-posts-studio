@@ -640,6 +640,11 @@ def _parse_blocos(tema):
     linha  = linhas_raw[0] if linhas_raw else tema.strip()
     tokens = linha.split()
 
+    # Regras:
+    # * e : mudam o estilo CORRENTE — palavras seguintes do mesmo estilo
+    #   ficam no mesmo bloco (sem fechar desnecessariamente)
+    # - afeta APENAS a palavra colada a ele; o restante volta ao estilo anterior
+
     blocos       = []
     estilo_atual = "normal"
     palavras     = []
@@ -650,18 +655,36 @@ def _parse_blocos(tema):
             palavras.clear()
 
     for tok in tokens:
-        if tok.startswith("*") and len(tok) > 1:
-            _fechar(); estilo_atual = "agilera_est"; palavras.append(tok[1:])
-        elif tok.startswith(":") and len(tok) > 1:
-            _fechar(); estilo_atual = "malgun";      palavras.append(tok[1:])
-        elif tok.startswith("-") and len(tok) > 1:
-            _fechar(); estilo_atual = "fundo";       palavras.append(tok[1:])
-        elif tok in ("*", ":", "-"):
+        if tok.startswith("-") and len(tok) > 1:
+            # Fundo: isola só esta palavra; estilo anterior continua depois
+            estilo_antes = estilo_atual
             _fechar()
-            if tok == "*":   estilo_atual = "agilera_est"
-            elif tok == ":": estilo_atual = "malgun"
-            else:            estilo_atual = "fundo"
+            blocos.append({"texto": tok[1:], "estilo": "fundo"})
+            estilo_atual = estilo_antes   # volta ao estilo anterior
+
+        elif tok.startswith("*") and len(tok) > 1:
+            novo = "agilera_est"
+            if estilo_atual != novo: _fechar(); estilo_atual = novo
+            palavras.append(tok[1:])
+
+        elif tok.startswith(":") and len(tok) > 1:
+            novo = "malgun"
+            if estilo_atual != novo: _fechar(); estilo_atual = novo
+            palavras.append(tok[1:])
+
+        elif tok == "-":
+            pass   # traço isolado sem palavra — ignora
+
+        elif tok == "*":
+            if estilo_atual != "agilera_est": _fechar(); estilo_atual = "agilera_est"
+
+        elif tok == ":":
+            if estilo_atual != "malgun": _fechar(); estilo_atual = "malgun"
+
         else:
+            # Palavra sem símbolo — se estilo mudou para normal, fecha o bloco atual
+            if estilo_atual not in ("normal", "malgun", "agilera_est"):
+                _fechar(); estilo_atual = "normal"
             palavras.append(tok)
 
     _fechar()
