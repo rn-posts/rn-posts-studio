@@ -104,10 +104,13 @@ SAFE_MARGIN = SAFE_LEFT + 46   # 80px
 SAFE_MAX_PX = SAFE_W - 92      # 920px
 
 # ── Cores de destaque ─────────────────────────────────────────────────────────
-# 9 cores indexadas para rotação — seed varia a cada geração
+# Overlay: apenas cores frias/escuras — adequado para saúde mental
+CORES_OVERLAY_PERMITIDAS = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO]
+
+# Destaque de texto: todas as 9 cores
 CORES_DESTAQUE = [
-    LARANJA, AMARELO, VERDE_CITRICO, TEAL, VERDE_VIVO,
-    BRANCO, VERDE_NEUTRO, PETROLEO, MARINHO,
+    LARANJA, AMARELO, TEAL, BRANCO, VERDE_NEUTRO,
+    PETROLEO, LARANJA, AMARELO, TEAL,
 ]
 CORES_FUNDO_TEXTO = {
     LARANJA: MARINHO, AMARELO: MARINHO, TEAL: BRANCO,
@@ -123,26 +126,20 @@ def distancia_cor(c1, c2):
     return math.sqrt(sum((a - b)**2 for a, b in zip(c1, c2)))
 
 def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto, seed=0):
-    lum_foto = sum(cor_dominante_foto) / (3 * 255)
+    """Overlay sempre em cores frias/escuras — nunca verde-limão ou amarelo."""
     dist_max = math.sqrt(255**2 * 3)
     candidatas = []
-    for cor in PALETA_9:
+    for cor in CORES_OVERLAY_PERMITIDAS:
         if cor == cor_destaque_texto: continue
-        if cor == BRANCO: continue
-        dist   = distancia_cor(cor_dominante_foto, cor) / dist_max
-        lum_ov = _LUM_COR.get(cor, 0.5)
-        if lum_foto > 0.55:
-            bonus = (1.0 - lum_ov) * 0.7 + dist * 0.3
-        elif lum_foto > 0.35:
-            bonus = (1.0 - abs(lum_ov - 0.35) * 1.5) * 0.5 + dist * 0.5
-        else:
-            bonus = (1.0 - abs(lum_ov - 0.45) * 2.0) * 0.6 + dist * 0.4
-        bonus = max(0.05, bonus)
+        dist  = distancia_cor(cor_dominante_foto, cor) / dist_max
+        bonus = dist  # prefere cor mais diferente da foto
         candidatas.append((bonus, cor))
+    if not candidatas:
+        return MARINHO
     candidatas.sort(key=lambda x: -x[0])
     top3 = candidatas[:3]
     _, melhor_cor = top3[seed % len(top3)]
-    print(f"[overlay_cor] lum_foto={lum_foto:.2f} top3={[c for _,c in top3]} → {melhor_cor}")
+    print(f"[overlay_cor] top3={[c for _,c in top3]} → {melhor_cor}")
     return melhor_cor
 
 _cards_pendentes = {}
@@ -564,12 +561,12 @@ def aplicar_overlay(img, lum_media, layout, seed=0,
     if layout == 3:
         direcao = 1  # topo forçado
     elif tem_pessoa:
-        # Pessoa sempre composta à direita por compor_pessoa() → texto à esquerda → overlay à esquerda
+        # Pessoa composta à direita → overlay à esquerda (onde fica o texto)
         direcao = 2
         print(f"[overlay] pessoa → direcao=2 (esquerda)")
     else:
-        # Fotos editoriais: alterna apenas base/topo para não tampar conteúdo
-        direcao = 0 if (seed % 2 == 0) else 1
+        # Fotos editoriais: só base — overlay em toda a base da foto
+        direcao = 0
 
     if direcao == 1:
         altura = int(H * 0.48)
@@ -730,8 +727,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False):
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
-    # Para fotos com pessoa à direita: texto limitado à metade esquerda
-    MAX_PX   = (W // 2 - MARGIN - 20) if tem_pessoa else SAFE_MAX_PX
+    # Para fotos com pessoa à direita: texto na terça parte esquerda
+    # Para editoriais: texto na zona segura completa, mas posicionado na base
+    MAX_PX   = (int(W * 0.44) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     layout   = seed % 5
 
     if cor_dest is None:
@@ -745,9 +743,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     if not blocos:
         return img_rgba.convert("RGB"), layout
 
-    # Calcula tamanho da fonte baseado no bloco normal mais longo
+    # Tamanho de fonte: baseado no bloco mais longo que usa AGILERA
     n = max((len(b["texto"]) for b in blocos if b["estilo"] in ("normal", "agilera_est")),
             default=len(tema))
+
+    # MAX_PX real para cálculo de fonte (metade esquerda se tem pessoa)
+    max_px_fonte = MAX_PX
 
     if layout == 2:
         tam_ag = 148 if n <= 8 else 128 if n <= 14 else 108 if n <= 20 else 88 if n <= 28 else 72
@@ -758,12 +759,28 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
     # Quando pessoa está presente, reduz fonte para caber na metade esquerda
     if tem_pessoa:
-        tam_ag = max(48, int(tam_ag * 0.80))
+        tam_ag = max(44, int(tam_ag * 0.72))
 
-    tam_ml = max(40, int(tam_ag * 0.56))
+    # agilera_est é 20% maior — garante destaque claro sobre normal
+    # malgun é 52% de tam_ag — hierarquia clara
+    tam_ml = max(36, int(tam_ag * 0.52))
     ag_sp  = -3 if tam_ag >= 100 else -2
     fa     = f_display(tam_ag)
     fb     = f_bold(tam_ml)
+
+    # Cores dos blocos: normal=cor1, agilera_est=cor2, malgun=cor3
+    # Garante contraste entre blocos adjacentes
+    _paleta_blocos = [
+        LARANJA, BRANCO, AMARELO, TEAL, VERDE_NEUTRO,
+        LARANJA, BRANCO, AMARELO, TEAL,
+    ]
+    def _cor_b(idx, estilo):
+        base = (seed + idx * 4) % 9
+        cor  = _paleta_blocos[base]
+        # Nunca retorna verde-vivo ou verde-cítrico no texto
+        if cor in (VERDE_VIVO, VERDE_CITRICO, MARINHO, PETROLEO):
+            cor = LARANJA if idx % 2 == 0 else BRANCO
+        return cor
 
     # Monta lista de (linhas[], fonte, cor, sp, estilo, cor_rect)
     blocos_render = []
@@ -772,11 +789,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         est = bloco["estilo"]
         if not txt: continue
 
-        cor_b = _cor_bloco(idx_b, seed)
+        cor_b = _cor_b(idx_b, est)
 
         if est == "agilera_est":
-            tam_est = int(tam_ag * 1.20)
-            if tem_pessoa: tam_est = max(48, int(tam_est * 0.80))
+            tam_est = int(tam_ag * 1.22)  # claramente maior que normal
             fa_est  = f_display_est(tam_est)
             txt_lig = _aplicar_ligaturas(txt)
             lns     = _quebrar(txt_lig, fa_est, MAX_PX, ag_sp)
@@ -788,10 +804,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None))
 
         elif est == "fundo":
-            # Fundo preenchido usa cor_dest como retângulo, texto contrasta
-            cor_txt_f = CORES_FUNDO_TEXTO.get(cor_b, MARINHO)
+            cor_rect_f = TEAL if (seed % 2 == 0) else LARANJA
+            cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
             lns = _quebrar(txt, fb, MAX_PX - 36)
-            blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_b))
+            blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f))
 
         else:  # normal
             blocos_render.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, cor_b, ag_sp, est, None))
@@ -803,14 +819,21 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     h_total   = sum(int(_altura_linha(f) * 1.10) * len(ls)
                     for ls, f, *_ in blocos_render) + gap_bloco * max(0, len(blocos_render) - 1)
 
-    zonas = [
-        (int(H * 0.55), int(H * 0.82)),
-        (int(H * 0.42), int(H * 0.72)),
-        (int(H * 0.58), int(H * 0.86)),
-        (int(H * 0.25), int(H * 0.55)),
-        (int(H * 0.45), int(H * 0.76)),
-    ]
-    Y_INI_raw, Y_FIM_raw = zonas[layout]
+    # Zonas de texto: todas na metade INFERIOR para não cobrir rostos
+    # Para fotos editoriais (sem rembg), texto sempre na base
+    if not tem_pessoa:
+        # Fotos editoriais: texto sempre na faixa inferior segura
+        Y_INI_raw = int(H * 0.62)
+        Y_FIM_raw = int(H * 0.93)
+    else:
+        zonas = [
+            (int(H * 0.58), int(H * 0.86)),
+            (int(H * 0.52), int(H * 0.80)),
+            (int(H * 0.60), int(H * 0.88)),
+            (int(H * 0.55), int(H * 0.84)),
+            (int(H * 0.56), int(H * 0.85)),
+        ]
+        Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
     Y_INI = max(SAFE_TOP,    Y_INI_raw)
     Y_FIM = min(SAFE_BOTTOM, Y_FIM_raw)
 
