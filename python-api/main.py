@@ -708,20 +708,74 @@ def _linha(draw, x, y, texto, fonte, cor, sp=0):
             bb = fonte.getbbox(ch); cursor += (bb[2] - bb[0]) + sp
         except Exception: cursor += 30 + sp
 
-# Sequência de cores para variação entre blocos — 9 opções reais
-_SEQ_CORES = [
-    LARANJA, AMARELO, VERDE_CITRICO, TEAL, VERDE_VIVO,
-    BRANCO, VERDE_NEUTRO, AMARELO, LARANJA,
-]
+# ── Variações tipográficas ───────────────────────────────────────────────────
+# 6 modos selecionados pelo seed — aplicados a TODOS os blocos
+#
+# Modo 0: padrão (tracking normal, sem ligaturas)         — sempre disponível
+# Modo 1: tracking aberto  (sp positivo, letras espaçadas) — sempre disponível
+# Modo 2: tracking fechado (sp negativo, letras condensadas)— sempre disponível
+# Modo 3: ligaturas via fonttools (aalt+liga)               — quando disponível
+# Modo 4: ligaturas + tracking aberto                       — quando disponível
+# Modo 5: fonte estilizada + tamanho levemente menor        — quando disponível
+#
+# Se fonttools falhar nos modos 3/4/5, cai em variante pura de tracking
 
-def _cor_bloco(idx_bloco, seed):
+def _modo_tipografico(seed):
+    """Retorna o modo tipográfico (0-5) baseado no seed."""
+    return seed % 6
+
+def _sp_para_modo(modo, tam_base):
     """
-    Retorna cor diferente para cada bloco usando seed + offset.
-    Garante que blocos adjacentes nunca tenham a mesma cor.
+    Retorna o letter-spacing (sp) para o modo dado.
+    Aplicado a AGILERA (normal e agilera_est).
+    MALGUN usa sp=0 sempre (fonte proporcional, sp prejudica).
     """
-    base = (seed + idx_bloco * 3) % 9
-    cor  = _SEQ_CORES[base]
-    return cor
+    if modo == 1 or modo == 4:  # tracking aberto
+        return max(2, int(tam_base * 0.04))
+    if modo == 2:               # tracking fechado
+        return min(-1, int(tam_base * -0.02))
+    if modo == 3 or modo == 5:  # ligaturas — tracking padrão
+        return -3 if tam_base >= 100 else -2
+    return -3 if tam_base >= 100 else -2  # padrão
+
+def _fonte_agilera_para_modo(modo, tam):
+    """
+    Retorna a fonte AGILERA correta para o modo.
+    Modos 3/4/5 tentam usar a fonte estilizada; se falhar, usa normal.
+    """
+    if modo in (3, 4, 5):
+        est = _preparar_fonte_estilizada()
+        if est:
+            try:
+                return ImageFont.truetype(est, tam), True  # (fonte, tem_ligaturas)
+            except Exception:
+                pass
+        # fallback: AGILERA normal com RAQM se disponível
+        p = _resolve_font_path("AGILERA.OTF")
+        if p and _RAQM_OK:
+            try:
+                return ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM), True
+            except Exception:
+                pass
+        return f_display(tam), False
+    return f_display(tam), False
+
+def _texto_para_modo(modo, texto):
+    """Aplica ligaturas ao texto se o modo suporta."""
+    if modo in (3, 4, 5) and _LIGA_SUBST:
+        return _aplicar_ligaturas(texto)
+    return texto
+
+def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
+                               tem_liga, sombra_forte):
+    """Renderiza uma linha AGILERA com sombra, respeitando o modo tipográfico."""
+    _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
+    draw = ImageDraw.Draw(img_rgba, "RGBA")
+    if tem_liga:
+        _linha_est(draw, x, y, texto, fonte, (*cor, 255))
+    else:
+        _linha(draw, x, y, texto, fonte, (*cor, 255), sp)
+    return draw
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False):
@@ -764,9 +818,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
     tam_ml = max(36, int(tam_ag * 0.52))
-    ag_sp  = -3 if tam_ag >= 100 else -2
-    fa     = f_display(tam_ag)
-    fb     = f_bold(tam_ml)
+    modo = _modo_tipografico(seed)
+    print(f"[titulo] modo_tipo={modo}")
+
+    # Fonte AGILERA base com variação de modo
+    fa_base, tem_liga_base = _fonte_agilera_para_modo(modo, tam_ag)
+    ag_sp = _sp_para_modo(modo, tam_ag)
+    fa    = fa_base  # usado para blocos 'normal'
+    fb    = f_bold(tam_ml)
+
+    # MALGUN: 3 variações por seed — regular, bold, light
+    _malgun_vars = [f_bold(tam_ml), f_corpo(tam_ml), f_light(tam_ml)]
+    fb = _malgun_vars[(seed // 6) % 3]
 
     # Todas as 9 cores da paleta disponíveis para texto
     _paleta_blocos = [
@@ -787,25 +850,30 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         cor_b = _cor_b(idx_b, est)
 
         if est == "agilera_est":
-            tam_est = int(tam_ag * 1.22)  # claramente maior que normal
-            fa_est  = f_display_est(tam_est)
-            txt_lig = _aplicar_ligaturas(txt)
-            lns     = _quebrar(txt_lig, fa_est, MAX_PX, ag_sp)
-            blocos_render.append((lns, fa_est, cor_b, ag_sp, est, None))
+            # Modo tipográfico aplicado: tamanho 22% maior, fonte e sp do modo
+            tam_est = int(tam_ag * 1.22)
+            if modo == 5: tam_est = int(tam_est * 0.88)  # modo 5: levemente menor
+            fa_est, tem_liga_est = _fonte_agilera_para_modo(modo, tam_est)
+            sp_est  = _sp_para_modo(modo, tam_est)
+            txt_out = _texto_para_modo(modo, txt)
+            lns     = _quebrar(txt_out, fa_est, MAX_PX, sp_est)
+            blocos_render.append((lns, fa_est, cor_b, sp_est, est, None, tem_liga_est))
 
         elif est == "malgun":
             lum_b  = _LUM_COR.get(cor_b, 0.5)
             cor_ml = cor_b if lum_b > 0.42 else BRANCO
-            blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None))
+            blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None, False))
 
         elif est == "fundo":
             cor_rect_f = TEAL if (seed % 2 == 0) else LARANJA
             cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
             lns = _quebrar(txt, fb, MAX_PX - 36)
-            blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f))
+            blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f, False))
 
-        else:  # normal
-            blocos_render.append((_quebrar(txt, fa, MAX_PX, ag_sp), fa, cor_b, ag_sp, est, None))
+        else:  # normal — modo tipográfico aplicado
+            txt_out = _texto_para_modo(modo, txt)
+            lns     = _quebrar(txt_out, fa, MAX_PX, ag_sp)
+            blocos_render.append((lns, fa, cor_b, ag_sp, est, None, tem_liga_base))
 
     if not blocos_render:
         return img_rgba.convert("RGB"), layout
@@ -816,37 +884,30 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # em "linhas compostas" para renderização horizontal coesa
     # Regra: blocos malgun e fundo consecutivos ficam na mesma linha se cabem
     def _agrupar_linhas_compostas(blocos_r, max_px, fb):
-        """
-        Retorna lista de grupos. Cada grupo é uma lista de blocos que serão
-        renderizados na mesma linha horizontal.
-        Blocos 'normal' e 'agilera_est' sempre ficam sozinhos.
-        Blocos 'malgun' e 'fundo' consecutivos são agrupados se cabem.
-        """
         grupos = []
         i = 0
         while i < len(blocos_r):
-            lns, fonte, cor, sp, est, cor_rect = blocos_r[i]
+            lns, fonte, cor, sp, est, cor_rect, tem_liga = blocos_r[i]
             if est in ("malgun", "fundo"):
-                grupo = [(lns, fonte, cor, sp, est, cor_rect)]
+                grupo = [blocos_r[i]]
                 j = i + 1
                 while j < len(blocos_r):
-                    lns2, f2, c2, sp2, est2, cr2 = blocos_r[j]
+                    lns2, f2, c2, sp2, est2, cr2, tl2 = blocos_r[j]
                     if est2 in ("malgun", "fundo"):
-                        grupo.append((lns2, f2, c2, sp2, est2, cr2))
+                        grupo.append(blocos_r[j])
                         j += 1
                     else:
                         break
                 grupos.append(grupo)
                 i = j
             else:
-                grupos.append([(lns, fonte, cor, sp, est, cor_rect)])
+                grupos.append([blocos_r[i]])
                 i += 1
         return grupos
 
     grupos = _agrupar_linhas_compostas(blocos_render, MAX_PX, fb)
     h_total = 0
     for grupo in grupos:
-        # Altura do grupo = máximo entre as fontes das primeiras linhas
         alt = max(int(_altura_linha(f) * 1.10) for _, f, *_ in grupo)
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
@@ -881,8 +942,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         esp = int(_altura_linha(f0) * 1.10)
 
         if len(grupo) == 1:
-            # Bloco simples — renderiza normalmente (todas as suas linhas)
-            lns, fonte, cor_txt, sp, est, cor_rect = grupo[0]
+            lns, fonte, cor_txt, sp, est, cor_rect, tem_liga = grupo[0]
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
@@ -900,20 +960,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
-                    _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    if est == "agilera_est":
-                        _linha_est(draw, MARGIN, y, linha, fonte, (*cor_txt, 255))
-                    else:
-                        _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
+                    _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
+                                              fonte, cor_txt, sp, tem_liga, sombra_forte)
                 y += esp
         else:
-            # Grupo composto — renderiza na MESMA linha horizontal
-            # Primeiro verifica se o total cabe em MAX_PX
             total_w = 0
             esp_entre = 10
             pad_x_fundo = 14
-            for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+            for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
                 linha = lns[0] if lns else ""
                 if not linha: continue
                 w = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
@@ -923,8 +977,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     total_w += w + esp_entre
 
             if total_w > MAX_PX:
-                # Não cabe na mesma linha — renderiza cada bloco em linha separada
-                for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+                for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
                     for linha in lns:
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
@@ -942,13 +995,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                         else:
-                            _sombra(img_rgba, linha, fonte, MARGIN, y, sp, forte=sombra_forte)
-                            draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), sp)
+                            _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
+                                                      fonte, cor_txt, sp, tem_liga, sombra_forte)
                         y += int(_altura_linha(fonte) * 1.10)
             else:
                 x_cursor = MARGIN
-                for lns, fonte, cor_txt, sp, est, cor_rect in grupo:
+                for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
                     linha = lns[0] if lns else ""
                     if not linha: continue
                     w = _medir(linha, fonte)
@@ -968,9 +1020,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
                         x_cursor += w + pad_x * 2 + esp_entre
                     else:
-                        _sombra(img_rgba, linha, fonte, x_cursor, y, sp, forte=sombra_forte)
-                        draw = ImageDraw.Draw(img_rgba, "RGBA")
-                        _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), sp)
+                        _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
+                                                  fonte, cor_txt, sp, tem_liga, sombra_forte)
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w) + esp_entre
                 y += esp
 
