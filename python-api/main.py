@@ -295,11 +295,18 @@ def f_display_est(t):
     except Exception: return ImageFont.load_default()
 
 def _linha_est(draw, x, y, texto, fonte, cor):
+    """Renderiza com ligaturas e glifos alternativos via RAQM ou fallback."""
     if _RAQM_OK:
         try:
-            draw.text((x, y), texto, font=fonte, fill=cor, features=["liga", "aalt"])
+            draw.text((x, y), texto, font=fonte, fill=cor,
+                      features=["+liga", "+aalt", "+calt", "+dlig"])
             return
-        except Exception: pass
+        except Exception as e:
+            print(f"[linha_est] RAQM features erro: {e}")
+            try:
+                draw.text((x, y), texto, font=fonte, fill=cor)
+                return
+            except Exception: pass
     draw.text((x, y), texto, font=fonte, fill=cor)
 
 # ── IA ────────────────────────────────────────────────────────────────────────
@@ -746,29 +753,35 @@ def _sp_para_modo(modo, tam_base):
 def _fonte_agilera_est_garantida(tam):
     """
     Retorna (fonte, tem_liga) para blocos agilera_est (*palavra).
-    SEMPRE tenta obter a fonte estilizada com ligaturas.
-    Hierarquia de fallback:
-      1. fonttools (aalt+liga embutido)
-      2. RAQM (liga OpenType em tempo de render)
-      3. AGILERA normal (sem ligaturas, mas ainda é agilera)
+    RAQM está disponível no Render — usa ele diretamente para ligaturas OpenType.
+    Fonttools é tentado primeiro mas raramente funciona no Render.
+    Hierarquia:
+      1. RAQM com layout_engine (liga+aalt nativas via draw.text features)
+      2. fonttools (aalt+liga embutido na fonte)
+      3. AGILERA normal (sem ligaturas)
     """
-    # Tentativa 1: fonttools
-    est = _preparar_fonte_estilizada()
-    if est:
-        try:
-            return ImageFont.truetype(est, tam), True
-        except Exception as e:
-            print(f"[font_est] erro fonttools tam={tam}: {e}")
-
-    # Tentativa 2: RAQM
     p = _resolve_font_path("AGILERA.OTF")
+
+    # Tentativa 1: RAQM (funciona no Render)
     if p and _RAQM_OK:
         try:
-            return ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM), True
+            fonte = ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM)
+            print(f"[font_est] RAQM OK tam={tam}")
+            return fonte, True
         except Exception as e:
             print(f"[font_est] erro RAQM tam={tam}: {e}")
 
-    # Tentativa 3: AGILERA normal (sem ligaturas)
+    # Tentativa 2: fonttools
+    est = _preparar_fonte_estilizada()
+    if est:
+        try:
+            fonte = ImageFont.truetype(est, tam)
+            print(f"[font_est] fonttools OK tam={tam}")
+            return fonte, True
+        except Exception as e:
+            print(f"[font_est] erro fonttools tam={tam}: {e}")
+
+    # Tentativa 3: AGILERA normal sem ligaturas
     print(f"[font_est] fallback normal tam={tam}")
     return f_display(tam), False
 
