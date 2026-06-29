@@ -711,14 +711,19 @@ def _linha(draw, x, y, texto, fonte, cor, sp=0):
 # ── Variações tipográficas ───────────────────────────────────────────────────
 # 6 modos selecionados pelo seed — aplicados a TODOS os blocos
 #
-# Modo 0: padrão (tracking normal, sem ligaturas)         — sempre disponível
-# Modo 1: tracking aberto  (sp positivo, letras espaçadas) — sempre disponível
-# Modo 2: tracking fechado (sp negativo, letras condensadas)— sempre disponível
-# Modo 3: ligaturas via fonttools (aalt+liga)               — quando disponível
-# Modo 4: ligaturas + tracking aberto                       — quando disponível
-# Modo 5: fonte estilizada + tamanho levemente menor        — quando disponível
+# Modo 0: padrão (tracking normal, sem ligaturas)           — sempre disponível
+# Modo 1: tracking aberto  (sp positivo, letras espaçadas)   — sempre disponível
+# Modo 2: tracking fechado (sp negativo, letras condensadas)  — sempre disponível
+# Modo 3: ligaturas via fonttools (aalt+liga)                 — quando disponível
+# Modo 4: ligaturas + tracking aberto                        — quando disponível
+# Modo 5: fonte estilizada + tamanho levemente menor          — quando disponível
 #
-# Se fonttools falhar nos modos 3/4/5, cai em variante pura de tracking
+# IMPORTANTE: blocos com estilo 'agilera_est' (*palavra) SEMPRE usam
+# a fonte estilizada com ligaturas, independentemente do modo.
+# O modo tipográfico afeta apenas o tracking (sp) nesses blocos.
+
+# Prepara a fonte estilizada logo no startup para evitar falha em runtime
+_preparar_fonte_estilizada()
 
 def _modo_tipografico(seed):
     """Retorna o modo tipográfico (0-5) baseado no seed."""
@@ -738,26 +743,42 @@ def _sp_para_modo(modo, tam_base):
         return -3 if tam_base >= 100 else -2
     return -3 if tam_base >= 100 else -2  # padrão
 
+def _fonte_agilera_est_garantida(tam):
+    """
+    Retorna (fonte, tem_liga) para blocos agilera_est (*palavra).
+    SEMPRE tenta obter a fonte estilizada com ligaturas.
+    Hierarquia de fallback:
+      1. fonttools (aalt+liga embutido)
+      2. RAQM (liga OpenType em tempo de render)
+      3. AGILERA normal (sem ligaturas, mas ainda é agilera)
+    """
+    # Tentativa 1: fonttools
+    est = _preparar_fonte_estilizada()
+    if est:
+        try:
+            return ImageFont.truetype(est, tam), True
+        except Exception as e:
+            print(f"[font_est] erro fonttools tam={tam}: {e}")
+
+    # Tentativa 2: RAQM
+    p = _resolve_font_path("AGILERA.OTF")
+    if p and _RAQM_OK:
+        try:
+            return ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM), True
+        except Exception as e:
+            print(f"[font_est] erro RAQM tam={tam}: {e}")
+
+    # Tentativa 3: AGILERA normal (sem ligaturas)
+    print(f"[font_est] fallback normal tam={tam}")
+    return f_display(tam), False
+
 def _fonte_agilera_para_modo(modo, tam):
     """
-    Retorna a fonte AGILERA correta para o modo.
-    Modos 3/4/5 tentam usar a fonte estilizada; se falhar, usa normal.
+    Para blocos 'normal': varia pelo modo tipográfico.
+    Modos 3/4/5 tentam usar fonte estilizada.
     """
     if modo in (3, 4, 5):
-        est = _preparar_fonte_estilizada()
-        if est:
-            try:
-                return ImageFont.truetype(est, tam), True  # (fonte, tem_ligaturas)
-            except Exception:
-                pass
-        # fallback: AGILERA normal com RAQM se disponível
-        p = _resolve_font_path("AGILERA.OTF")
-        if p and _RAQM_OK:
-            try:
-                return ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM), True
-            except Exception:
-                pass
-        return f_display(tam), False
+        return _fonte_agilera_est_garantida(tam)
     return f_display(tam), False
 
 def _texto_para_modo(modo, texto):
@@ -850,12 +871,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         cor_b = _cor_b(idx_b, est)
 
         if est == "agilera_est":
-            # Modo tipográfico aplicado: tamanho 22% maior, fonte e sp do modo
+            # agilera_est (*palavra): SEMPRE fonte estilizada com ligaturas
+            # O modo tipográfico afeta apenas o tracking (sp)
             tam_est = int(tam_ag * 1.22)
-            if modo == 5: tam_est = int(tam_est * 0.88)  # modo 5: levemente menor
-            fa_est, tem_liga_est = _fonte_agilera_para_modo(modo, tam_est)
+            if modo == 5: tam_est = int(tam_est * 0.88)
+            fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est)
             sp_est  = _sp_para_modo(modo, tam_est)
-            txt_out = _texto_para_modo(modo, txt)
+            # Aplica ligaturas ao texto se fonttools funcionou
+            txt_out = _aplicar_ligaturas(txt) if tem_liga_est and _LIGA_SUBST else txt
             lns     = _quebrar(txt_out, fa_est, MAX_PX, sp_est)
             blocos_render.append((lns, fa_est, cor_b, sp_est, est, None, tem_liga_est))
 
@@ -1143,7 +1166,10 @@ def health():
                 for fn in ["AGILERA.OTF", "MALGUN.TTF", "MALGUNBD.TTF", "MALGUNSL.TTF"]}
     return jsonify({"status": "ok", "dimensoes": f"{W}x{H}",
                     "fontes": fontes, "caminhos": caminhos,
-                    "raqm": _RAQM_OK, "liga_count": len(_LIGA_SUBST),
+                    "raqm": _RAQM_OK,
+                    "liga_count": len(_LIGA_SUBST),
+                    "fonte_estilizada_ok": _AGILERA_EST_PATH is not None,
+                    "fonte_estilizada_path": _AGILERA_EST_PATH or "NAO_GERADA",
                     "ronilson_path": PASTA_RONILSON})
 
 @app.route("/gerar-legenda", methods=["POST"])
