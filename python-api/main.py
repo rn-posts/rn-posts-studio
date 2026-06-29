@@ -608,46 +608,64 @@ def aplicar_overlay(img, lum_media, layout, seed=0,
 # ── Parser ────────────────────────────────────────────────────────────────────
 def _parse_blocos(tema):
     """
-    Converte o tema (multiline do editor) em lista de blocos.
+    Converte o tema em lista de blocos independentes.
 
-    Cada LINHA do editor = um bloco independente.
-    Símbolo no início da linha define o estilo:
-      (sem)  → normal      : AGILERA cor destaque
-      *texto → agilera_est : AGILERA estilizada
-      :texto → malgun      : MALGUN bold
-      -texto → fundo       : retângulo preenchido
+    MODO 1 — Multiline (editor com \n):
+      Cada linha = um bloco. Símbolo no INÍCIO da linha define o estilo.
+        (sem)  → normal
+        *texto → agilera_est
+        :texto → malgun
+        -texto → fundo
 
-    Nenhum bloco é renderizado na mesma linha de outro —
-    cada bloco ocupa suas próprias linhas verticais.
+    MODO 2 — Linha única com símbolos inline:
+      `Autismo na *Vida Adulta :oque -ninguém entende?`
+      Cada token que começa com *, :, - inicia um novo bloco.
+      Tokens sem símbolo acumulam no bloco normal corrente.
+
+    Cada bloco ocupa suas próprias linhas verticais.
     """
-    blocos = []
-    for linha in tema.split("\n"):
-        t = linha.strip()
-        if not t: continue
+    linhas_raw = [l.strip() for l in tema.split("\n") if l.strip()]
 
-        if t.startswith("*"):
-            texto = t[1:].strip()
-            estilo = "agilera_est"
-        elif t.startswith(":"):
-            texto = t[1:].strip()
-            estilo = "malgun"
-        elif t.startswith("-"):
-            texto = t[1:].strip()
-            estilo = "fundo"
+    if len(linhas_raw) > 1:
+        blocos = []
+        for t in linhas_raw:
+            if t.startswith("*"):   estilo, texto = "agilera_est", t[1:].strip()
+            elif t.startswith(":"): estilo, texto = "malgun",      t[1:].strip()
+            elif t.startswith("-"): estilo, texto = "fundo",       t[1:].strip()
+            else:                   estilo, texto = "normal",      t
+            if texto:
+                blocos.append({"texto": texto, "estilo": estilo})
+        return blocos or [{"texto": tema.strip(), "estilo": "normal"}]
+
+    linha  = linhas_raw[0] if linhas_raw else tema.strip()
+    tokens = linha.split()
+
+    blocos       = []
+    estilo_atual = "normal"
+    palavras     = []
+
+    def _fechar():
+        if palavras:
+            blocos.append({"texto": " ".join(palavras), "estilo": estilo_atual})
+            palavras.clear()
+
+    for tok in tokens:
+        if tok.startswith("*") and len(tok) > 1:
+            _fechar(); estilo_atual = "agilera_est"; palavras.append(tok[1:])
+        elif tok.startswith(":") and len(tok) > 1:
+            _fechar(); estilo_atual = "malgun";      palavras.append(tok[1:])
+        elif tok.startswith("-") and len(tok) > 1:
+            _fechar(); estilo_atual = "fundo";       palavras.append(tok[1:])
+        elif tok in ("*", ":", "-"):
+            _fechar()
+            if tok == "*":   estilo_atual = "agilera_est"
+            elif tok == ":": estilo_atual = "malgun"
+            else:            estilo_atual = "fundo"
         else:
-            texto = t
-            estilo = "normal"
+            palavras.append(tok)
 
-        if texto:
-            blocos.append({"texto": texto, "estilo": estilo})
-
-    # Fallback: tema sem \n → tenta separar automaticamente
-    if not blocos:
-        t = tema.strip()
-        if t:
-            blocos.append({"texto": t, "estilo": "normal"})
-
-    return blocos
+    _fechar()
+    return blocos or [{"texto": linha, "estilo": "normal"}]
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
 def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False):
