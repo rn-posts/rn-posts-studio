@@ -667,8 +667,10 @@ def _parse_blocos(tema):
             estilo_atual = estilo_antes   # volta ao estilo anterior
 
         elif tok.startswith("*") and len(tok) > 1:
-            novo = "agilera_est"
-            if estilo_atual != novo: _fechar(); estilo_atual = novo
+            # Cada *palavra vira seu próprio bloco agilera_est
+            # para garantir que blocos distintos possam ter estilos visuais diferentes
+            _fechar()
+            estilo_atual = "agilera_est"
             palavras.append(tok[1:])
 
         elif tok.startswith(":") and len(tok) > 1:
@@ -885,12 +887,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
         if est == "agilera_est":
             # agilera_est (*palavra): SEMPRE fonte estilizada com ligaturas
-            # O modo tipográfico afeta apenas o tracking (sp)
+            # Cada bloco *palavra usa um sub-modo de tracking diferente (idx_b)
+            # para criar variedade visual mesmo entre palavras consecutivas
             tam_est = int(tam_ag * 1.22)
-            if modo == 5: tam_est = int(tam_est * 0.88)
-            fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est)
-            sp_est  = _sp_para_modo(modo, tam_est)
-            # Aplica ligaturas ao texto se fonttools funcionou
+            sub_modo = (modo + idx_b) % 3  # varia entre 0=padrao,1=aberto,2=fechado por bloco
+            if sub_modo == 1: tam_est_local = tam_est
+            elif modo == 5: tam_est_local = int(tam_est * 0.88)
+            else: tam_est_local = tam_est
+            fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est_local)
+            sp_est = _sp_para_modo(sub_modo if modo in (1,2) else modo, tam_est_local)
+            # Aplica ligaturas ao texto se RAQM/fonttools funcionou
             txt_out = _aplicar_ligaturas(txt) if tem_liga_est and _LIGA_SUBST else txt
             lns     = _quebrar(txt_out, fa_est, MAX_PX, sp_est)
             blocos_render.append((lns, fa_est, cor_b, sp_est, est, None, tem_liga_est))
@@ -1184,6 +1190,61 @@ def health():
                     "fonte_estilizada_ok": _AGILERA_EST_PATH is not None,
                     "fonte_estilizada_path": _AGILERA_EST_PATH or "NAO_GERADA",
                     "ronilson_path": PASTA_RONILSON})
+
+@app.route("/inspect-font", methods=["GET"])
+def rota_inspect_font():
+    """Inspeciona os features OpenType disponíveis na AGILERA.OTF."""
+    fonte_path = _resolve_font_path("AGILERA.OTF")
+    if not fonte_path:
+        return jsonify({"erro": "AGILERA.OTF nao encontrada"}), 404
+    try:
+        from fonttools import ttLib
+        font = ttLib.TTFont(fonte_path)
+        resultado = {"path": fonte_path, "tabelas": list(font.keys())}
+
+        if "GSUB" in font:
+            gsub = font["GSUB"].table
+            features = {}
+            for fr in gsub.FeatureList.FeatureRecord:
+                tag = fr.FeatureTag
+                if tag not in features: features[tag] = 0
+                features[tag] += 1
+            resultado["gsub_features"] = features
+
+            # Lista pares de ligaturas encontrados
+            pares_liga = []
+            cmap     = font.getBestCmap() or {}
+            rev_cmap = {v: k for k, v in cmap.items()}
+            for fr in gsub.FeatureList.FeatureRecord:
+                if fr.FeatureTag not in ("liga", "dlig", "calt", "aalt"): continue
+                for idx in fr.Feature.LookupListIndex:
+                    lk = gsub.LookupList.Lookup[idx]
+                    if lk.LookupType == 4:  # ligatura
+                        for sub in lk.SubTable:
+                            for first_g, ligs in sub.ligatures.items():
+                                first_ch = chr(rev_cmap[first_g]) if first_g in rev_cmap else "?"
+                                for lig in ligs:
+                                    seq = first_ch
+                                    for g in lig.Component:
+                                        seq += chr(rev_cmap[g]) if g in rev_cmap else "?"
+                                    pares_liga.append({"seq": seq, "feature": fr.FeatureTag})
+            resultado["pares_ligatura"] = pares_liga[:60]  # primeiros 60
+            resultado["total_pares"] = len(pares_liga)
+        else:
+            resultado["gsub_features"] = "GSUB nao encontrado"
+
+        if "GPOS" in font:
+            gpos = font["GPOS"].table
+            gpos_feats = {}
+            for fr in gpos.FeatureList.FeatureRecord:
+                tag = fr.FeatureTag
+                if tag not in gpos_feats: gpos_feats[tag] = 0
+                gpos_feats[tag] += 1
+            resultado["gpos_features"] = gpos_feats
+
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({"erro": str(e), "path": fonte_path}), 500
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
