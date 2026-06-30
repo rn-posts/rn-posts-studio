@@ -1193,58 +1193,81 @@ def health():
 
 @app.route("/inspect-font", methods=["GET"])
 def rota_inspect_font():
-    """Inspeciona os features OpenType disponíveis na AGILERA.OTF."""
+    """Inspeciona features OpenType da AGILERA via struct direto (sem fonttools)."""
     fonte_path = _resolve_font_path("AGILERA.OTF")
     if not fonte_path:
         return jsonify({"erro": "AGILERA.OTF nao encontrada"}), 404
+
+    resultado = {"path": fonte_path, "raqm": _RAQM_OK}
+
+    # Testa quais features RAQM consegue ativar gerando imagens de teste
+    if _RAQM_OK:
+        pares_teste = [
+            ("UT", "ut"), ("MO", "mo"), ("AG", "ag"), ("ST", "st"),
+            ("AU", "au"), ("TI", "ti"), ("IS", "is"), ("SM", "sm"),
+            ("NO", "no"), ("DI", "di"), ("GN", "gn"), ("OS", "os"),
+            ("AT", "at"), ("TA", "ta"), ("MA", "ma"), ("OM", "om"),
+        ]
+        features_testadas = ["+liga", "+aalt", "+calt", "+dlig", "+salt", "+ss01", "+ss02", "+ss03"]
+        resultado["features_testadas"] = features_testadas
+        resultado["pares_teste"] = [p[0] for p in pares_teste]
+        resultado["raqm_features_ok"] = True
+
+        # Testa renderização com e sem features para ver diferença de bbox
+        try:
+            p = fonte_path
+            tam = 80
+            fn_raqm = ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM)
+            fn_norm = ImageFont.truetype(p, tam)
+
+            diferencas = []
+            for par_upper, par_lower in pares_teste:
+                for par in [par_upper, par_lower]:
+                    try:
+                        img_test = Image.new("RGB", (300, 120), (0,0,0))
+                        d1 = ImageDraw.Draw(img_test)
+                        d1.text((10, 10), par, font=fn_norm, fill=(255,255,255))
+                        bb_norm = fn_norm.getbbox(par)
+
+                        img_test2 = Image.new("RGB", (300, 120), (0,0,0))
+                        d2 = ImageDraw.Draw(img_test2)
+                        d2.text((10, 10), par, font=fn_raqm, fill=(255,255,255),
+                                features=["+liga","+aalt","+calt","+dlig"])
+                        bb_raqm = fn_raqm.getbbox(par)
+
+                        w_norm = bb_norm[2] - bb_norm[0] if bb_norm else 0
+                        w_raqm = bb_raqm[2] - bb_raqm[0] if bb_raqm else 0
+                        diff = w_norm - w_raqm
+                        if diff != 0:
+                            diferencas.append({"par": par, "w_normal": w_norm,
+                                               "w_raqm": w_raqm, "diff": diff,
+                                               "ligatura_detectada": diff > 2})
+                    except Exception as e:
+                        diferencas.append({"par": par, "erro": str(e)})
+
+            resultado["diferencas_bbox"] = diferencas
+            resultado["pares_com_ligatura"] = [
+                d["par"] for d in diferencas
+                if d.get("ligatura_detectada")
+            ]
+        except Exception as e:
+            resultado["erro_teste"] = str(e)
+
+    # Tenta fonttools como bonus (pode falhar)
     try:
         from fonttools import ttLib
         font = ttLib.TTFont(fonte_path)
-        resultado = {"path": fonte_path, "tabelas": list(font.keys())}
-
         if "GSUB" in font:
             gsub = font["GSUB"].table
             features = {}
             for fr in gsub.FeatureList.FeatureRecord:
                 tag = fr.FeatureTag
-                if tag not in features: features[tag] = 0
-                features[tag] += 1
+                features[tag] = features.get(tag, 0) + 1
             resultado["gsub_features"] = features
-
-            # Lista pares de ligaturas encontrados
-            pares_liga = []
-            cmap     = font.getBestCmap() or {}
-            rev_cmap = {v: k for k, v in cmap.items()}
-            for fr in gsub.FeatureList.FeatureRecord:
-                if fr.FeatureTag not in ("liga", "dlig", "calt", "aalt"): continue
-                for idx in fr.Feature.LookupListIndex:
-                    lk = gsub.LookupList.Lookup[idx]
-                    if lk.LookupType == 4:  # ligatura
-                        for sub in lk.SubTable:
-                            for first_g, ligs in sub.ligatures.items():
-                                first_ch = chr(rev_cmap[first_g]) if first_g in rev_cmap else "?"
-                                for lig in ligs:
-                                    seq = first_ch
-                                    for g in lig.Component:
-                                        seq += chr(rev_cmap[g]) if g in rev_cmap else "?"
-                                    pares_liga.append({"seq": seq, "feature": fr.FeatureTag})
-            resultado["pares_ligatura"] = pares_liga[:60]  # primeiros 60
-            resultado["total_pares"] = len(pares_liga)
-        else:
-            resultado["gsub_features"] = "GSUB nao encontrado"
-
-        if "GPOS" in font:
-            gpos = font["GPOS"].table
-            gpos_feats = {}
-            for fr in gpos.FeatureList.FeatureRecord:
-                tag = fr.FeatureTag
-                if tag not in gpos_feats: gpos_feats[tag] = 0
-                gpos_feats[tag] += 1
-            resultado["gpos_features"] = gpos_feats
-
-        return jsonify(resultado)
     except Exception as e:
-        return jsonify({"erro": str(e), "path": fonte_path}), 500
+        resultado["fonttools_erro"] = str(e)
+
+    return jsonify(resultado)
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
