@@ -886,17 +886,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         cor_b = _cor_b(idx_b, est)
 
         if est == "agilera_est":
-            # agilera_est (*palavra): SEMPRE fonte estilizada com ligaturas
-            # Cada bloco *palavra usa um sub-modo de tracking diferente (idx_b)
-            # para criar variedade visual mesmo entre palavras consecutivas
-            tam_est = int(tam_ag * 1.22)
-            sub_modo = (modo + idx_b) % 3  # varia entre 0=padrao,1=aberto,2=fechado por bloco
-            if sub_modo == 1: tam_est_local = tam_est
-            elif modo == 5: tam_est_local = int(tam_est * 0.88)
-            else: tam_est_local = tam_est
-            fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est_local)
-            sp_est = _sp_para_modo(sub_modo if modo in (1,2) else modo, tam_est_local)
-            # Aplica ligaturas ao texto se RAQM/fonttools funcionou
+            # agilera_est (*palavra): sempre maior que normal (1.30x)
+            # e tracking varia por bloco para criar diversidade visual
+            tam_est = int(tam_ag * 1.30)  # 30% maior — diferença clara
+            sub_modo = (modo + idx_b) % 3
+            sp_est   = _sp_para_modo(sub_modo, tam_est)
+            fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est)
             txt_out = _aplicar_ligaturas(txt) if tem_liga_est and _LIGA_SUBST else txt
             lns     = _quebrar(txt_out, fa_est, MAX_PX, sp_est)
             blocos_render.append((lns, fa_est, cor_b, sp_est, est, None, tem_liga_est))
@@ -1193,81 +1188,59 @@ def health():
 
 @app.route("/inspect-font", methods=["GET"])
 def rota_inspect_font():
-    """Inspeciona features OpenType da AGILERA via struct direto (sem fonttools)."""
     fonte_path = _resolve_font_path("AGILERA.OTF")
     if not fonte_path:
         return jsonify({"erro": "AGILERA.OTF nao encontrada"}), 404
-
-    resultado = {"path": fonte_path, "raqm": _RAQM_OK}
-
-    # Testa quais features RAQM consegue ativar gerando imagens de teste
-    if _RAQM_OK:
-        pares_teste = [
-            ("UT", "ut"), ("MO", "mo"), ("AG", "ag"), ("ST", "st"),
-            ("AU", "au"), ("TI", "ti"), ("IS", "is"), ("SM", "sm"),
-            ("NO", "no"), ("DI", "di"), ("GN", "gn"), ("OS", "os"),
-            ("AT", "at"), ("TA", "ta"), ("MA", "ma"), ("OM", "om"),
-        ]
-        features_testadas = ["+liga", "+aalt", "+calt", "+dlig", "+salt", "+ss01", "+ss02", "+ss03"]
-        resultado["features_testadas"] = features_testadas
-        resultado["pares_teste"] = [p[0] for p in pares_teste]
-        resultado["raqm_features_ok"] = True
-
-        # Testa renderização com e sem features para ver diferença de bbox
-        try:
-            p = fonte_path
-            tam = 80
-            fn_raqm = ImageFont.truetype(p, tam, layout_engine=ImageFont.Layout.RAQM)
-            fn_norm = ImageFont.truetype(p, tam)
-
-            diferencas = []
-            for par_upper, par_lower in pares_teste:
-                for par in [par_upper, par_lower]:
-                    try:
-                        img_test = Image.new("RGB", (300, 120), (0,0,0))
-                        d1 = ImageDraw.Draw(img_test)
-                        d1.text((10, 10), par, font=fn_norm, fill=(255,255,255))
-                        bb_norm = fn_norm.getbbox(par)
-
-                        img_test2 = Image.new("RGB", (300, 120), (0,0,0))
-                        d2 = ImageDraw.Draw(img_test2)
-                        d2.text((10, 10), par, font=fn_raqm, fill=(255,255,255),
-                                features=["+liga","+aalt","+calt","+dlig"])
-                        bb_raqm = fn_raqm.getbbox(par)
-
-                        w_norm = bb_norm[2] - bb_norm[0] if bb_norm else 0
-                        w_raqm = bb_raqm[2] - bb_raqm[0] if bb_raqm else 0
-                        diff = w_norm - w_raqm
-                        if diff != 0:
-                            diferencas.append({"par": par, "w_normal": w_norm,
-                                               "w_raqm": w_raqm, "diff": diff,
-                                               "ligatura_detectada": diff > 2})
-                    except Exception as e:
-                        diferencas.append({"par": par, "erro": str(e)})
-
-            resultado["diferencas_bbox"] = diferencas
-            resultado["pares_com_ligatura"] = [
-                d["par"] for d in diferencas
-                if d.get("ligatura_detectada")
-            ]
-        except Exception as e:
-            resultado["erro_teste"] = str(e)
-
-    # Tenta fonttools como bonus (pode falhar)
     try:
         from fonttools import ttLib
-        font = ttLib.TTFont(fonte_path)
-        if "GSUB" in font:
-            gsub = font["GSUB"].table
-            features = {}
-            for fr in gsub.FeatureList.FeatureRecord:
-                tag = fr.FeatureTag
-                features[tag] = features.get(tag, 0) + 1
-            resultado["gsub_features"] = features
-    except Exception as e:
-        resultado["fonttools_erro"] = str(e)
+        font    = ttLib.TTFont(fonte_path)
+        cmap    = font.getBestCmap() or {}
+        rev_map = {v: k for k, v in cmap.items()}
+        gsub    = font["GSUB"].table if "GSUB" in font else None
 
-    return jsonify(resultado)
+        resultado = {"path": fonte_path, "tem_gsub": gsub is not None}
+
+        if not gsub:
+            return jsonify(resultado)
+
+        # Todos os feature tags
+        features = {}
+        for fr in gsub.FeatureList.FeatureRecord:
+            features[fr.FeatureTag] = features.get(fr.FeatureTag, 0) + 1
+        resultado["gsub_features"] = features
+
+        # Glifos alternativos aalt por categoria
+        maiusculas, minusculas, outros = [], [], []
+        for fr in gsub.FeatureList.FeatureRecord:
+            if fr.FeatureTag != "aalt": continue
+            for idx in fr.Feature.LookupListIndex:
+                lk = gsub.LookupList.Lookup[idx]
+                mapa = {}
+                if lk.LookupType == 1:
+                    for sub in lk.SubTable: mapa.update(sub.mapping)
+                elif lk.LookupType == 3:
+                    for sub in lk.SubTable:
+                        for g, alts in sub.alternates.items():
+                            if alts: mapa[g] = alts[0]
+                for g, alt in mapa.items():
+                    if g not in rev_map: continue
+                    ch = chr(rev_map[g])
+                    entry = {"char": ch, "unicode": f"U+{ord(ch):04X}", "alt_glyph": alt}
+                    if ch.isupper():   maiusculas.append(entry)
+                    elif ch.islower(): minusculas.append(entry)
+                    else:              outros.append(entry)
+
+        resultado["aalt_maiusculas"] = maiusculas
+        resultado["aalt_minusculas"] = minusculas
+        resultado["aalt_outros"]     = outros
+        resultado["resumo"] = {
+            "maiusculas_com_alt": len(maiusculas),
+            "minusculas_com_alt": len(minusculas),
+        }
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({"erro": str(e), "trace": traceback.format_exc()}), 500
 
 @app.route("/gerar-legenda", methods=["POST"])
 def rota_gerar_legenda():
