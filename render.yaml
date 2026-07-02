@@ -6,7 +6,7 @@ services:
     name: rn-posts
     runtime: python
     plan: free
-    buildCommand: npm ci && npm run build && pip install -r python-api/requirements.txt
+    buildCommand: npm ci && npm run build && pip install -r python-api/requirements.txt && pip install fonttools
     startCommand: cd python-api && gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
     envVars:
       - key: PYTHON_VERSION
