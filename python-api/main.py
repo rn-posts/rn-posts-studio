@@ -1188,150 +1188,106 @@ def health():
 
 @app.route("/inspect-font", methods=["GET"])
 def rota_inspect_font():
-    """Inspeciona features OpenType da AGILERA sem fonttools (struct puro)."""
     fonte_path = _resolve_font_path("AGILERA.OTF")
     if not fonte_path:
         return jsonify({"erro": "AGILERA.OTF nao encontrada"}), 404
     try:
         import struct
-
         with open(fonte_path, "rb") as f:
             data = f.read()
+        def ru32(o): return struct.unpack_from(">I",data,o)[0]
+        def ru16(o): return struct.unpack_from(">H",data,o)[0]
+        def ri16(o): return struct.unpack_from(">h",data,o)[0]
+        def rtag(o): return data[o:o+4].decode("latin1")
 
-        def ru32(off): return struct.unpack_from(">I", data, off)[0]
-        def ru16(off): return struct.unpack_from(">H", data, off)[0]
-        def ri16(off): return struct.unpack_from(">h", data, off)[0]
-        def rtag(off): return data[off:off+4].decode("latin1")
-
-        # Offset table
         num_tables = ru16(4)
         tables = {}
         for i in range(num_tables):
-            base = 12 + i * 16
-            tag    = rtag(base)
-            offset = ru32(base + 8)
-            tables[tag] = offset
+            b = 12 + i*16
+            tables[rtag(b)] = ru32(b+8)
 
-        resultado = {"path": fonte_path, "tabelas": list(tables.keys())}
-
-        if "GSUB" not in tables:
-            resultado["gsub"] = "ausente"
-            return jsonify(resultado)
-
-        gsub_off = tables["GSUB"]
-
-        # ScriptList, FeatureList, LookupList offsets
-        feat_list_off = gsub_off + ru16(gsub_off + 4)
-        look_list_off = gsub_off + ru16(gsub_off + 6)
-
-        # FeatureList
-        feat_count = ru16(feat_list_off)
-        features = {}
-        feat_offsets = {}
-        for i in range(feat_count):
-            base   = feat_list_off + 2 + i * 6
-            tag    = rtag(base)
-            foff   = feat_list_off + ru16(base + 4)
-            features[tag] = features.get(tag, 0) + 1
-            if tag not in feat_offsets:
-                feat_offsets[tag] = foff
-        resultado["gsub_features"] = features
-
-        # LookupList
-        look_count  = ru16(look_list_off)
-        look_offsets = []
-        for i in range(look_count):
-            look_offsets.append(look_list_off + ru16(look_list_off + 2 + i * 2))
-
-        # cmap
-        cmap_off  = tables.get("cmap", 0)
+        # cmap glyph_id -> codepoint
         cmap_dict = {}
-        if cmap_off:
-            num_sub = ru16(cmap_off + 2)
-            for i in range(num_sub):
-                plat = ru16(cmap_off + 4 + i * 8)
-                enc  = ru16(cmap_off + 4 + i * 8 + 2)
-                sub_off = cmap_off + ru32(cmap_off + 4 + i * 8 + 4)
-                fmt = ru16(sub_off)
-                if fmt == 4 and (plat == 3 or plat == 0):
-                    seg_count = ru16(sub_off + 6) // 2
-                    end_arr   = [ru16(sub_off + 14 + j*2) for j in range(seg_count)]
-                    start_arr = [ru16(sub_off + 16 + seg_count*2 + j*2) for j in range(seg_count)]
-                    delta_arr = [ri16(sub_off + 16 + seg_count*4 + j*2) for j in range(seg_count)]
-                    ro_arr    = [ru16(sub_off + 16 + seg_count*6 + j*2) for j in range(seg_count)]
-                    ro_base   = sub_off + 16 + seg_count*6
-                    for s in range(seg_count):
-                        for cp in range(start_arr[s], end_arr[s]+1):
-                            if ro_arr[s] == 0:
-                                gid = (cp + delta_arr[s]) & 0xFFFF
+        if "cmap" in tables:
+            co = tables["cmap"]
+            ns = ru16(co+2)
+            for i in range(ns):
+                plat = ru16(co+4+i*8)
+                so   = co + ru32(co+4+i*8+4)
+                fmt  = ru16(so)
+                if fmt == 4 and plat in (0,3):
+                    sc = ru16(so+6)//2
+                    ea = [ru16(so+14+j*2) for j in range(sc)]
+                    sa = [ru16(so+16+sc*2+j*2) for j in range(sc)]
+                    da = [ri16(so+16+sc*4+j*2) for j in range(sc)]
+                    ra = [ru16(so+16+sc*6+j*2) for j in range(sc)]
+                    rb = so+16+sc*6
+                    for s in range(sc):
+                        for cp in range(sa[s], ea[s]+1):
+                            if ra[s]==0:
+                                gid=(cp+da[s])&0xFFFF
                             else:
-                                idx2 = ro_base + s*2 + ro_arr[s] + (cp - start_arr[s])*2
-                                if idx2 + 2 > len(data): continue
-                                gid = ru16(idx2)
-                                if gid != 0: gid = (gid + delta_arr[s]) & 0xFFFF
-                            if gid: cmap_dict[gid] = cp
+                                ix=rb+s*2+ra[s]+(cp-sa[s])*2
+                                if ix+2>len(data): continue
+                                gid=ru16(ix)
+                                if gid: gid=(gid+da[s])&0xFFFF
+                            if gid: cmap_dict[gid]=cp
                     break
+        gid2ch = {g: chr(cp) for g,cp in cmap_dict.items()}
 
-        rev_cmap = {v: k for k, v in cmap_dict.items()}  # char -> glyph_id
+        resultado = {"total_glyphs_mapeados": len(cmap_dict)}
 
-        # Coleta substituicoes SingleSubst (tipo 1) para aalt
-        # Encontra lookups do feature aalt
-        aalt_lookups = set()
-        for i in range(feat_count):
-            base = feat_list_off + 2 + i * 6
-            tag  = rtag(base)
-            if tag != "aalt": continue
-            foff       = feat_list_off + ru16(base + 4)
-            look_count2 = ru16(foff + 2)
-            for j in range(look_count2):
-                aalt_lookups.add(ru16(foff + 4 + j*2))
+        # GPOS pares com kern
+        pares_kern = []
+        if "GPOS" in tables:
+            go = tables["GPOS"]
+            flo = go + ru16(go+4)
+            llo = go + ru16(go+6)
+            fc  = ru16(flo)
+            feat_tags = {}
+            for i in range(fc):
+                b = flo+2+i*6
+                feat_tags[rtag(b)] = feat_tags.get(rtag(b),0)+1
+            resultado["gpos_features"] = feat_tags
 
-        maiusculas, minusculas, outros = [], [], []
-        for lidx in aalt_lookups:
-            if lidx >= len(look_offsets): continue
-            loff  = look_offsets[lidx]
-            ltype = ru16(loff)
-            sub_count = ru16(loff + 4)
-            for si in range(sub_count):
-                soff = loff + ru16(loff + 6 + si*2)
-                if ltype == 1:  # SingleSubst
-                    sfmt  = ru16(soff)
-                    cov   = loff  # cobertura
-                    delta = ri16(soff + 4) if sfmt == 1 else 0
-                    # Formato 2: lista explicita
-                    if sfmt == 2:
-                        gcount = ru16(soff + 4)
-                        # cov offset
-                        cov_off = soff + ru16(soff + 2)
+            lc = ru16(llo)
+            for li in range(lc):
+                loff = llo + ru16(llo+2+li*2)
+                lt   = ru16(loff)      # lookup type
+                sc2  = ru16(loff+4)    # subtable count
+                if lt != 2: continue   # PairPos
+                for si in range(sc2):
+                    soff = loff + ru16(loff+6+si*2)
+                    fmt  = ru16(soff)
+                    if fmt == 1:  # PairSet
+                        cov_off = soff + ru16(soff+2)
                         cov_fmt = ru16(cov_off)
-                        glyphs  = []
+                        glyphs1 = []
                         if cov_fmt == 1:
-                            gc = ru16(cov_off + 2)
-                            glyphs = [ru16(cov_off + 4 + k*2) for k in range(gc)]
-                        elif cov_fmt == 2:
-                            rc = ru16(cov_off + 2)
-                            for k in range(rc):
-                                s2 = ru16(cov_off + 4 + k*6)
-                                e2 = ru16(cov_off + 6 + k*6)
-                                glyphs += list(range(s2, e2+1))
-                        for k, g in enumerate(glyphs):
-                            if k >= gcount: break
-                            alt = ru16(soff + 6 + k*2)
-                            if g not in cmap_dict: continue
-                            ch = chr(cmap_dict[g])
-                            e  = {"char": ch, "glyph": g, "alt": alt}
-                            if ch.isupper():   maiusculas.append(e)
-                            elif ch.islower(): minusculas.append(e)
-                            else:              outros.append(e)
+                            gc = ru16(cov_off+2)
+                            glyphs1 = [ru16(cov_off+4+k*2) for k in range(gc)]
+                        ps_count = ru16(soff+8)
+                        vf1 = ru16(soff+4); vf2 = ru16(soff+6)
+                        v1sz = bin(vf1).count('1')*2
+                        v2sz = bin(vf2).count('1')*2
+                        for pi in range(ps_count):
+                            pso = soff + ru16(soff+10+pi*2)
+                            ppc = ru16(pso)
+                            rec_sz = 2 + v1sz + v2sz
+                            for ri2 in range(ppc):
+                                g2 = ru16(pso+2+ri2*rec_sz)
+                                g1 = glyphs1[pi] if pi < len(glyphs1) else 0
+                                c1 = gid2ch.get(g1,"?")
+                                c2 = gid2ch.get(g2,"?")
+                                if c1 != "?" and c2 != "?":
+                                    pares_kern.append(c1+c2)
+                    if len(pares_kern) > 200: break
+                if len(pares_kern) > 200: break
 
-        resultado["aalt_maiusculas"] = maiusculas
-        resultado["aalt_minusculas"] = minusculas
-        resultado["aalt_outros"]     = outros
-        resultado["resumo"] = {
-            "maiusculas_com_alt": len(maiusculas),
-            "minusculas_com_alt": len(minusculas),
-            "outros_com_alt":     len(outros),
-        }
+        resultado["pares_kern_sample"] = pares_kern[:100]
+        resultado["total_pares_kern"]  = len(pares_kern)
+        resultado["maiusculas_kern"]   = [p for p in pares_kern if p[0].isupper()][:50]
+        resultado["minusculas_kern"]   = [p for p in pares_kern if p[0].islower()][:50]
         return jsonify(resultado)
     except Exception as e:
         import traceback
