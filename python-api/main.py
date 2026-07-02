@@ -1188,47 +1188,141 @@ def health():
 
 @app.route("/inspect-font", methods=["GET"])
 def rota_inspect_font():
+    """Inspeciona features OpenType da AGILERA sem fonttools (struct puro)."""
     fonte_path = _resolve_font_path("AGILERA.OTF")
     if not fonte_path:
         return jsonify({"erro": "AGILERA.OTF nao encontrada"}), 404
     try:
-        from fonttools import ttLib
-        font    = ttLib.TTFont(fonte_path)
-        cmap    = font.getBestCmap() or {}
-        rev_map = {v: k for k, v in cmap.items()}
-        gsub    = font["GSUB"].table if "GSUB" in font else None
+        import struct
 
-        resultado = {"path": fonte_path, "tem_gsub": gsub is not None}
+        with open(fonte_path, "rb") as f:
+            data = f.read()
 
-        if not gsub:
+        def ru32(off): return struct.unpack_from(">I", data, off)[0]
+        def ru16(off): return struct.unpack_from(">H", data, off)[0]
+        def ri16(off): return struct.unpack_from(">h", data, off)[0]
+        def rtag(off): return data[off:off+4].decode("latin1")
+
+        # Offset table
+        num_tables = ru16(4)
+        tables = {}
+        for i in range(num_tables):
+            base = 12 + i * 16
+            tag    = rtag(base)
+            offset = ru32(base + 8)
+            tables[tag] = offset
+
+        resultado = {"path": fonte_path, "tabelas": list(tables.keys())}
+
+        if "GSUB" not in tables:
+            resultado["gsub"] = "ausente"
             return jsonify(resultado)
 
-        # Todos os feature tags
+        gsub_off = tables["GSUB"]
+
+        # ScriptList, FeatureList, LookupList offsets
+        feat_list_off = gsub_off + ru16(gsub_off + 4)
+        look_list_off = gsub_off + ru16(gsub_off + 6)
+
+        # FeatureList
+        feat_count = ru16(feat_list_off)
         features = {}
-        for fr in gsub.FeatureList.FeatureRecord:
-            features[fr.FeatureTag] = features.get(fr.FeatureTag, 0) + 1
+        feat_offsets = {}
+        for i in range(feat_count):
+            base   = feat_list_off + 2 + i * 6
+            tag    = rtag(base)
+            foff   = feat_list_off + ru16(base + 4)
+            features[tag] = features.get(tag, 0) + 1
+            if tag not in feat_offsets:
+                feat_offsets[tag] = foff
         resultado["gsub_features"] = features
 
-        # Glifos alternativos aalt por categoria
+        # LookupList
+        look_count  = ru16(look_list_off)
+        look_offsets = []
+        for i in range(look_count):
+            look_offsets.append(look_list_off + ru16(look_list_off + 2 + i * 2))
+
+        # cmap
+        cmap_off  = tables.get("cmap", 0)
+        cmap_dict = {}
+        if cmap_off:
+            num_sub = ru16(cmap_off + 2)
+            for i in range(num_sub):
+                plat = ru16(cmap_off + 4 + i * 8)
+                enc  = ru16(cmap_off + 4 + i * 8 + 2)
+                sub_off = cmap_off + ru32(cmap_off + 4 + i * 8 + 4)
+                fmt = ru16(sub_off)
+                if fmt == 4 and (plat == 3 or plat == 0):
+                    seg_count = ru16(sub_off + 6) // 2
+                    end_arr   = [ru16(sub_off + 14 + j*2) for j in range(seg_count)]
+                    start_arr = [ru16(sub_off + 16 + seg_count*2 + j*2) for j in range(seg_count)]
+                    delta_arr = [ri16(sub_off + 16 + seg_count*4 + j*2) for j in range(seg_count)]
+                    ro_arr    = [ru16(sub_off + 16 + seg_count*6 + j*2) for j in range(seg_count)]
+                    ro_base   = sub_off + 16 + seg_count*6
+                    for s in range(seg_count):
+                        for cp in range(start_arr[s], end_arr[s]+1):
+                            if ro_arr[s] == 0:
+                                gid = (cp + delta_arr[s]) & 0xFFFF
+                            else:
+                                idx2 = ro_base + s*2 + ro_arr[s] + (cp - start_arr[s])*2
+                                if idx2 + 2 > len(data): continue
+                                gid = ru16(idx2)
+                                if gid != 0: gid = (gid + delta_arr[s]) & 0xFFFF
+                            if gid: cmap_dict[gid] = cp
+                    break
+
+        rev_cmap = {v: k for k, v in cmap_dict.items()}  # char -> glyph_id
+
+        # Coleta substituicoes SingleSubst (tipo 1) para aalt
+        # Encontra lookups do feature aalt
+        aalt_lookups = set()
+        for i in range(feat_count):
+            base = feat_list_off + 2 + i * 6
+            tag  = rtag(base)
+            if tag != "aalt": continue
+            foff       = feat_list_off + ru16(base + 4)
+            look_count2 = ru16(foff + 2)
+            for j in range(look_count2):
+                aalt_lookups.add(ru16(foff + 4 + j*2))
+
         maiusculas, minusculas, outros = [], [], []
-        for fr in gsub.FeatureList.FeatureRecord:
-            if fr.FeatureTag != "aalt": continue
-            for idx in fr.Feature.LookupListIndex:
-                lk = gsub.LookupList.Lookup[idx]
-                mapa = {}
-                if lk.LookupType == 1:
-                    for sub in lk.SubTable: mapa.update(sub.mapping)
-                elif lk.LookupType == 3:
-                    for sub in lk.SubTable:
-                        for g, alts in sub.alternates.items():
-                            if alts: mapa[g] = alts[0]
-                for g, alt in mapa.items():
-                    if g not in rev_map: continue
-                    ch = chr(rev_map[g])
-                    entry = {"char": ch, "unicode": f"U+{ord(ch):04X}", "alt_glyph": alt}
-                    if ch.isupper():   maiusculas.append(entry)
-                    elif ch.islower(): minusculas.append(entry)
-                    else:              outros.append(entry)
+        for lidx in aalt_lookups:
+            if lidx >= len(look_offsets): continue
+            loff  = look_offsets[lidx]
+            ltype = ru16(loff)
+            sub_count = ru16(loff + 4)
+            for si in range(sub_count):
+                soff = loff + ru16(loff + 6 + si*2)
+                if ltype == 1:  # SingleSubst
+                    sfmt  = ru16(soff)
+                    cov   = loff  # cobertura
+                    delta = ri16(soff + 4) if sfmt == 1 else 0
+                    # Formato 2: lista explicita
+                    if sfmt == 2:
+                        gcount = ru16(soff + 4)
+                        # cov offset
+                        cov_off = soff + ru16(soff + 2)
+                        cov_fmt = ru16(cov_off)
+                        glyphs  = []
+                        if cov_fmt == 1:
+                            gc = ru16(cov_off + 2)
+                            glyphs = [ru16(cov_off + 4 + k*2) for k in range(gc)]
+                        elif cov_fmt == 2:
+                            rc = ru16(cov_off + 2)
+                            for k in range(rc):
+                                s2 = ru16(cov_off + 4 + k*6)
+                                e2 = ru16(cov_off + 6 + k*6)
+                                glyphs += list(range(s2, e2+1))
+                        for k, g in enumerate(glyphs):
+                            if k >= gcount: break
+                            alt = ru16(soff + 6 + k*2)
+                            if g not in cmap_dict: continue
+                            ch = chr(cmap_dict[g])
+                            e  = {"char": ch, "glyph": g, "alt": alt}
+                            if ch.isupper():   maiusculas.append(e)
+                            elif ch.islower(): minusculas.append(e)
+                            else:              outros.append(e)
 
         resultado["aalt_maiusculas"] = maiusculas
         resultado["aalt_minusculas"] = minusculas
@@ -1236,6 +1330,7 @@ def rota_inspect_font():
         resultado["resumo"] = {
             "maiusculas_com_alt": len(maiusculas),
             "minusculas_com_alt": len(minusculas),
+            "outros_com_alt":     len(outros),
         }
         return jsonify(resultado)
     except Exception as e:
