@@ -385,8 +385,12 @@ def buscar_imagem(tema=""):
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
 def _medir(texto, fonte):
+    if not texto: return 0
     try:
-        bb = fonte.getbbox(texto); return bb[2] - bb[0]
+        # Para palavras individuais em blocos inline, o bbox pode incluir
+        # espaços laterais da fonte. Medimos apenas o conteúdo visível.
+        bb = fonte.getbbox(texto)
+        return bb[2] - bb[0]
     except Exception: return len(texto) * 30
 
 def _medir_sp(texto, fonte, sp):
@@ -976,19 +980,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
-    # Zona de texto: sobe para 48% mínimo — títulos mais acima na imagem
-    Y_MIN_GLOBAL = int(H * 0.48)
+    # Zona de texto: sobe para 44% mínimo — títulos mais acima na imagem
+    Y_MIN_GLOBAL = int(H * 0.44)
 
     if not tem_pessoa:
-        Y_INI_raw = int(H * 0.48)
-        Y_FIM_raw = int(H * 0.85)
+        Y_INI_raw = int(H * 0.44)
+        Y_FIM_raw = int(H * 0.82)
     else:
         zonas = [
-            (int(H * 0.50), int(H * 0.80)),
+            (int(H * 0.46), int(H * 0.76)),
+            (int(H * 0.44), int(H * 0.74)),
             (int(H * 0.48), int(H * 0.78)),
-            (int(H * 0.52), int(H * 0.82)),
-            (int(H * 0.50), int(H * 0.80)),
-            (int(H * 0.51), int(H * 0.81)),
+            (int(H * 0.46), int(H * 0.76)),
+            (int(H * 0.47), int(H * 0.77)),
         ]
         Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
 
@@ -1010,32 +1014,32 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 10, 5  # padding justo colado à palavra
+                    pad_x, pad_y = 10, 5
                     try:
-                        bb  = fonte.getbbox(linha)
-                        rx1 = MARGIN - pad_x
+                        w_texto = _medir(linha, fonte)
+                        bb = fonte.getbbox(linha)
+                        offset_x = 4
+                        rx1 = MARGIN + offset_x
                         ry1 = y + bb[1] - pad_y
-                        rx2 = MARGIN + (bb[2]-bb[0]) + pad_x
+                        rx2 = MARGIN + offset_x + w_texto + (pad_x * 2)
                         ry2 = y + bb[3] + pad_y
+                        
+                        draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                                               radius=6, fill=(*MARINHO, 80))
+                        draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                               radius=6, fill=(*(cor_rect or cor_dest), 235))
+                        draw = ImageDraw.Draw(img_rgba, "RGBA")
+                        _linha(draw, MARGIN + offset_x + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
                     except Exception:
-                        rx1 = MARGIN - pad_x;  ry1 = y - pad_y
-                        rx2 = MARGIN + _medir(linha, fonte) + pad_x
-                        ry2 = y + _altura_linha(fonte) + pad_y
-                    # Borda para visibilidade em fundos claros
-                    draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
-                                           radius=6, fill=(*MARINHO, 80))
-                    draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                           radius=6, fill=(*(cor_rect or cor_dest), 235))
-                    draw = ImageDraw.Draw(img_rgba, "RGBA")
-                    _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
+                        _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, cor_txt, sp, tem_liga, sombra_forte)
                 y += esp
         else:
             total_w = 0
-            esp_entre = 8  # espaço entre elementos inline
-            pad_x_fundo = 10
+            esp_entre = 8  # valor padrão seguro
+            pad_x_fundo = 10 # valor padrão seguro
             for idx_g2, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
                 linha = lns[0] if lns else ""
                 if not linha: continue
@@ -1048,27 +1052,56 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     total_w += w
 
             if total_w > MAX_PX:
+                # Não cabe inline: renderiza cada bloco em linha própria
+                # mas agrupa malgun+fundo+malgun que se seguem
+                # em sublinha: malgun antes | fundo | malgun depois
+                # Isso evita "onde nada é o" em linha e "suficiente" em outra
+                sublinha_tokens = []  # (texto, fonte, cor, sp, est, cor_rect, tem_liga)
                 for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
-                    for linha in lns:
+                    for ln in lns:
+                        sublinha_tokens.append((ln, fonte, cor_txt, sp, est, cor_rect, tem_liga))
+
+                # Tenta agrupar em até 2 sublinhas
+                linha_atual = []; w_atual = 0
+                sublinhas = []
+                for tok in sublinha_tokens:
+                    ln, fonte, cor_txt, sp, est, cor_rect, tem_liga = tok
+                    w = _medir_sp(ln, fonte, sp) if sp else _medir(ln, fonte)
+                    w_tok = (w + pad_x_fundo * 2) if est == "fundo" else w
+                    espaco = esp_entre if linha_atual else 0
+                    if w_atual + espaco + w_tok <= MAX_PX:
+                        linha_atual.append(tok)
+                        w_atual += espaco + w_tok
+                    else:
+                        if linha_atual: sublinhas.append(linha_atual)
+                        linha_atual = [tok]; w_atual = w_tok
+                if linha_atual: sublinhas.append(linha_atual)
+
+                for sublinha in sublinhas:
+                    x_cursor = MARGIN
+                    for idx_sl, (ln, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(sublinha):
+                        if idx_sl > 0: x_cursor += esp_entre
+                        w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y = 14, 8
+                            pad_x, pad_y = pad_x_fundo, 5
                             try:
-                                bb  = fonte.getbbox(linha)
-                                rx1 = MARGIN - pad_x; ry1 = y + bb[1] - pad_y
-                                rx2 = MARGIN + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                                bb = fonte.getbbox(ln)
+                                rx1=x_cursor-pad_x; ry1=y+bb[1]-pad_y
+                                rx2=x_cursor+(bb[2]-bb[0])+pad_x; ry2=y+bb[3]+pad_y
                             except Exception:
-                                rx1 = MARGIN - pad_x; ry1 = y - pad_y
-                                rx2 = MARGIN + _medir(linha, fonte) + pad_x
-                                ry2 = y + _altura_linha(fonte) + pad_y
-                            draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                                   radius=8, fill=(*(cor_rect or cor_dest), 255))
+                                rx1=x_cursor-pad_x; ry1=y-pad_y
+                                rx2=x_cursor+w+pad_x; ry2=y+_altura_linha(fonte)+pad_y
+                            draw.rounded_rectangle([(rx1-1,ry1-1),(rx2+1,ry2+1)],radius=6,fill=(*MARINHO,80))
+                            draw.rounded_rectangle([(rx1,ry1),(rx2,ry2)],radius=6,fill=(*(cor_rect or cor_dest),235))
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
+                            _linha(draw, x_cursor, y, ln, fonte, (*cor_txt, 255), 0)
+                            x_cursor += w + pad_x * 2
                         else:
-                            _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
+                            _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, cor_txt, sp, tem_liga, sombra_forte)
-                        y += int(_altura_linha(fonte) * 1.10)
+                            x_cursor += (_medir_sp(ln, fonte, sp) if sp else w)
+                    y += int(_altura_linha(sublinha[0][1]) * 1.10)
             else:
                 x_cursor = MARGIN
                 for idx_g, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
@@ -1080,23 +1113,37 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         x_cursor += esp_entre
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
-                        pad_x, pad_y = pad_x_fundo, 5
+                        # CORREÇÃO DEFINITIVA: 
+                        # O erro ocorria porque 'x_cursor' já incluía o espaço da palavra anterior.
+                        # Forçamos um deslocamento visual (offset) apenas para o retângulo.
+                        pad_x, pad_y = 10, 5
                         try:
-                            bb  = fonte.getbbox(linha)
-                            rx1 = x_cursor - pad_x
+                            # Medimos a largura exata do texto visível
+                            w_texto = _medir(linha, fonte)
+                            bb = fonte.getbbox(linha)
+                            
+                            # O retângulo deve começar um pouco DEPOIS do cursor para não bater no "o"
+                            # e terminar logo após o texto para não afastar o "bastante"
+                            offset_x = 4 
+                            rx1 = x_cursor + offset_x
                             ry1 = y + bb[1] - pad_y
-                            rx2 = x_cursor + (bb[2]-bb[0]) + pad_x
+                            rx2 = x_cursor + offset_x + w_texto + (pad_x * 2)
                             ry2 = y + bb[3] + pad_y
-                        except Exception:
-                            rx1 = x_cursor - pad_x; ry1 = y - pad_y
-                            rx2 = x_cursor + w + pad_x; ry2 = y + _altura_linha(fonte) + pad_y
-                        draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
-                                               radius=6, fill=(*MARINHO, 80))
-                        draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                               radius=6, fill=(*(cor_rect or cor_dest), 235))
-                        draw = ImageDraw.Draw(img_rgba, "RGBA")
-                        _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
-                        x_cursor += w + pad_x * 2
+                            
+                            draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                                                   radius=6, fill=(*MARINHO, 80))
+                            draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                                   radius=6, fill=(*(cor_rect or cor_dest), 235))
+                            
+                            draw = ImageDraw.Draw(img_rgba, "RGBA")
+                            # O texto é desenhado com o mesmo offset para ficar centralizado no fundo
+                            _linha(draw, x_cursor + offset_x + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
+                            
+                            # O cursor avança apenas o necessário para a próxima palavra
+                            x_cursor += offset_x + w_texto + (pad_x * 2)
+                        except Exception as e:
+                            print(f"[render] erro bloco fundo: {e}")
+                            x_cursor += w + 20
                     else:
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, cor_txt, sp, tem_liga, sombra_forte)
