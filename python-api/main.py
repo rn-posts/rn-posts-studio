@@ -419,6 +419,23 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
+# ── Forma tipo bandeira: cantos esquerdos retos + cantos direitos arredondados ─
+def _desenhar_forma_bandeira(draw, xy, radius, fill):
+    """Desenha retângulo com cantos ESQUERDOS retos e cantos DIREITOS arredondados."""
+    (x1, y1), (x2, y2) = xy
+    r = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
+    if r <= 0:
+        draw.rectangle([x1, y1, x2, y2], fill=fill)
+        return
+    # Lado esquerdo: reto (retângulo completo do lado esquerdo)
+    draw.rectangle([x1, y1, x2 - r, y2], fill=fill)
+    # Lado direito: coluna reta até onde começam os arcos
+    draw.rectangle([x2 - r, y1 + r, x2, y2 - r], fill=fill)
+    # Canto superior-direito: arredondado
+    draw.pieslice([x2 - 2*r, y1, x2, y1 + 2*r], 270, 360, fill=fill)
+    # Canto inferior-direito: arredondado
+    draw.pieslice([x2 - 2*r, y2 - 2*r, x2, y2], 0, 90, fill=fill)
+
 def cores_fundo(img):
     p    = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
     cf   = tuple(sum(x[i] for x in p) // len(p) for i in range(3))
@@ -1024,9 +1041,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         rx2 = MARGIN + offset_x + w_texto + (pad_x * 2)
                         ry2 = y + bb[3] + pad_y
                         
-                        draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                        _desenhar_forma_bandeira(draw, [(rx1-1, ry1-1), (rx2+1, ry2+1)],
                                                radius=6, fill=(*MARINHO, 80))
-                        draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                        _desenhar_forma_bandeira(draw, [(rx1, ry1), (rx2, ry2)],
                                                radius=6, fill=(*(cor_rect or cor_dest), 235))
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         _linha(draw, MARGIN + offset_x + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
@@ -1092,8 +1109,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             except Exception:
                                 rx1=x_cursor-pad_x; ry1=y-pad_y
                                 rx2=x_cursor+w+pad_x; ry2=y+_altura_linha(fonte)+pad_y
-                            draw.rounded_rectangle([(rx1-1,ry1-1),(rx2+1,ry2+1)],radius=6,fill=(*MARINHO,80))
-                            draw.rounded_rectangle([(rx1,ry1),(rx2,ry2)],radius=6,fill=(*(cor_rect or cor_dest),235))
+                            _desenhar_forma_bandeira(draw, [(rx1-1,ry1-1),(rx2+1,ry2+1)],radius=6,fill=(*MARINHO,80))
+                            _desenhar_forma_bandeira(draw, [(rx1,ry1),(rx2,ry2)],radius=6,fill=(*(cor_rect or cor_dest),235))
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, x_cursor, y, ln, fonte, (*cor_txt, 255), 0)
                             x_cursor += w + pad_x * 2
@@ -1130,9 +1147,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             rx2 = x_cursor + offset_x + w_texto + (pad_x * 2)
                             ry2 = y + bb[3] + pad_y
                             
-                            draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                            _desenhar_forma_bandeira(draw, [(rx1-1, ry1-1), (rx2+1, ry2+1)],
                                                    radius=6, fill=(*MARINHO, 80))
-                            draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                            _desenhar_forma_bandeira(draw, [(rx1, ry1), (rx2, ry2)],
                                                    radius=6, fill=(*(cor_rect or cor_dest), 235))
                             
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
