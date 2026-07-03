@@ -870,14 +870,30 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     _malgun_vars = [f_bold(tam_ml), f_corpo(tam_ml), f_light(tam_ml)]
     fb = _malgun_vars[(seed // 6) % 3]
 
-    # Paleta de blocos: máximo 2 cores por card para não ficar colorido demais
-    # Cor principal (blocos 0,2,4) e cor secundaria (blocos 1,3,5)
-    _cor_principal = CORES_DESTAQUE[seed % 9]
-    # Secundaria: sempre BRANCO ou cor complementar discreta
-    _idx_sec = (seed % 9 + 3) % 9
-    _cor_sec = CORES_DESTAQUE[_idx_sec]
-    if _cor_sec == _cor_principal:
-        _cor_sec = BRANCO
+    # Paleta de blocos: cores escolhidas para CONTRASTAR com a foto
+    # Analisa luminosidade e tom dominante da foto para escolher texto legível
+    def _escolher_cores_texto(cor_overlay, lum_overlay):
+        """
+        Escolhe par de cores (principal, secundaria) que contrastam
+        com o overlay e a foto. Regras:
+        - Overlay escuro (marinho/petroleo) → texto claro (branco, amarelo, laranja)
+        - Overlay medio (teal/verde_neutro) → texto muito claro (branco, amarelo)
+        - Sempre varia pelo seed para não repetir
+        """
+        if lum_overlay < 0.25:  # overlay muito escuro
+            opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO, TEAL]
+        elif lum_overlay < 0.45:  # overlay escuro-medio
+            opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO]
+        else:  # overlay claro
+            opcoes = [MARINHO, PETROLEO, BRANCO, AMARELO]
+
+        idx1 = seed % len(opcoes)
+        idx2 = (seed // len(opcoes) + 1) % len(opcoes)
+        if idx2 == idx1: idx2 = (idx2 + 1) % len(opcoes)
+        return opcoes[idx1], opcoes[idx2]
+
+    lum_ov_local = _LUM_COR.get(cor_overlay, 0.3) if cor_overlay else 0.3
+    _cor_principal, _cor_sec = _escolher_cores_texto(cor_overlay, lum_ov_local)
 
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
                       _cor_sec, _cor_principal, _cor_sec,
@@ -912,10 +928,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None, False))
 
         elif est == "fundo":
-            # Retângulo usa a cor principal do card, texto contrasta
+            # Retângulo justo — padding reduzido para ficar colado à palavra
             cor_rect_f = _cor_principal
             cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
-            lns = _quebrar(txt, fb, MAX_PX - 36)
+            lns = _quebrar(txt, fb, MAX_PX - 20)
             blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f, False))
 
         else:  # normal — modo tipográfico aplicado
@@ -926,7 +942,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     if not blocos_render:
         return img_rgba.convert("RGB"), layout
 
-    gap_bloco = max(8, int(tam_ag * 0.12))
+    gap_bloco = max(4, int(tam_ag * 0.06))  # gap menor entre blocos
 
     # Agrupa blocos consecutivos de mesmo nível (malgun + fundo + malgun)
     # em "linhas compostas" para renderização horizontal coesa
@@ -994,7 +1010,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 18, 10
+                    pad_x, pad_y = 8, 6  # padding justo
                     try:
                         bb  = fonte.getbbox(linha)
                         rx1 = MARGIN - pad_x;         ry1 = y + bb[1] - pad_y
@@ -1004,7 +1020,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         rx2 = MARGIN + _medir(linha, fonte) + pad_x
                         ry2 = y + _altura_linha(fonte) + pad_y
                     draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                           radius=8, fill=(*(cor_rect or cor_dest), 255))
+                                           radius=6, fill=(*(cor_rect or cor_dest), 255))
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
@@ -1013,8 +1029,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
         else:
             total_w = 0
-            esp_entre = 10
-            pad_x_fundo = 14
+            esp_entre = 6
+            pad_x_fundo = 8  # padding justo
             for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
                 linha = lns[0] if lns else ""
                 if not linha: continue
