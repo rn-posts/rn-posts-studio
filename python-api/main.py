@@ -419,22 +419,28 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-# ── Forma tipo bandeira: cantos ESQUERDOS arredondados + cantos DIREITOS retos ─
+# ── Forma tipo bandeira: canto SUP-DIREITO e INF-ESQUERDO arredondados (raio longo) ─
 def _desenhar_forma_bandeira(draw, xy, radius, fill):
-    """Desenha retângulo com cantos ESQUERDOS arredondados e cantos DIREITOS retos."""
+    """Retângulo com o canto SUPERIOR-DIREITO e o canto INFERIOR-ESQUERDO
+    arredondados com raio grande e alongado. Os cantos SUPERIOR-ESQUERDO e
+    INFERIOR-DIREITO permanecem retos."""
     (x1, y1), (x2, y2) = xy
-    r = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
-    if r <= 0:
+    w, h = x2 - x1, y2 - y1
+    ry = max(0, h // 2)
+    rx = max(0, min(int(w * 0.6), max(radius, int(h * 1.6))))
+    if rx <= 0 or ry <= 0:
         draw.rectangle([x1, y1, x2, y2], fill=fill)
         return
-    # Lado direito: reto (retângulo da metade para a direita)
-    draw.rectangle([x1 + r, y1, x2, y2], fill=fill)
-    # Lado esquerdo: coluna reta entre os arcos
-    draw.rectangle([x1, y1 + r, x1 + r, y2 - r], fill=fill)
-    # Canto superior-esquerdo: arredondado
-    draw.pieslice([x1, y1, x1 + 2*r, y1 + 2*r], 180, 270, fill=fill)
-    # Canto inferior-esquerdo: arredondado
-    draw.pieslice([x1, y2 - 2*r, x1 + 2*r, y2], 90, 180, fill=fill)
+    # Corpo central (faixa horizontal cheia entre os dois arcos)
+    draw.rectangle([x1, y1 + ry, x2, y2 - ry], fill=fill)
+    # Topo: cheio até onde começa o arco do canto sup-direito
+    draw.rectangle([x1, y1, x2 - rx, y1 + ry], fill=fill)
+    # Base: cheio a partir de onde termina o arco do canto inf-esquerdo
+    draw.rectangle([x1 + rx, y2 - ry, x2, y2], fill=fill)
+    # Canto superior-direito: arredondado (raio longo)
+    draw.pieslice([x2 - 2*rx, y1, x2, y1 + 2*ry], 270, 360, fill=fill)
+    # Canto inferior-esquerdo: arredondado (raio longo)
+    draw.pieslice([x1, y2 - 2*ry, x1 + 2*rx, y2], 90, 180, fill=fill)
 
 def cores_fundo(img):
     p    = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
