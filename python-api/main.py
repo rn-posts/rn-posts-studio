@@ -1034,16 +1034,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
         else:
             total_w = 0
-            esp_entre = 4  # espaço mínimo entre elementos inline
-            pad_x_fundo = 10  # padding justo
-            for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
+            esp_entre = 8  # espaço entre elementos inline
+            pad_x_fundo = 10
+            for idx_g2, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
                 linha = lns[0] if lns else ""
                 if not linha: continue
                 w = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                if idx_g2 > 0:
+                    total_w += esp_entre
                 if est == "fundo":
-                    total_w += w + pad_x_fundo * 2 + esp_entre
+                    total_w += w + pad_x_fundo * 2
                 else:
-                    total_w += w + esp_entre
+                    total_w += w
 
             if total_w > MAX_PX:
                 for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
@@ -1069,10 +1071,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         y += int(_altura_linha(fonte) * 1.10)
             else:
                 x_cursor = MARGIN
-                for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
+                for idx_g, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
                     linha = lns[0] if lns else ""
                     if not linha: continue
                     w = _medir(linha, fonte)
+                    # Adiciona espaço entre elementos (exceto antes do primeiro)
+                    if idx_g > 0:
+                        x_cursor += esp_entre
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
                         pad_x, pad_y = pad_x_fundo, 5
@@ -1091,11 +1096,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                radius=6, fill=(*(cor_rect or cor_dest), 235))
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
-                        x_cursor += w + pad_x * 2 + esp_entre
+                        x_cursor += w + pad_x * 2
                     else:
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, cor_txt, sp, tem_liga, sombra_forte)
-                        x_cursor += (_medir_sp(linha, fonte, sp) if sp else w) + esp_entre
+                        x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 y += esp
 
     return img_rgba.convert("RGB"), layout
