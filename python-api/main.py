@@ -698,8 +698,11 @@ def _parse_blocos(tema):
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
 def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False):
-    params = [((8, 10), 22, 0.55), ((3, 4), 5, 0.75)] if forte \
-             else [((6, 8), 18, 0.42), ((2, 3), 3, 0.68)]
+    # Sombra leve única — não dupla, não pesada
+    if forte:
+        params = [((5, 6), 14, 0.38)]
+    else:
+        params = [((4, 5), 10, 0.28)]
     for (ox, oy), blur, opac in params:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d     = ImageDraw.Draw(layer)
@@ -867,14 +870,21 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     _malgun_vars = [f_bold(tam_ml), f_corpo(tam_ml), f_light(tam_ml)]
     fb = _malgun_vars[(seed // 6) % 3]
 
-    # Todas as 9 cores da paleta disponíveis para texto
-    _paleta_blocos = [
-        LARANJA, AMARELO, VERDE_CITRICO, TEAL, VERDE_VIVO,
-        BRANCO, VERDE_NEUTRO, PETROLEO, MARINHO,
-    ]
+    # Paleta de blocos: máximo 2 cores por card para não ficar colorido demais
+    # Cor principal (blocos 0,2,4) e cor secundaria (blocos 1,3,5)
+    _cor_principal = CORES_DESTAQUE[seed % 9]
+    # Secundaria: sempre BRANCO ou cor complementar discreta
+    _idx_sec = (seed % 9 + 3) % 9
+    _cor_sec = CORES_DESTAQUE[_idx_sec]
+    if _cor_sec == _cor_principal:
+        _cor_sec = BRANCO
+
+    _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
+                      _cor_sec, _cor_principal, _cor_sec,
+                      _cor_principal, _cor_sec, _cor_principal]
+
     def _cor_b(idx, estilo):
-        base = (seed + idx * 4) % 9
-        return _paleta_blocos[base]
+        return _paleta_blocos[idx % len(_paleta_blocos)]
 
     # Monta lista de (linhas[], fonte, cor, sp, estilo, cor_rect)
     blocos_render = []
@@ -902,7 +912,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None, False))
 
         elif est == "fundo":
-            cor_rect_f = TEAL if (seed % 2 == 0) else LARANJA
+            # Retângulo usa a cor principal do card, texto contrasta
+            cor_rect_f = _cor_principal
             cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
             lns = _quebrar(txt, fb, MAX_PX - 36)
             blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f, False))
