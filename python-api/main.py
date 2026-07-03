@@ -420,27 +420,33 @@ def _quebrar(texto, fonte, max_px, sp=0):
     return linhas or [texto]
 
 # ── Forma tipo bandeira: canto SUP-DIREITO e INF-ESQUERDO arredondados (raio longo) ─
-def _desenhar_forma_bandeira(draw, xy, radius, fill):
-    """Retângulo com o canto SUPERIOR-DIREITO e o canto INFERIOR-ESQUERDO
-    arredondados com raio grande e alongado. Os cantos SUPERIOR-ESQUERDO e
-    INFERIOR-DIREITO permanecem retos."""
+def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
+    """Cola em img_rgba um retângulo com o canto SUPERIOR-DIREITO e o canto
+    INFERIOR-ESQUERDO arredondados (raio grande e alongado), com anti-aliasing
+    via supersampling (evita serrilhado nas curvas). Os cantos SUPERIOR-ESQUERDO
+    e INFERIOR-DIREITO permanecem retos."""
     (x1, y1), (x2, y2) = xy
-    w, h = x2 - x1, y2 - y1
-    ry = max(0, h // 2)
-    rx = max(0, min(int(w * 0.6), max(radius, int(h * 1.6))))
-    if rx <= 0 or ry <= 0:
-        draw.rectangle([x1, y1, x2, y2], fill=fill)
+    x1i, y1i = int(round(x1)), int(round(y1))
+    x2i, y2i = int(round(x2)), int(round(y2))
+    w, h = x2i - x1i, y2i - y1i
+    if w <= 0 or h <= 0:
         return
-    # Corpo central (faixa horizontal cheia entre os dois arcos)
-    draw.rectangle([x1, y1 + ry, x2, y2 - ry], fill=fill)
-    # Topo: cheio até onde começa o arco do canto sup-direito
-    draw.rectangle([x1, y1, x2 - rx, y1 + ry], fill=fill)
-    # Base: cheio a partir de onde termina o arco do canto inf-esquerdo
-    draw.rectangle([x1 + rx, y2 - ry, x2, y2], fill=fill)
-    # Canto superior-direito: arredondado (raio longo)
-    draw.pieslice([x2 - 2*rx, y1, x2, y1 + 2*ry], 270, 360, fill=fill)
-    # Canto inferior-esquerdo: arredondado (raio longo)
-    draw.pieslice([x1, y2 - 2*ry, x1 + 2*rx, y2], 90, 180, fill=fill)
+    SS = 4  # fator de supersampling para bordas suaves
+    lw, lh = w * SS, h * SS
+    layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    ry = lh // 2
+    rx = max(0, min(int(lw * 0.6), max(radius * SS, int(lh * 1.6))))
+    if rx <= 0 or ry <= 0:
+        ld.rectangle([0, 0, lw, lh], fill=fill)
+    else:
+        ld.rectangle([0, ry, lw, lh - ry], fill=fill)
+        ld.rectangle([0, 0, lw - rx, ry], fill=fill)
+        ld.rectangle([rx, lh - ry, lw, lh], fill=fill)
+        ld.pieslice([lw - 2*rx, 0, lw, 2*ry], 270, 360, fill=fill)
+        ld.pieslice([0, lh - 2*ry, 2*rx, lh], 90, 180, fill=fill)
+    layer = layer.resize((w, h), Image.Resampling.LANCZOS)
+    img_rgba.paste(layer, (x1i, y1i), layer)
 
 def cores_fundo(img):
     p    = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
@@ -1037,22 +1043,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 10, 5
+                    pad_x, pad_y = 16, 10
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
-                        offset_x = 4
-                        rx1 = MARGIN + offset_x
+                        rx1 = MARGIN
                         ry1 = y + bb[1] - pad_y
-                        rx2 = MARGIN + offset_x + w_texto + (pad_x * 2)
+                        rx2 = MARGIN + w_texto + (pad_x * 2)
                         ry2 = y + bb[3] + pad_y
-                        
-                        _desenhar_forma_bandeira(draw, [(rx1-1, ry1-1), (rx2+1, ry2+1)],
-                                               radius=16, fill=(*MARINHO, 80))
-                        _desenhar_forma_bandeira(draw, [(rx1, ry1), (rx2, ry2)],
+
+                        _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
                                                radius=16, fill=(*(cor_rect or cor_dest), 235))
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
-                        _linha(draw, MARGIN + offset_x + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
+                        _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
                     except Exception:
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
@@ -1107,19 +1110,20 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y = pad_x_fundo, 5
+                            pad_x, pad_y = 16, 10
+                            gap_extra = 12 if idx_sl > 0 else 0
+                            x_cursor += gap_extra
                             try:
                                 bb = fonte.getbbox(ln)
-                                rx1=x_cursor-pad_x; ry1=y+bb[1]-pad_y
-                                rx2=x_cursor+(bb[2]-bb[0])+pad_x; ry2=y+bb[3]+pad_y
+                                rx1=x_cursor; ry1=y+bb[1]-pad_y
+                                rx2=x_cursor+(bb[2]-bb[0])+(pad_x*2); ry2=y+bb[3]+pad_y
                             except Exception:
-                                rx1=x_cursor-pad_x; ry1=y-pad_y
-                                rx2=x_cursor+w+pad_x; ry2=y+_altura_linha(fonte)+pad_y
-                            _desenhar_forma_bandeira(draw, [(rx1-1,ry1-1),(rx2+1,ry2+1)],radius=16,fill=(*MARINHO,80))
-                            _desenhar_forma_bandeira(draw, [(rx1,ry1),(rx2,ry2)],radius=16,fill=(*(cor_rect or cor_dest),235))
+                                rx1=x_cursor; ry1=y-pad_y
+                                rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y
+                            _desenhar_forma_bandeira(img_rgba, [(rx1,ry1),(rx2,ry2)],radius=16,fill=(*(cor_rect or cor_dest),235))
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, x_cursor, y, ln, fonte, (*cor_txt, 255), 0)
-                            x_cursor += w + pad_x * 2
+                            _linha(draw, rx1 + pad_x, y, ln, fonte, (*cor_txt, 255), 0)
+                            x_cursor = rx2
                         else:
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, cor_txt, sp, tem_liga, sombra_forte)
@@ -1136,34 +1140,26 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         x_cursor += esp_entre
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
-                        # CORREÇÃO DEFINITIVA: 
-                        # O erro ocorria porque 'x_cursor' já incluía o espaço da palavra anterior.
-                        # Forçamos um deslocamento visual (offset) apenas para o retângulo.
-                        pad_x, pad_y = 10, 5
+                        # Gera o retângulo de destaque com espaço extra antes da
+                        # palavra anterior (não cola no "o") e padding maior
+                        # para cobrir bem o texto (ascendentes/descendentes).
+                        pad_x, pad_y = 16, 10
                         try:
-                            # Medimos a largura exata do texto visível
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
-                            
-                            # O retângulo deve começar um pouco DEPOIS do cursor para não bater no "o"
-                            # e terminar logo após o texto para não afastar o "bastante"
-                            offset_x = 4 
+                            offset_x = 14 if idx_g > 0 else 0
                             rx1 = x_cursor + offset_x
                             ry1 = y + bb[1] - pad_y
                             rx2 = x_cursor + offset_x + w_texto + (pad_x * 2)
                             ry2 = y + bb[3] + pad_y
-                            
-                            _desenhar_forma_bandeira(draw, [(rx1-1, ry1-1), (rx2+1, ry2+1)],
-                                                   radius=16, fill=(*MARINHO, 80))
-                            _desenhar_forma_bandeira(draw, [(rx1, ry1), (rx2, ry2)],
+
+                            _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
                                                    radius=16, fill=(*(cor_rect or cor_dest), 235))
-                            
+
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            # O texto é desenhado com o mesmo offset para ficar centralizado no fundo
-                            _linha(draw, x_cursor + offset_x + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
-                            
-                            # O cursor avança apenas o necessário para a próxima palavra
-                            x_cursor += offset_x + w_texto + (pad_x * 2)
+                            _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
+
+                            x_cursor = rx2
                         except Exception as e:
                             print(f"[render] erro bloco fundo: {e}")
                             x_cursor += w + 20
