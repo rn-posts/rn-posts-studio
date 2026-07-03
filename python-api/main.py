@@ -976,19 +976,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
-    # Zona mínima: 55% da altura — abaixo do rosto em qualquer foto
-    Y_MIN_GLOBAL = int(H * 0.55)
+    # Zona de texto: sobe para 48% mínimo — títulos mais acima na imagem
+    Y_MIN_GLOBAL = int(H * 0.48)
 
     if not tem_pessoa:
-        Y_INI_raw = int(H * 0.55)
-        Y_FIM_raw = int(H * 0.88)
+        Y_INI_raw = int(H * 0.48)
+        Y_FIM_raw = int(H * 0.85)
     else:
         zonas = [
-            (int(H * 0.55), int(H * 0.82)),
-            (int(H * 0.55), int(H * 0.80)),
-            (int(H * 0.57), int(H * 0.84)),
-            (int(H * 0.55), int(H * 0.82)),
-            (int(H * 0.56), int(H * 0.83)),
+            (int(H * 0.50), int(H * 0.80)),
+            (int(H * 0.48), int(H * 0.78)),
+            (int(H * 0.52), int(H * 0.82)),
+            (int(H * 0.50), int(H * 0.80)),
+            (int(H * 0.51), int(H * 0.81)),
         ]
         Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
 
@@ -1010,17 +1010,22 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 8, 6  # padding justo
+                    pad_x, pad_y = 10, 5  # padding justo colado à palavra
                     try:
                         bb  = fonte.getbbox(linha)
-                        rx1 = MARGIN - pad_x;         ry1 = y + bb[1] - pad_y
-                        rx2 = MARGIN + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                        rx1 = MARGIN - pad_x
+                        ry1 = y + bb[1] - pad_y
+                        rx2 = MARGIN + (bb[2]-bb[0]) + pad_x
+                        ry2 = y + bb[3] + pad_y
                     except Exception:
                         rx1 = MARGIN - pad_x;  ry1 = y - pad_y
                         rx2 = MARGIN + _medir(linha, fonte) + pad_x
                         ry2 = y + _altura_linha(fonte) + pad_y
+                    # Borda para visibilidade em fundos claros
+                    draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                                           radius=6, fill=(*MARINHO, 80))
                     draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                           radius=6, fill=(*(cor_rect or cor_dest), 255))
+                                           radius=6, fill=(*(cor_rect or cor_dest), 235))
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
@@ -1029,8 +1034,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
         else:
             total_w = 0
-            esp_entre = 6
-            pad_x_fundo = 8  # padding justo
+            esp_entre = 4  # espaço mínimo entre elementos inline
+            pad_x_fundo = 10  # padding justo
             for lns, fonte, cor_txt, sp, est, cor_rect, tem_liga in grupo:
                 linha = lns[0] if lns else ""
                 if not linha: continue
@@ -1070,16 +1075,20 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     w = _medir(linha, fonte)
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
-                        pad_x, pad_y = pad_x_fundo, 8
+                        pad_x, pad_y = pad_x_fundo, 5
                         try:
                             bb  = fonte.getbbox(linha)
-                            rx1 = x_cursor - pad_x;     ry1 = y + bb[1] - pad_y
-                            rx2 = x_cursor + (bb[2]-bb[0]) + pad_x; ry2 = y + bb[3] + pad_y
+                            rx1 = x_cursor - pad_x
+                            ry1 = y + bb[1] - pad_y
+                            rx2 = x_cursor + (bb[2]-bb[0]) + pad_x
+                            ry2 = y + bb[3] + pad_y
                         except Exception:
                             rx1 = x_cursor - pad_x; ry1 = y - pad_y
                             rx2 = x_cursor + w + pad_x; ry2 = y + _altura_linha(fonte) + pad_y
+                        draw.rounded_rectangle([(rx1-1, ry1-1), (rx2+1, ry2+1)],
+                                               radius=6, fill=(*MARINHO, 80))
                         draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
-                                               radius=8, fill=(*(cor_rect or cor_dest), 255))
+                                               radius=6, fill=(*(cor_rect or cor_dest), 235))
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         _linha(draw, x_cursor, y, linha, fonte, (*cor_txt, 255), 0)
                         x_cursor += w + pad_x * 2 + esp_entre
