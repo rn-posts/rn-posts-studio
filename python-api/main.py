@@ -419,12 +419,12 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-# ── Forma tipo bandeira: canto SUP-DIREITO e INF-ESQUERDO arredondados (raio longo) ─
+# ── Forma tipo bandeira: canto SUP-ESQUERDO e INF-DIREITO arredondados (raio longo) ─
 def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
-    """Cola em img_rgba um retângulo com o canto SUPERIOR-DIREITO e o canto
-    INFERIOR-ESQUERDO arredondados (raio grande e alongado), com anti-aliasing
-    via supersampling (evita serrilhado nas curvas). Os cantos SUPERIOR-ESQUERDO
-    e INFERIOR-DIREITO permanecem retos."""
+    """Cola em img_rgba um retângulo com o canto SUPERIOR-ESQUERDO e o canto
+    INFERIOR-DIREITO arredondados (raio grande e alongado), com anti-aliasing
+    via supersampling (evita serrilhado nas curvas). Os cantos SUPERIOR-DIREITO
+    e INFERIOR-ESQUERDO permanecem retos."""
     (x1, y1), (x2, y2) = xy
     x1i, y1i = int(round(x1)), int(round(y1))
     x2i, y2i = int(round(x2)), int(round(y2))
@@ -436,15 +436,15 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     ry = max(1, int(lh * 0.30))
-    rx = max(0, min(int(lw * 0.42), max(radius * SS, int(ry * 4.0))))
+    rx = max(0, min(int(lw * 0.46), max(radius * SS, int(ry * 5.0))))
     if rx <= 0 or ry <= 0:
         ld.rectangle([0, 0, lw, lh], fill=fill)
     else:
         ld.rectangle([0, ry, lw, lh - ry], fill=fill)
-        ld.rectangle([0, 0, lw - rx, ry], fill=fill)
-        ld.rectangle([rx, lh - ry, lw, lh], fill=fill)
-        ld.pieslice([lw - 2*rx, 0, lw, 2*ry], 270, 360, fill=fill)
-        ld.pieslice([0, lh - 2*ry, 2*rx, lh], 90, 180, fill=fill)
+        ld.rectangle([rx, 0, lw, ry], fill=fill)
+        ld.rectangle([0, lh - ry, lw - rx, lh], fill=fill)
+        ld.pieslice([0, 0, 2*rx, 2*ry], 180, 270, fill=fill)
+        ld.pieslice([lw - 2*rx, lh - 2*ry, lw, lh], 0, 90, fill=fill)
     layer = layer.resize((w, h), Image.Resampling.LANCZOS)
     img_rgba.paste(layer, (x1i, y1i), layer)
 
