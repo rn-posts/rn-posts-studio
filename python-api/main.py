@@ -436,7 +436,7 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     ry = max(1, int(lh * 0.30))
-    rx = max(0, min(int(lw * 0.35), max(radius * SS, int(ry * 2.4))))
+    rx = max(0, min(int(lw * 0.42), max(radius * SS, int(ry * 4.0))))
     if rx <= 0 or ry <= 0:
         ld.rectangle([0, 0, lw, lh], fill=fill)
     else:
@@ -1043,7 +1043,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
+                    pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1110,7 +1110,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
+                            pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1141,9 +1141,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
-                        # vizinhas) e padding vertical levemente assimétrico
-                        # (menos embaixo, que sobrava espaço).
-                        pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
+                        # vizinhas) e padding vertical simétrico.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
