@@ -435,8 +435,8 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
     lw, lh = w * SS, h * SS
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
-    ry = lh // 2
-    rx = max(0, min(int(lw * 0.35), max(radius * SS, int(lh * 0.7))))
+    ry = max(1, int(lh * 0.30))
+    rx = max(0, min(int(lw * 0.35), max(radius * SS, int(ry * 2.4))))
     if rx <= 0 or ry <= 0:
         ld.rectangle([0, 0, lw, lh], fill=fill)
     else:
@@ -1043,14 +1043,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 14, 10
+                    pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
                         rx1 = MARGIN
-                        ry1 = y + bb[1] - pad_y
+                        ry1 = y + bb[1] - pad_y_top
                         rx2 = MARGIN + w_texto + (pad_x * 2)
-                        ry2 = y + bb[3] + pad_y
+                        ry2 = y + bb[3] + pad_y_bottom
 
                         _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
                                                radius=16, fill=(*(cor_rect or cor_dest), 235))
@@ -1110,20 +1110,20 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y = 14, 10
-                            gap_extra = 12 if idx_sl > 0 else 0
-                            x_cursor += gap_extra
+                            pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
+                            gap_before = 7 if idx_sl > 0 else 0
+                            x_cursor += gap_before
                             try:
                                 bb = fonte.getbbox(ln)
-                                rx1=x_cursor; ry1=y+bb[1]-pad_y
-                                rx2=x_cursor+(bb[2]-bb[0])+(pad_x*2); ry2=y+bb[3]+pad_y
+                                rx1=x_cursor; ry1=y+bb[1]-pad_y_top
+                                rx2=x_cursor+(bb[2]-bb[0])+(pad_x*2); ry2=y+bb[3]+pad_y_bottom
                             except Exception:
-                                rx1=x_cursor; ry1=y-pad_y
-                                rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y
+                                rx1=x_cursor; ry1=y-pad_y_top
+                                rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y_bottom
                             _desenhar_forma_bandeira(img_rgba, [(rx1,ry1),(rx2,ry2)],radius=16,fill=(*(cor_rect or cor_dest),235))
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, rx1 + pad_x, y, ln, fonte, (*cor_txt, 255), 0)
-                            x_cursor = rx2
+                            x_cursor = rx2 + 7
                         else:
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, cor_txt, sp, tem_liga, sombra_forte)
@@ -1140,18 +1140,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         x_cursor += esp_entre
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
-                        # Gera o retângulo de destaque com espaço extra antes da
-                        # palavra anterior (não cola no "o") e padding maior
-                        # para cobrir bem o texto (ascendentes/descendentes).
-                        pad_x, pad_y = 14, 10
+                        # Espaço simétrico antes/depois da caixa (não cola nas palavras
+                        # vizinhas) e padding vertical levemente assimétrico
+                        # (menos embaixo, que sobrava espaço).
+                        pad_x, pad_y_top, pad_y_bottom = 14, 10, 7
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
-                            offset_x = 14 if idx_g > 0 else 0
+                            offset_x = 7 if idx_g > 0 else 0
                             rx1 = x_cursor + offset_x
-                            ry1 = y + bb[1] - pad_y
+                            ry1 = y + bb[1] - pad_y_top
                             rx2 = x_cursor + offset_x + w_texto + (pad_x * 2)
-                            ry2 = y + bb[3] + pad_y
+                            ry2 = y + bb[3] + pad_y_bottom
 
                             _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
                                                    radius=16, fill=(*(cor_rect or cor_dest), 235))
@@ -1159,7 +1159,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
 
-                            x_cursor = rx2
+                            x_cursor = rx2 + 7
                         except Exception as e:
                             print(f"[render] erro bloco fundo: {e}")
                             x_cursor += w + 20
