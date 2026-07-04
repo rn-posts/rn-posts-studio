@@ -436,7 +436,7 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     ry = lh // 2
-    rx = max(0, min(int(lw * 0.6), max(radius * SS, int(lh * 1.6))))
+    rx = max(0, min(int(lw * 0.35), max(radius * SS, int(lh * 0.7))))
     if rx <= 0 or ry <= 0:
         ld.rectangle([0, 0, lw, lh], fill=fill)
     else:
@@ -1043,7 +1043,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y = 16, 10
+                    pad_x, pad_y = 14, 10
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1110,7 +1110,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y = 16, 10
+                            pad_x, pad_y = 14, 10
                             gap_extra = 12 if idx_sl > 0 else 0
                             x_cursor += gap_extra
                             try:
@@ -1143,7 +1143,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         # Gera o retângulo de destaque com espaço extra antes da
                         # palavra anterior (não cola no "o") e padding maior
                         # para cobrir bem o texto (ascendentes/descendentes).
-                        pad_x, pad_y = 16, 10
+                        pad_x, pad_y = 14, 10
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
