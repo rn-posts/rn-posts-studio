@@ -420,11 +420,15 @@ def _quebrar(texto, fonte, max_px, sp=0):
     return linhas or [texto]
 
 # ── Forma tipo bandeira: canto SUP-ESQUERDO e INF-DIREITO arredondados (raio longo) ─
-def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
+def _desenhar_forma_bandeira(img_rgba, xy, radius, fill, pad_x=14, pad_y=10):
     """Cola em img_rgba um retângulo com o canto SUPERIOR-ESQUERDO e o canto
-    INFERIOR-DIREITO arredondados (raio grande e alongado), com anti-aliasing
-    via supersampling (evita serrilhado nas curvas). Os cantos SUPERIOR-DIREITO
-    e INFERIOR-ESQUERDO permanecem retos."""
+    INFERIOR-DIREITO arredondados, com anti-aliasing via supersampling. Os
+    cantos SUPERIOR-DIREITO e INFERIOR-ESQUERDO permanecem retos.
+
+    O raio horizontal (rx) tenta alcançar até metade da largura da caixa
+    (o mesmo alongamento visual dos dois lados), mas nunca ultrapassa o
+    ponto seguro em que a curva encostaria no texto — calculado a partir
+    do padding (pad_x/pad_y) usado ao montar a caixa nos pontos de uso."""
     (x1, y1), (x2, y2) = xy
     x1i, y1i = int(round(x1)), int(round(y1))
     x2i, y2i = int(round(x2)), int(round(y2))
@@ -436,7 +440,16 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill):
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
     ry = max(1, int(lh * 0.30))
-    rx = max(0, min(int(lw * 0.46), max(radius * SS, int(ry * 5.0))))
+    pxs, pys = pad_x * SS, pad_y * SS
+    if pys < ry:
+        # fração vertical em que o texto (a pad_y da borda) fica dentro da
+        # zona de arredondamento; f = quanto disso sobra em termos de rx
+        k = (ry - pys) / ry
+        f = math.sqrt(max(0.0, 1 - k * k))
+        rx_seguro = lw if f >= 0.999 else int((pxs / (1 - f)) * 0.9)
+    else:
+        rx_seguro = lw  # texto fica fora da zona de arredondamento: sem risco
+    rx = max(0, min(int(lw * 0.5), rx_seguro))
     if rx <= 0 or ry <= 0:
         ld.rectangle([0, 0, lw, lh], fill=fill)
     else:
