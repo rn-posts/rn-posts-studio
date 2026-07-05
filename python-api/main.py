@@ -419,7 +419,7 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-_FORMAS_FUNDO = ["retangulo", "pilula", "cupula", "bandeira", "flamula", "hexagono"]
+_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "flamula", "retangulo_arredondado", "paralelogramo"]
 
 # ── Formas de preenchimento ("-palavra"): 6 variações — cada uma calcula seu
 # próprio raio/corte máximo para nunca ultrapassar o padding e encostar no texto ─
@@ -429,13 +429,17 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
     padding (pad_x/pad_y) para posicionar o texto — cada forma calcula
     internamente o maior raio/corte que garante não encostar nas letras.
 
-    Formas disponíveis:
-      retangulo — sem arredondamento, cantos retos
-      pilula    — cápsula: as duas pontas totalmente arredondadas
+    Formas disponíveis (na rotação aleatória por seed):
+      retangulo             — sem arredondamento, cantos retos
+      pilula                — cápsula: as duas pontas totalmente arredondadas
+      bandeira              — diagonal: canto superior-esquerdo e inferior-direito
+                              arredondados (raio longo), os outros dois retos
+      flamula               — lado esquerdo reto, lado direito termina em ponta
+      retangulo_arredondado — cantos moderadamente arredondados (não é cápsula)
+      paralelogramo         — retângulo inclinado (lados paralelos em diagonal)
+
+    Implementadas mas fora da rotação (disponíveis chamando forma=... direto):
       cupula    — base reta, topo arredondado nos dois cantos superiores
-      bandeira  — diagonal: canto superior-esquerdo e inferior-direito
-                  arredondados (raio longo), os outros dois retos
-      flamula   — lado esquerdo reto, lado direito termina em ponta
       hexagono  — as duas pontas (esquerda e direita) terminam em ponta
     """
     (x1, y1), (x2, y2) = xy
@@ -468,6 +472,13 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
         if pys >= meio:
             return 0
         return int((pxs / (1 - pys / meio)) * 0.9)
+
+    def _shift_seguro():
+        """Maior deslocamento (paralelogramo) que ainda garante pad_x de
+        folga na altura em que o texto encosta (pad_y da borda)."""
+        if pys >= lh:
+            return 0
+        return int((pxs / (1 - pys / lh)) * 0.9)
 
     if forma == "retangulo":
         ld.rectangle([0, 0, lw, lh], fill=fill)
@@ -506,6 +517,26 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
         else:
             ld.polygon([(cw, 0), (lw - cw, 0), (lw, lh / 2),
                         (lw - cw, lh), (cw, lh), (0, lh / 2)], fill=fill)
+
+    elif forma == "retangulo_arredondado":
+        r_alvo = max(1, int(lh * 0.22))
+        r = max(0, min(r_alvo, _raio_seguro(r_alvo)))
+        if r <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.rectangle([r, 0, lw - r, lh], fill=fill)
+            ld.rectangle([0, r, lw, lh - r], fill=fill)
+            ld.pieslice([0, 0, 2 * r, 2 * r], 180, 270, fill=fill)
+            ld.pieslice([lw - 2 * r, 0, lw, 2 * r], 270, 360, fill=fill)
+            ld.pieslice([0, lh - 2 * r, 2 * r, lh], 90, 180, fill=fill)
+            ld.pieslice([lw - 2 * r, lh - 2 * r, lw, lh], 0, 90, fill=fill)
+
+    elif forma == "paralelogramo":
+        shift = max(0, min(int(lw * 0.25), _shift_seguro()))
+        if shift <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.polygon([(shift, 0), (lw, 0), (lw - shift, lh), (0, lh)], fill=fill)
 
     else:  # "bandeira" (padrão) — diagonal SUP-ESQUERDO / INF-DIREITO
         ry = max(1, int(lh * 0.30))
