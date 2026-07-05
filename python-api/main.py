@@ -419,16 +419,25 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-# ── Forma tipo bandeira: canto SUP-ESQUERDO e INF-DIREITO arredondados (raio longo) ─
-def _desenhar_forma_bandeira(img_rgba, xy, radius, fill, pad_x=14, pad_y=10):
-    """Cola em img_rgba um retângulo com o canto SUPERIOR-ESQUERDO e o canto
-    INFERIOR-DIREITO arredondados, com anti-aliasing via supersampling. Os
-    cantos SUPERIOR-DIREITO e INFERIOR-ESQUERDO permanecem retos.
+_FORMAS_FUNDO = ["retangulo", "pilula", "cupula", "bandeira", "flamula", "hexagono"]
 
-    O raio horizontal (rx) tenta alcançar até metade da largura da caixa
-    (o mesmo alongamento visual dos dois lados), mas nunca ultrapassa o
-    ponto seguro em que a curva encostaria no texto — calculado a partir
-    do padding (pad_x/pad_y) usado ao montar a caixa nos pontos de uso."""
+# ── Formas de preenchimento ("-palavra"): 6 variações — cada uma calcula seu
+# próprio raio/corte máximo para nunca ultrapassar o padding e encostar no texto ─
+def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=10):
+    """Cola em img_rgba o preenchimento de destaque (usado com '-antes-da-
+    palavra'), em uma de várias formas geométricas. Todas usam o mesmo
+    padding (pad_x/pad_y) para posicionar o texto — cada forma calcula
+    internamente o maior raio/corte que garante não encostar nas letras.
+
+    Formas disponíveis:
+      retangulo — sem arredondamento, cantos retos
+      pilula    — cápsula: as duas pontas totalmente arredondadas
+      cupula    — base reta, topo arredondado nos dois cantos superiores
+      bandeira  — diagonal: canto superior-esquerdo e inferior-direito
+                  arredondados (raio longo), os outros dois retos
+      flamula   — lado esquerdo reto, lado direito termina em ponta
+      hexagono  — as duas pontas (esquerda e direita) terminam em ponta
+    """
     (x1, y1), (x2, y2) = xy
     x1i, y1i = int(round(x1)), int(round(y1))
     x2i, y2i = int(round(x2)), int(round(y2))
@@ -437,27 +446,79 @@ def _desenhar_forma_bandeira(img_rgba, xy, radius, fill, pad_x=14, pad_y=10):
         return
     SS = 4  # fator de supersampling para bordas suaves
     lw, lh = w * SS, h * SS
+    pxs, pys = pad_x * SS, pad_y * SS
     layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
     ld = ImageDraw.Draw(layer)
-    ry = max(1, int(lh * 0.30))
-    pxs, pys = pad_x * SS, pad_y * SS
-    if pys < ry:
-        # fração vertical em que o texto (a pad_y da borda) fica dentro da
-        # zona de arredondamento; f = quanto disso sobra em termos de rx
-        k = (ry - pys) / ry
+
+    def _raio_seguro(ry_local):
+        """Maior raio horizontal (rx) tal que a curva elíptica não ultrapassa
+        a margem pad_x na altura em que o texto encosta (pad_y da borda)."""
+        if ry_local <= 0 or pys >= ry_local:
+            return lw
+        k = (ry_local - pys) / ry_local
         f = math.sqrt(max(0.0, 1 - k * k))
-        rx_seguro = lw if f >= 0.999 else int((pxs / (1 - f)) * 0.9)
-    else:
-        rx_seguro = lw  # texto fica fora da zona de arredondamento: sem risco
-    rx = max(0, min(int(lw * 0.5), rx_seguro))
-    if rx <= 0 or ry <= 0:
+        if f >= 0.999:
+            return lw
+        return int((pxs / (1 - f)) * 0.9)
+
+    def _corte_seguro():
+        """Maior chanfro reto (ponta de flâmula/hexágono) que ainda garante
+        pad_x de folga na altura em que o texto encosta (pad_y da borda)."""
+        meio = lh / 2
+        if pys >= meio:
+            return 0
+        return int((pxs / (1 - pys / meio)) * 0.9)
+
+    if forma == "retangulo":
         ld.rectangle([0, 0, lw, lh], fill=fill)
-    else:
-        ld.rectangle([0, ry, lw, lh - ry], fill=fill)
-        ld.rectangle([rx, 0, lw, ry], fill=fill)
-        ld.rectangle([0, lh - ry, lw - rx, lh], fill=fill)
-        ld.pieslice([0, 0, 2*rx, 2*ry], 180, 270, fill=fill)
-        ld.pieslice([lw - 2*rx, lh - 2*ry, lw, lh], 0, 90, fill=fill)
+
+    elif forma == "pilula":
+        r = max(0, min(lh // 2, _raio_seguro(lh // 2)))
+        if r <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.rectangle([r, 0, lw - r, lh], fill=fill)
+            ld.ellipse([0, 0, 2 * r, lh], fill=fill)
+            ld.ellipse([lw - 2 * r, 0, lw, lh], fill=fill)
+
+    elif forma == "cupula":
+        ry = max(1, int(lh * 0.55))
+        rx = max(0, min(int(lw * 0.5), _raio_seguro(ry)))
+        if rx <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.rectangle([0, ry, lw, lh], fill=fill)
+            ld.rectangle([rx, 0, lw - rx, ry], fill=fill)
+            ld.pieslice([0, 0, 2 * rx, 2 * ry], 180, 270, fill=fill)
+            ld.pieslice([lw - 2 * rx, 0, lw, 2 * ry], 270, 360, fill=fill)
+
+    elif forma == "flamula":
+        cw = max(0, min(int(lw * 0.35), _corte_seguro()))
+        if cw <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.polygon([(0, 0), (lw - cw, 0), (lw, lh / 2), (lw - cw, lh), (0, lh)], fill=fill)
+
+    elif forma == "hexagono":
+        cw = max(0, min(int(lw * 0.28), _corte_seguro()))
+        if cw <= 0 or cw * 2 >= lw:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.polygon([(cw, 0), (lw - cw, 0), (lw, lh / 2),
+                        (lw - cw, lh), (cw, lh), (0, lh / 2)], fill=fill)
+
+    else:  # "bandeira" (padrão) — diagonal SUP-ESQUERDO / INF-DIREITO
+        ry = max(1, int(lh * 0.30))
+        rx = max(0, min(int(lw * 0.5), _raio_seguro(ry)))
+        if rx <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            ld.rectangle([0, ry, lw, lh - ry], fill=fill)
+            ld.rectangle([rx, 0, lw, ry], fill=fill)
+            ld.rectangle([0, lh - ry, lw - rx, lh], fill=fill)
+            ld.pieslice([0, 0, 2 * rx, 2 * ry], 180, 270, fill=fill)
+            ld.pieslice([lw - 2 * rx, lh - 2 * ry, lw, lh], 0, 90, fill=fill)
+
     layer = layer.resize((w, h), Image.Resampling.LANCZOS)
     img_rgba.paste(layer, (x1i, y1i), layer)
 
@@ -906,6 +967,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     modo = _modo_tipografico(seed)
     print(f"[titulo] modo_tipo={modo}")
 
+    # Forma do preenchimento ("-palavra"): varia por seed, mas fica a MESMA
+    # em toda a imagem (todas as palavras com "-" usam a mesma forma aqui)
+    forma_fundo = _FORMAS_FUNDO[(seed // 17) % len(_FORMAS_FUNDO)]
+    print(f"[titulo] forma_fundo={forma_fundo}")
+
     # Fonte AGILERA base com variação de modo
     fa_base, tem_liga_base = _fonte_agilera_para_modo(modo, tam_ag)
     ag_sp = _sp_para_modo(modo, tam_ag)
@@ -1065,8 +1131,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         rx2 = MARGIN + w_texto + (pad_x * 2)
                         ry2 = y + bb[3] + pad_y_bottom
 
-                        _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
-                                               radius=16, fill=(*(cor_rect or cor_dest), 235))
+                        _desenhar_forma_fundo(img_rgba, [(rx1, ry1), (rx2, ry2)],
+                                               fill=(*(cor_rect or cor_dest), 235),
+                                               forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
                     except Exception:
@@ -1133,7 +1200,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             except Exception:
                                 rx1=x_cursor; ry1=y-pad_y_top
                                 rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y_bottom
-                            _desenhar_forma_bandeira(img_rgba, [(rx1,ry1),(rx2,ry2)],radius=16,fill=(*(cor_rect or cor_dest),235))
+                            _desenhar_forma_fundo(img_rgba, [(rx1,ry1),(rx2,ry2)],
+                                                  fill=(*(cor_rect or cor_dest),235),
+                                                  forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, rx1 + pad_x, y, ln, fonte, (*cor_txt, 255), 0)
                             x_cursor = rx2 + 7
@@ -1165,8 +1234,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             rx2 = x_cursor + offset_x + w_texto + (pad_x * 2)
                             ry2 = y + bb[3] + pad_y_bottom
 
-                            _desenhar_forma_bandeira(img_rgba, [(rx1, ry1), (rx2, ry2)],
-                                                   radius=16, fill=(*(cor_rect or cor_dest), 235))
+                            _desenhar_forma_fundo(img_rgba, [(rx1, ry1), (rx2, ry2)],
+                                                   fill=(*(cor_rect or cor_dest), 235),
+                                                   forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
 
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
                             _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
