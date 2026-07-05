@@ -1166,7 +1166,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                fill=(*(cor_rect or cor_dest), 235),
                                                forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
-                        _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
+                        _linha(draw, rx1 + pad_x - bb[0], y, linha, fonte, (*cor_txt, 255), 0)
                     except Exception:
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
@@ -1228,14 +1228,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                 bb = fonte.getbbox(ln)
                                 rx1=x_cursor; ry1=y+bb[1]-pad_y_top
                                 rx2=x_cursor+(bb[2]-bb[0])+(pad_x*2); ry2=y+bb[3]+pad_y_bottom
+                                bb0 = bb[0]
                             except Exception:
                                 rx1=x_cursor; ry1=y-pad_y_top
                                 rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y_bottom
+                                bb0 = 0
                             _desenhar_forma_fundo(img_rgba, [(rx1,ry1),(rx2,ry2)],
                                                   fill=(*(cor_rect or cor_dest),235),
                                                   forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, rx1 + pad_x, y, ln, fonte, (*cor_txt, 255), 0)
+                            _linha(draw, rx1 + pad_x - bb0, y, ln, fonte, (*cor_txt, 255), 0)
                             x_cursor = rx2 + 7
                         else:
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
@@ -1270,7 +1272,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                    forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
 
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, rx1 + pad_x, y, linha, fonte, (*cor_txt, 255), 0)
+                            _linha(draw, rx1 + pad_x - bb[0], y, linha, fonte, (*cor_txt, 255), 0)
 
                             x_cursor = rx2 + 7
                         except Exception as e:
