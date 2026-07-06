@@ -419,10 +419,11 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "flamula", "retangulo_arredondado", "paralelogramo"]
+_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "retangulo_arredondado", "paralelogramo"]
 
-# ── Formas de preenchimento ("-palavra"): 6 variações — cada uma calcula seu
-# próprio raio/corte máximo para nunca ultrapassar o padding e encostar no texto ─
+# ── Formas de preenchimento ("-palavra"): 5 variações na rotação — cada uma
+# calcula seu próprio raio/corte máximo para nunca ultrapassar o padding e
+# encostar no texto ─
 def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=10):
     """Cola em img_rgba o preenchimento de destaque (usado com '-antes-da-
     palavra'), em uma de várias formas geométricas. Todas usam o mesmo
@@ -434,13 +435,13 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
       pilula                — cápsula: as duas pontas totalmente arredondadas
       bandeira              — diagonal: canto superior-esquerdo e inferior-direito
                               arredondados (raio longo), os outros dois retos
-      flamula               — lado esquerdo reto, lado direito termina em ponta
       retangulo_arredondado — cantos moderadamente arredondados (não é cápsula)
       paralelogramo         — retângulo inclinado (lados paralelos em diagonal)
 
     Implementadas mas fora da rotação (disponíveis chamando forma=... direto):
       cupula    — base reta, topo arredondado nos dois cantos superiores
       hexagono  — as duas pontas (esquerda e direita) terminam em ponta
+      flamula   — lado esquerdo reto, lado direito termina em ponta
     """
     (x1, y1), (x2, y2) = xy
     x1i, y1i = int(round(x1)), int(round(y1))
