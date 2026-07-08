@@ -356,6 +356,21 @@ def gerar_legenda_ia(tema):
     raise Exception("IAs falharam: " + " | ".join(erros))
 
 # ── Cloudinary ────────────────────────────────────────────────────────────────
+_baralho_fotos = {}  # chave (pasta) -> fila embaralhada restante
+
+def _proxima_foto_baralho(chave, recursos):
+    """Baralho sem reposição: consome fotos embaralhadas até esgotar a lista,
+    depois embaralha um novo ciclo completo — evita repetir a mesma foto antes
+    de todas as outras terem sido usadas ao menos uma vez. Fica em memória,
+    reseta se o servidor reiniciar."""
+    fila = _baralho_fotos.get(chave)
+    if not fila:
+        fila = recursos[:]
+        random.shuffle(fila)
+        _baralho_fotos[chave] = fila
+        print(f"[baralho] novo ciclo '{chave}' ({len(fila)} fotos)")
+    return fila.pop()
+
 def buscar_imagem(tema=""):
     t     = tema.lower()
     todas = list(set(MAPA_PASTAS.values()))
@@ -368,7 +383,7 @@ def buscar_imagem(tema=""):
                    if CLOUDINARY_POSTS not in r.get("public_id", "")
                    and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
             if rec:
-                c = random.choice(rec)
+                c = _proxima_foto_baralho(p, rec)
                 print(f"[busca] {c.get('public_id')}")
                 return c.get("secure_url"), c.get("public_id", "")
         except Exception as e: print(f"[busca] '{p}': {e}")
@@ -378,7 +393,7 @@ def buscar_imagem(tema=""):
                if CLOUDINARY_POSTS not in r.get("public_id", "")
                and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
         if rec:
-            c = random.choice(rec)
+            c = _proxima_foto_baralho("_fallback", rec)
             return c.get("secure_url"), c.get("public_id", "")
     except Exception as e: print(f"[busca] fallback: {e}")
     return None, ""
@@ -420,6 +435,14 @@ def _quebrar(texto, fonte, max_px, sp=0):
     return linhas or [texto]
 
 _FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "retangulo_arredondado", "paralelogramo"]
+_forma_fundo_idx = 0
+def _proxima_forma_fundo():
+    """Contador sequencial (sem sorteio) — percorre a rotação fixa de formas,
+    uma por geração, ciclando ao chegar no fim da lista."""
+    global _forma_fundo_idx
+    forma = _FORMAS_FUNDO[_forma_fundo_idx % len(_FORMAS_FUNDO)]
+    _forma_fundo_idx += 1
+    return forma
 
 # ── Formas de preenchimento ("-palavra"): 5 variações na rotação — cada uma
 # calcula seu próprio raio/corte máximo para nunca ultrapassar o padding e
@@ -565,6 +588,16 @@ def luminosidade_media(img):
     arr = np.array(img.convert("RGB").resize((80, 100))).astype(np.float32)
     return float(arr.mean())
 
+def _luminosidade_zona_texto(img):
+    """Amostra a luminosidade real (0-255) da região aproximada onde o
+    título é desenhado, usando a imagem final (pós color-grade e overlay) —
+    evita basear a cor do texto num palpite feito antes do processamento."""
+    x0, y0 = SAFE_LEFT, int(H * 0.44)
+    x1, y1 = int(W * 0.60), int(H * 0.88)
+    recorte = img.crop((x0, y0, x1, y1))
+    arr = np.array(recorte.convert("RGB")).astype(np.float32)
+    return float(arr.mean())
+
 def cor_dominante(img):
     p = list(img.resize((60, 75), Image.Resampling.LANCZOS).convert("RGB").getdata())
     return tuple(sum(x[i] for x in p) // len(p) for i in range(3))
@@ -576,6 +609,24 @@ def remover_fundo_rembg(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
+
+def _detectar_pose_em_pe(pessoa_rgba):
+    """Heurística (não é um classificador de pose real): usa a máscara alpha
+    do recorte rembg para medir a altura da silhueta da pessoa como proporção
+    da altura total da imagem. Foto em pé de corpo inteiro tende a preencher
+    quase toda a altura (~80%+); foto sentado ocupa uma fatia menor."""
+    try:
+        alpha = np.array(pessoa_rgba.split()[3])
+        linhas = np.where(alpha.max(axis=1) > 10)[0]
+        if len(linhas) == 0:
+            return True
+        proporcao = (linhas[-1] - linhas[0]) / alpha.shape[0]
+        em_pe = proporcao >= 0.80
+        print(f"[pose] proporcao_altura={proporcao:.2f} -> {'em_pe' if em_pe else 'sentado'}")
+        return em_pe
+    except Exception as e:
+        print(f"[pose] erro: {e}")
+        return True
 
 # ── Fundo rico ────────────────────────────────────────────────────────────────
 def gerar_fundo_rico(cor1, cor2, seed):
@@ -652,6 +703,9 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     return res.convert("RGB")
 
 def preparar_foto(url, pid, cor1, cor2, seed):
+    """Retorna (img, em_pe). em_pe só tem efeito quando há pessoa recortada
+    (rembg); nos demais casos vem True por padrão (sem impacto no layout)."""
+    em_pe = True
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -664,10 +718,11 @@ def preparar_foto(url, pid, cor1, cor2, seed):
             print(f"[foto] Ronilson: {pid}")
             fundo = gerar_fundo_rico(cor1, cor2, seed)
             try:
-                rgba = remover_fundo_rembg(img)
-                img  = compor_pessoa(rgba, fundo)
-                img  = aplicar_split_toning(img)
-                img  = ImageEnhance.Contrast(img).enhance(1.08)
+                rgba  = remover_fundo_rembg(img)
+                em_pe = _detectar_pose_em_pe(rgba)
+                img   = compor_pessoa(rgba, fundo)
+                img   = aplicar_split_toning(img)
+                img   = ImageEnhance.Contrast(img).enhance(1.08)
             except Exception as e:
                 print(f"[foto] rembg falhou ({e})")
                 img = Image.blend(fundo, img, alpha=0.60)
@@ -675,9 +730,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         else:
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
-        return img
+        return img, em_pe
     except Exception as e:
-        print(f"[foto] ERRO: {e}"); return None
+        print(f"[foto] ERRO: {e}"); return None, em_pe
 
 # ── Overlay ───────────────────────────────────────────────────────────────────
 def aplicar_overlay(img, lum_media, layout, seed=0,
@@ -956,7 +1011,7 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
     return draw
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
-                    cor_overlay=None, tem_pessoa=False):
+                    cor_overlay=None, tem_pessoa=False, em_pe=True):
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
     # Para fotos com pessoa à direita: texto na terça parte esquerda
@@ -999,9 +1054,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     modo = _modo_tipografico(seed)
     print(f"[titulo] modo_tipo={modo}")
 
-    # Forma do preenchimento ("-palavra"): varia por seed, mas fica a MESMA
-    # em toda a imagem (todas as palavras com "-" usam a mesma forma aqui)
-    forma_fundo = _FORMAS_FUNDO[(seed // 17) % len(_FORMAS_FUNDO)]
+    # Forma do preenchimento ("-palavra"): percorre a rotação fixa (sem
+    # sorteio), uma forma por geração — mas fica a MESMA em toda a imagem
+    # (todas as palavras com "-" usam a mesma forma aqui)
+    forma_fundo = _proxima_forma_fundo()
     print(f"[titulo] forma_fundo={forma_fundo}")
 
     # Fonte AGILERA base com variação de modo
@@ -1024,20 +1080,22 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         - Overlay medio (teal/verde_neutro) → texto muito claro (branco, amarelo)
         - Sempre varia pelo seed para não repetir
         """
-        if lum_overlay < 0.25:  # overlay muito escuro
+        if lum_overlay < 0.25:  # fundo muito escuro
             opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO, TEAL]
-        elif lum_overlay < 0.45:  # overlay escuro-medio
+        elif lum_overlay < 0.45:  # fundo escuro-medio
             opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO]
-        else:  # overlay claro
-            opcoes = [MARINHO, PETROLEO, BRANCO, AMARELO]
+        else:  # fundo claro — só cores realmente escuras (nunca BRANCO/AMARELO aqui)
+            opcoes = [MARINHO, PETROLEO, TEAL]
 
         idx1 = seed % len(opcoes)
         idx2 = (seed // len(opcoes) + 1) % len(opcoes)
         if idx2 == idx1: idx2 = (idx2 + 1) % len(opcoes)
         return opcoes[idx1], opcoes[idx2]
 
-    lum_ov_local = _LUM_COR.get(cor_overlay, 0.3) if cor_overlay else 0.3
-    _cor_principal, _cor_sec = _escolher_cores_texto(cor_overlay, lum_ov_local)
+    # Luminosidade REAL da zona de texto na imagem já processada (pós color-grade
+    # e overlay) — mais confiável que estimar pela cor nominal do overlay.
+    lum_zona_real = _luminosidade_zona_texto(img_rgba.convert("RGB")) / 255.0
+    _cor_principal, _cor_sec = _escolher_cores_texto(cor_overlay, lum_zona_real)
 
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
                       _cor_sec, _cor_principal, _cor_sec,
@@ -1136,6 +1194,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         ]
         Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
 
+    # Pessoa em pé (corpo inteiro) tem mais espaço acima do centro de massa —
+    # sobe o bloco de texto ~35px para melhorar a leitura. Sentado mantém
+    # a zona original (rosto/tronco ocupam a parte de cima do enquadramento).
+    if tem_pessoa and em_pe:
+        Y_INI_raw -= 35
+        Y_FIM_raw -= 35
+
     Y_INI = max(Y_MIN_GLOBAL, max(SAFE_TOP, Y_INI_raw))
     Y_FIM = min(SAFE_BOTTOM,  Y_FIM_raw)
 
@@ -1154,7 +1219,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
+                    pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1222,7 +1287,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
+                            pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1257,8 +1322,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
-                        # vizinhas) e padding vertical simétrico.
-                        pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
+                        # vizinhas). Padding vertical levemente assimétrico: desloca a
+                        # caixa ~3px para cima para alinhar melhor com o texto.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
@@ -1309,6 +1375,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     lum_media  = 100.0
     cor_dom    = None
     tem_pessoa = eh_foto_ronilson(pid)
+    em_pe      = True
 
     if imagem_url:
         try:
@@ -1321,7 +1388,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
         except Exception as e: print(f"[cor] {e}")
 
     if imagem_url:
-        base = preparar_foto(imagem_url, pid, cor1, cor2, seed)
+        base, em_pe = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
             base = gerar_fundo_rico(cor1, cor2, seed)
             lum_media = luminosidade_media(base)
@@ -1348,7 +1415,8 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
                               cor_dest=cor_dest,
                               cor_fundo_txt=cor_fundo_txt,
                               cor_overlay=cor_ov_usada,
-                              tem_pessoa=tem_pessoa)
+                              tem_pessoa=tem_pessoa,
+                              em_pe=em_pe)
     return base
 
 # ── Planilha ──────────────────────────────────────────────────────────────────
