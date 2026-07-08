@@ -130,10 +130,24 @@ def distancia_cor(c1, c2):
 def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto, seed=0):
     """Overlay escolhido entre as 9 cores da paleta, priorizando as que mais
     contrastam com a cor dominante da foto — garante que a cor usada combine
-    com aquela imagem específica em vez de ser fixa."""
+    com aquela imagem específica em vez de ser fixa.
+
+    Fotos claras/neutras (salas, ambientes, roupas claras): cores vibrantes
+    (amarelo, laranja, branco, verdes saturados) ficam berrantes e destoam
+    do ambiente real — nesses casos a rotação fica restrita à paleta sóbria
+    (marinho, petróleo, teal, verde-neutro). Só fotos escuras o suficiente
+    liberam as cores vibrantes, onde elas funcionam como respiro de luz.
+    """
     dist_max = math.sqrt(255**2 * 3)
+    lum_foto = (sum(cor_dominante_foto) / 3 / 255) if cor_dominante_foto else 0.5
+
+    if lum_foto > 0.35:
+        candidatas_base = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO]
+    else:
+        candidatas_base = CORES_OVERLAY_PERMITIDAS
+
     candidatas = []
-    for cor in CORES_OVERLAY_PERMITIDAS:
+    for cor in candidatas_base:
         if cor == cor_destaque_texto: continue
         dist  = distancia_cor(cor_dominante_foto, cor) / dist_max
         bonus = dist  # prefere cor mais diferente da foto
@@ -143,7 +157,7 @@ def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto, seed=0):
     candidatas.sort(key=lambda x: -x[0])
     top3 = candidatas[:3]
     _, melhor_cor = top3[seed % len(top3)]
-    print(f"[overlay_cor] top3={[c for _,c in top3]} → {melhor_cor}")
+    print(f"[overlay_cor] lum_foto={lum_foto:.2f} top3={[c for _,c in top3]} → {melhor_cor}")
     return melhor_cor
 
 _cards_pendentes = {}
@@ -1078,23 +1092,24 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # Analisa luminosidade e tom dominante da foto para escolher texto legível
     def _escolher_cores_texto(cor_overlay, lum_overlay):
         """
-        Escolhe par de cores (principal, secundaria) que contrastam
-        com o overlay e a foto. Regras:
-        - Overlay escuro (marinho/petroleo) → texto claro (branco, amarelo, laranja)
-        - Overlay medio (teal/verde_neutro) → texto muito claro (branco, amarelo)
-        - Sempre varia pelo seed para não repetir
+        Escolhe par de cores (principal, secundaria) de uma lista de PARES
+        pré-definidos que já combinam entre si — evita que cada linha do
+        título saia de uma cor diferente e sem relação com a outra (ex.:
+        laranja + verde na mesma peça). Regras:
+        - Fundo escuro (marinho/petróleo) → par claro (branco/amarelo)
+        - Fundo claro → par escuro (marinho/petróleo/teal)
+        - Sempre varia pelo seed dentro do conjunto coerente, sem misturar
+          conjuntos diferentes
         """
         if lum_overlay < 0.25:  # fundo muito escuro
-            opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO, TEAL]
+            pares = [(BRANCO, AMARELO), (AMARELO, BRANCO),
+                     (BRANCO, LARANJA), (TEAL, BRANCO)]
         elif lum_overlay < 0.45:  # fundo escuro-medio
-            opcoes = [BRANCO, AMARELO, LARANJA, VERDE_CITRICO]
+            pares = [(BRANCO, AMARELO), (AMARELO, BRANCO), (BRANCO, LARANJA)]
         else:  # fundo claro — só cores realmente escuras (nunca BRANCO/AMARELO aqui)
-            opcoes = [MARINHO, PETROLEO, TEAL]
+            pares = [(MARINHO, PETROLEO), (PETROLEO, MARINHO), (MARINHO, TEAL)]
 
-        idx1 = seed % len(opcoes)
-        idx2 = (seed // len(opcoes) + 1) % len(opcoes)
-        if idx2 == idx1: idx2 = (idx2 + 1) % len(opcoes)
-        return opcoes[idx1], opcoes[idx2]
+        return pares[seed % len(pares)]
 
     # Luminosidade REAL da zona de texto na imagem já processada (pós color-grade
     # e overlay) — mais confiável que estimar pela cor nominal do overlay.
@@ -1217,31 +1232,32 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # do overlay geral. A opacidade é calculada pela diferença real entre a
     # luminosidade da zona (lum_zona_real) e a luminosidade da cor de texto
     # escolhida: quanto mais parecidas (baixo contraste natural), mais forte
-    # o véu; quanto mais contraste já existe, mais fraco. Não decide a cor do
-    # overlay geral — só protege a legibilidade onde o texto realmente cai.
+    # o véu; quanto mais contraste já existe, mais fraco. Blur alto e teto de
+    # opacidade baixo para nunca parecer um retângulo colado — só um leve
+    # escurecimento/clareamento suave atrás do texto.
     try:
         _larguras_scrim = []
         for _lns, _fonte, _cor_txt, _sp, _est, _cor_rect, _tem_liga in blocos_render:
             for _ln in _lns:
                 _w = _medir_sp(_ln, _fonte, _sp) if _sp else _medir(_ln, _fonte)
                 _larguras_scrim.append(_w)
-        scrim_w = (max(_larguras_scrim) if _larguras_scrim else MAX_PX) + 56
+        scrim_w = (max(_larguras_scrim) if _larguras_scrim else MAX_PX) + 30
 
         lum_txt     = _LUM_COR.get(_cor_principal, 0.5)
         diff        = abs(lum_zona_real - lum_txt)
-        alpha_scrim = int(max(40, min(200, (1 - diff) * 220)))
+        alpha_scrim = int(max(25, min(130, (1 - diff) * 140)))
         cor_scrim   = BRANCO if lum_txt < 0.5 else MARINHO
 
-        sx1 = max(0, MARGIN - 28)
-        sy1 = max(0, y - 28)
+        sx1 = max(0, MARGIN - 14)
+        sy1 = max(0, y - 14)
         sx2 = min(W, MARGIN + scrim_w)
-        sy2 = min(H, y + h_total + 28)
+        sy2 = min(H, y + h_total + 14)
 
         scrim_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         scrim_draw  = ImageDraw.Draw(scrim_layer)
         scrim_draw.rounded_rectangle([sx1, sy1, sx2, sy2], radius=40,
                                       fill=(*cor_scrim, alpha_scrim))
-        scrim_layer = scrim_layer.filter(ImageFilter.GaussianBlur(30))
+        scrim_layer = scrim_layer.filter(ImageFilter.GaussianBlur(55))
         img_rgba    = Image.alpha_composite(img_rgba, scrim_layer)
         print(f"[scrim] cor={cor_scrim} alpha={alpha_scrim} diff={diff:.2f}")
     except Exception as e:
@@ -1257,7 +1273,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
+                    pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1325,7 +1341,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
+                            pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1361,8 +1377,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
                         # vizinhas). Padding vertical levemente assimétrico: desloca a
-                        # caixa ~1px para cima para alinhar melhor com o texto.
-                        pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
+                        # caixa ~0.5px para baixo para alinhar melhor com o texto.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
