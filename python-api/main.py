@@ -1213,6 +1213,40 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
 
+    # Scrim (véu) dedicado atrás do bloco de texto — independente da direção
+    # do overlay geral. A opacidade é calculada pela diferença real entre a
+    # luminosidade da zona (lum_zona_real) e a luminosidade da cor de texto
+    # escolhida: quanto mais parecidas (baixo contraste natural), mais forte
+    # o véu; quanto mais contraste já existe, mais fraco. Não decide a cor do
+    # overlay geral — só protege a legibilidade onde o texto realmente cai.
+    try:
+        _larguras_scrim = []
+        for _lns, _fonte, _cor_txt, _sp, _est, _cor_rect, _tem_liga in blocos_render:
+            for _ln in _lns:
+                _w = _medir_sp(_ln, _fonte, _sp) if _sp else _medir(_ln, _fonte)
+                _larguras_scrim.append(_w)
+        scrim_w = (max(_larguras_scrim) if _larguras_scrim else MAX_PX) + 56
+
+        lum_txt     = _LUM_COR.get(_cor_principal, 0.5)
+        diff        = abs(lum_zona_real - lum_txt)
+        alpha_scrim = int(max(40, min(200, (1 - diff) * 220)))
+        cor_scrim   = BRANCO if lum_txt < 0.5 else MARINHO
+
+        sx1 = max(0, MARGIN - 28)
+        sy1 = max(0, y - 28)
+        sx2 = min(W, MARGIN + scrim_w)
+        sy2 = min(H, y + h_total + 28)
+
+        scrim_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        scrim_draw  = ImageDraw.Draw(scrim_layer)
+        scrim_draw.rounded_rectangle([sx1, sy1, sx2, sy2], radius=40,
+                                      fill=(*cor_scrim, alpha_scrim))
+        scrim_layer = scrim_layer.filter(ImageFilter.GaussianBlur(30))
+        img_rgba    = Image.alpha_composite(img_rgba, scrim_layer)
+        print(f"[scrim] cor={cor_scrim} alpha={alpha_scrim} diff={diff:.2f}")
+    except Exception as e:
+        print(f"[scrim] erro: {e}")
+
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
         lns0, f0, *_ = grupo[0]
@@ -1223,7 +1257,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
+                    pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1291,7 +1325,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
+                            pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1327,8 +1361,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
                         # vizinhas). Padding vertical levemente assimétrico: desloca a
-                        # caixa ~3px para cima para alinhar melhor com o texto.
-                        pad_x, pad_y_top, pad_y_bottom = 14, 13, 7
+                        # caixa ~1px para cima para alinhar melhor com o texto.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 14, 6
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
