@@ -104,8 +104,10 @@ SAFE_MARGIN = SAFE_LEFT + 46   # 80px
 SAFE_MAX_PX = SAFE_W - 92      # 920px
 
 # ── Cores de destaque ─────────────────────────────────────────────────────────
-# Overlay: apenas cores frias/escuras — adequado para saúde mental
-CORES_OVERLAY_PERMITIDAS = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO]
+# Overlay: as 9 cores da paleta — a escolha final é filtrada por contraste
+# contra a cor dominante da foto (ver _escolher_cor_overlay), garantindo que
+# a cor usada combine com aquela imagem específica.
+CORES_OVERLAY_PERMITIDAS = PALETA_9
 
 # Destaque de texto: todas as 9 cores
 CORES_DESTAQUE = [
@@ -126,7 +128,9 @@ def distancia_cor(c1, c2):
     return math.sqrt(sum((a - b)**2 for a, b in zip(c1, c2)))
 
 def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto, seed=0):
-    """Overlay sempre em cores frias/escuras — nunca verde-limão ou amarelo."""
+    """Overlay escolhido entre as 9 cores da paleta, priorizando as que mais
+    contrastam com a cor dominante da foto — garante que a cor usada combine
+    com aquela imagem específica em vez de ser fixa."""
     dist_max = math.sqrt(255**2 * 3)
     candidatas = []
     for cor in CORES_OVERLAY_PERMITIDAS:
