@@ -127,37 +127,38 @@ def _escolher_cor_destaque(seed):
 def distancia_cor(c1, c2):
     return math.sqrt(sum((a - b)**2 for a, b in zip(c1, c2)))
 
-def _escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto, seed=0):
-    """Overlay escolhido entre as 9 cores da paleta, priorizando as que mais
-    contrastam com a cor dominante da foto — garante que a cor usada combine
-    com aquela imagem específica em vez de ser fixa.
+def _extrair_cores_dominantes(img):
+    """Amostra os pixels da foto (reduzida) e conta quantos caem mais perto
+    de cada uma das 9 cores da paleta — usado para escolher overlay que
+    realmente combina com o que existe na imagem, em vez da cor mais
+    diferente da média. Retorna dict {cor_paleta: contagem_de_pixels}."""
+    small    = img.convert("RGB").resize((40, 50), Image.Resampling.LANCZOS)
+    pixels   = list(small.getdata())
+    contagem = {c: 0 for c in PALETA_9}
+    for px in pixels:
+        mais_perto = min(PALETA_9, key=lambda c: distancia_cor(px, c))
+        contagem[mais_perto] += 1
+    return contagem
 
-    Fotos claras/neutras (salas, ambientes, roupas claras): cores vibrantes
-    (amarelo, laranja, branco, verdes saturados) ficam berrantes e destoam
-    do ambiente real — nesses casos a rotação fica restrita à paleta sóbria
-    (marinho, petróleo, teal, verde-neutro). Só fotos escuras o suficiente
-    liberam as cores vibrantes, onde elas funcionam como respiro de luz.
+def _escolher_cor_overlay(hist_cores, cor_destaque_texto, seed=0):
+    """Overlay escolhido apenas entre cores que REALMENTE aparecem na foto:
+    usa a contagem de pixels mais próximos de cada cor da paleta
+    (ver _extrair_cores_dominantes) e prioriza as mais representadas de
+    fato — garante que a cor combine com o conteúdo real da imagem, em vez
+    de escolher a cor mais diferente/contrastante da média. Como a
+    distribuição de cores muda com cada foto, isso também evita convergir
+    sempre para as mesmas 1-2 cores.
     """
-    dist_max = math.sqrt(255**2 * 3)
-    lum_foto = (sum(cor_dominante_foto) / 3 / 255) if cor_dominante_foto else 0.5
-
-    if lum_foto > 0.35:
-        candidatas_base = [MARINHO, PETROLEO, TEAL, VERDE_NEUTRO]
-    else:
-        candidatas_base = CORES_OVERLAY_PERMITIDAS
-
-    candidatas = []
-    for cor in candidatas_base:
-        if cor == cor_destaque_texto: continue
-        dist  = distancia_cor(cor_dominante_foto, cor) / dist_max
-        bonus = dist  # prefere cor mais diferente da foto
-        candidatas.append((bonus, cor))
+    if not hist_cores:
+        return MARINHO
+    candidatas = [(cnt, cor) for cor, cnt in hist_cores.items()
+                  if cor != cor_destaque_texto and cnt > 0]
     if not candidatas:
         return MARINHO
     candidatas.sort(key=lambda x: -x[0])
     top3 = candidatas[:3]
     _, melhor_cor = top3[seed % len(top3)]
-    print(f"[overlay_cor] lum_foto={lum_foto:.2f} top3={[c for _,c in top3]} → {melhor_cor}")
+    print(f"[overlay_cor] top3={[(c, cnt) for cnt, c in top3]} → {melhor_cor}")
     return melhor_cor
 
 _cards_pendentes = {}
@@ -744,9 +745,14 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     return res.convert("RGB")
 
 def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe). em_pe só tem efeito quando há pessoa recortada
-    (rembg); nos demais casos vem True por padrão (sem impacto no layout)."""
-    em_pe = True
+    """Retorna (img, em_pe, tem_pessoa). A detecção de pessoa é feita pelo
+    próprio resultado do recorte (rembg) — cobertura mínima de área da
+    máscara alpha — em vez de depender do nome/pasta do arquivo no
+    Cloudinary. Isso evita classificar como "editorial" fotos que têm
+    pessoa mas estão guardadas fora de uma pasta com "ronilson" no nome.
+    em_pe só tem efeito quando tem_pessoa é True."""
+    em_pe      = True
+    tem_pessoa = False
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -755,42 +761,46 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         img   = img.resize((nw, nh), Image.Resampling.LANCZOS)
         l = (nw - W) // 2; t = (nh - H) // 2
         img = img.crop((l, t, l + W, t + H))
-        if eh_foto_ronilson(pid):
-            print(f"[foto] Ronilson: {pid}")
-            fundo = gerar_fundo_rico(cor1, cor2, seed)
-            try:
-                rgba  = remover_fundo_rembg(img)
+
+        fundo = gerar_fundo_rico(cor1, cor2, seed)
+        try:
+            rgba  = remover_fundo_rembg(img)
+            alpha = np.array(rgba.split()[3])
+            cobertura = float((alpha > 30).sum()) / alpha.size
+            if cobertura >= 0.12:
+                tem_pessoa = True
                 em_pe = _detectar_pose_em_pe(rgba)
                 img   = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
-            except Exception as e:
-                print(f"[foto] rembg falhou ({e})")
-                img = Image.blend(fundo, img, alpha=0.60)
-                img = aplicar_split_toning(img)
-        else:
-            print(f"[foto] editorial: {pid}")
+                print(f"[foto] pessoa detectada (cobertura={cobertura:.2f}): {pid}")
+            else:
+                print(f"[foto] sem pessoa significativa (cobertura={cobertura:.2f}) -> editorial: {pid}")
+                img = tratar_foto_editorial(img, cor1, seed)
+        except Exception as e:
+            print(f"[foto] rembg falhou ({e}) -> editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
-        return img, em_pe
+
+        return img, em_pe, tem_pessoa
     except Exception as e:
-        print(f"[foto] ERRO: {e}"); return None, em_pe
+        print(f"[foto] ERRO: {e}"); return None, em_pe, False
 
 # ── Overlay ───────────────────────────────────────────────────────────────────
 def aplicar_overlay(img, lum_media, layout, seed=0,
-                    cor_dominante_foto=None, cor_destaque_texto=None,
+                    hist_cores=None, cor_destaque_texto=None,
                     tem_pessoa=False):
     """
     Direções: base(0), topo(1), esquerda(2), direita(3).
-    Para fotos Ronilson (rembg): pessoa está à direita → overlay à esquerda (direcao=2).
-    Para fotos editoriais: seed % 4, mas nunca lateral (só base ou topo).
+    Para fotos com pessoa (rembg): pessoa está à direita → overlay à esquerda (direcao=2).
+    Para fotos editoriais: só base ou topo (nunca lateral).
     """
     if lum_media > 160:   alpha_max = 218
     elif lum_media > 120: alpha_max = 192
     elif lum_media > 80:  alpha_max = 168
     else:                 alpha_max = 148
 
-    cor_ov = (_escolher_cor_overlay(cor_dominante_foto, cor_destaque_texto or LARANJA, seed)
-              if cor_dominante_foto else MARINHO)
+    cor_ov = (_escolher_cor_overlay(hist_cores, cor_destaque_texto or LARANJA, seed)
+              if hist_cores else MARINHO)
     print(f"[overlay] cor={cor_ov} lum={lum_media:.0f} alpha={alpha_max}")
 
     lum_ov = _LUM_COR.get(cor_ov, 0.5)
@@ -1067,6 +1077,38 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     sombra_forte = lum_overlay > 0.45
     print(f"[titulo] layout={layout} lum_overlay={lum_overlay:.2f} MAX_PX={MAX_PX}")
 
+    # Zona vertical do título — calculada CEDO (só depende de tem_pessoa/em_pe/
+    # layout) para servir de base tanto na escolha da cor do texto quanto no
+    # scrim, usando a luminosidade REAL da área onde o texto vai cair. Antes,
+    # essa amostra usava uma faixa fixa que não acompanhava a zona real
+    # (calculada só depois) — causava cor de texto e scrim desalinhados com
+    # o lugar de fato usado.
+    Y_MIN_GLOBAL = int(H * 0.44)
+    if not tem_pessoa:
+        Y_INI_raw = int(H * 0.44)
+        Y_FIM_raw = int(H * 0.82)
+    else:
+        _zonas_pessoa = [
+            (int(H * 0.46), int(H * 0.76)),
+            (int(H * 0.44), int(H * 0.74)),
+            (int(H * 0.48), int(H * 0.78)),
+            (int(H * 0.46), int(H * 0.76)),
+            (int(H * 0.47), int(H * 0.77)),
+        ]
+        Y_INI_raw, Y_FIM_raw = _zonas_pessoa[layout % len(_zonas_pessoa)]
+    if tem_pessoa and em_pe:
+        Y_INI_raw -= 35
+        Y_FIM_raw -= 35
+    Y_INI = max(Y_MIN_GLOBAL, max(SAFE_TOP, Y_INI_raw))
+    Y_FIM = min(SAFE_BOTTOM,  Y_FIM_raw)
+
+    try:
+        _zona_crop    = img_rgba.convert("RGB").crop(
+            (MARGIN, Y_INI, min(W, MARGIN + MAX_PX), max(Y_INI + 1, Y_FIM)))
+        lum_zona_real = float(np.array(_zona_crop).astype(np.float32).mean()) / 255.0
+    except Exception:
+        lum_zona_real = _luminosidade_zona_texto(img_rgba.convert("RGB")) / 255.0
+
     blocos = _parse_blocos(tema)
     if not blocos:
         return img_rgba.convert("RGB"), layout
@@ -1134,9 +1176,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
         return pares[seed % len(pares)]
 
-    # Luminosidade REAL da zona de texto na imagem já processada (pós color-grade
-    # e overlay) — mais confiável que estimar pela cor nominal do overlay.
-    lum_zona_real = _luminosidade_zona_texto(img_rgba.convert("RGB")) / 255.0
     _cor_principal, _cor_sec = _escolher_cores_texto(cor_overlay, lum_zona_real)
 
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
@@ -1220,32 +1259,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
-    # Zona de texto: sobe para 44% mínimo — títulos mais acima na imagem
-    Y_MIN_GLOBAL = int(H * 0.44)
-
-    if not tem_pessoa:
-        Y_INI_raw = int(H * 0.44)
-        Y_FIM_raw = int(H * 0.82)
-    else:
-        zonas = [
-            (int(H * 0.46), int(H * 0.76)),
-            (int(H * 0.44), int(H * 0.74)),
-            (int(H * 0.48), int(H * 0.78)),
-            (int(H * 0.46), int(H * 0.76)),
-            (int(H * 0.47), int(H * 0.77)),
-        ]
-        Y_INI_raw, Y_FIM_raw = zonas[layout % len(zonas)]
-
-    # Pessoa em pé (corpo inteiro) tem mais espaço acima do centro de massa —
-    # sobe o bloco de texto ~35px para melhorar a leitura. Sentado mantém
-    # a zona original (rosto/tronco ocupam a parte de cima do enquadramento).
-    if tem_pessoa and em_pe:
-        Y_INI_raw -= 35
-        Y_FIM_raw -= 35
-
-    Y_INI = max(Y_MIN_GLOBAL, max(SAFE_TOP, Y_INI_raw))
-    Y_FIM = min(SAFE_BOTTOM,  Y_FIM_raw)
-
     zona = Y_FIM - Y_INI
     y    = Y_INI + max(0, (zona - h_total) // 2)
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
@@ -1296,7 +1309,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
+                    pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1364,7 +1377,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
+                            pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1400,8 +1413,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
                         # vizinhas). Padding vertical levemente assimétrico: desloca a
-                        # caixa ~0.5px para baixo para alinhar melhor com o texto.
-                        pad_x, pad_y_top, pad_y_bottom = 14, 13.5, 6.5
+                        # caixa ~0.8px para baixo para alinhar melhor com o texto.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
@@ -1450,8 +1463,8 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
 
     cor1, cor2 = MARINHO, PETROLEO
     lum_media  = 100.0
-    cor_dom    = None
-    tem_pessoa = eh_foto_ronilson(pid)
+    hist_cores = None
+    tem_pessoa = False
     em_pe      = True
 
     if imagem_url:
@@ -1461,32 +1474,32 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
                               .resize((120, 150), Image.Resampling.LANCZOS)
             cor1, cor2 = cores_fundo(tmp)
             lum_media  = luminosidade_media(tmp)
-            cor_dom    = cor_dominante(tmp)
+            hist_cores = _extrair_cores_dominantes(tmp)
         except Exception as e: print(f"[cor] {e}")
 
     if imagem_url:
-        base, em_pe = preparar_foto(imagem_url, pid, cor1, cor2, seed)
+        base, em_pe, tem_pessoa = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
             base = gerar_fundo_rico(cor1, cor2, seed)
-            lum_media = luminosidade_media(base)
-            cor_dom   = cor_dominante(base)
+            lum_media  = luminosidade_media(base)
+            hist_cores = _extrair_cores_dominantes(base)
             tem_pessoa = False
     else:
         base = gerar_fundo_rico(cor1, cor2, seed)
-        lum_media = luminosidade_media(base)
-        cor_dom   = cor_dominante(base)
+        lum_media  = luminosidade_media(base)
+        hist_cores = _extrair_cores_dominantes(base)
         tem_pessoa = False
 
     layout = seed % 5
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
 
     base = aplicar_overlay(base, lum_media, layout, seed=seed,
-                           cor_dominante_foto=cor_dom,
+                           hist_cores=hist_cores,
                            cor_destaque_texto=cor_dest,
                            tem_pessoa=tem_pessoa)
 
-    cor_ov_usada = (_escolher_cor_overlay(cor_dom, cor_dest, seed)
-                   if cor_dom else MARINHO)
+    cor_ov_usada = (_escolher_cor_overlay(hist_cores, cor_dest, seed)
+                   if hist_cores else MARINHO)
 
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
