@@ -745,14 +745,13 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     return res.convert("RGB")
 
 def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe, tem_pessoa). A detecção de pessoa é feita pelo
-    próprio resultado do recorte (rembg) — cobertura mínima de área da
-    máscara alpha — em vez de depender do nome/pasta do arquivo no
-    Cloudinary. Isso evita classificar como "editorial" fotos que têm
-    pessoa mas estão guardadas fora de uma pasta com "ronilson" no nome.
-    em_pe só tem efeito quando tem_pessoa é True."""
+    """Retorna (img, em_pe, tem_pessoa). tem_pessoa é decidido pelo nome do
+    arquivo/pasta no Cloudinary (precisa conter "ronilson") — o rembg só é
+    chamado nesse caso, evitando o custo (e o risco de timeout na primeira
+    execução do worker) de rodar o recorte em toda foto, inclusive as que
+    não têm pessoa. em_pe só tem efeito quando tem_pessoa é True."""
     em_pe      = True
-    tem_pessoa = False
+    tem_pessoa = eh_foto_ronilson(pid)
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -762,23 +761,21 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         l = (nw - W) // 2; t = (nh - H) // 2
         img = img.crop((l, t, l + W, t + H))
 
-        fundo = gerar_fundo_rico(cor1, cor2, seed)
-        try:
-            rgba  = remover_fundo_rembg(img)
-            alpha = np.array(rgba.split()[3])
-            cobertura = float((alpha > 30).sum()) / alpha.size
-            if cobertura >= 0.12:
-                tem_pessoa = True
+        if tem_pessoa:
+            print(f"[foto] Ronilson: {pid}")
+            fundo = gerar_fundo_rico(cor1, cor2, seed)
+            try:
+                rgba  = remover_fundo_rembg(img)
                 em_pe = _detectar_pose_em_pe(rgba)
                 img   = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
-                print(f"[foto] pessoa detectada (cobertura={cobertura:.2f}): {pid}")
-            else:
-                print(f"[foto] sem pessoa significativa (cobertura={cobertura:.2f}) -> editorial: {pid}")
-                img = tratar_foto_editorial(img, cor1, seed)
-        except Exception as e:
-            print(f"[foto] rembg falhou ({e}) -> editorial: {pid}")
+            except Exception as e:
+                print(f"[foto] rembg falhou ({e})")
+                img = Image.blend(fundo, img, alpha=0.60)
+                img = aplicar_split_toning(img)
+        else:
+            print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
 
         return img, em_pe, tem_pessoa
