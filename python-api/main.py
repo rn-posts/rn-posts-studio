@@ -347,7 +347,7 @@ PROMPT_LEGENDA = (
     "   - Fim: Uma reflexão que convide o leitor a pensar, não um conselho genérico.\n"
     "5. **DETALHES**:\n"
     "   - Use linguagem coloquial, natural, como se estivesse conversando.\n"
-    "   - Você pode mencionar conceitos técnicos (neurodesenvolvimento, amígdala, etc.) quando fizerem sentido, mas de forma natural.\n"
+    "   - Fique APENAS no tema principal — NÃO adicione conceitos, termos ou histórias que não tenham conexão DIRETA com o tema.\n"
     "   - Use 1 a 3 emojis relevantes por legenda (não mais que isso).\n\n"
     "REGRAS ABSOLUTAS:\n"
     "- NÃO copie frases prontas de nenhum lugar — crie frases originais.\n"
@@ -357,7 +357,8 @@ PROMPT_LEGENDA = (
     "- NÃO fale como se você tivesse o problema — fale como o profissional que acompanha.\n"
     "- NÃO use linguagem rebuscada.\n"
     "- NÃO use saudações, hashtags ou marketing.\n"
-    "- NÃO adicione a assinatura (ela é adicionada automaticamente).\n\n"
+    "- NÃO adicione a assinatura (ela é adicionada automaticamente).\n"
+    "- NÃO forçe termos técnicos ou conceitos que não cabem no tema.\n\n"
     "TAMANHO: 80-150 palavras.\n"
     "RETORNE APENAS A LEGENDA, SEM NADA MAIS."
 )
