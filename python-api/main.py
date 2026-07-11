@@ -1137,6 +1137,43 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         _linha(draw, x, y, texto, fonte, (*cor, 255), sp)
     return draw
 
+def _aplicar_scrim_fotografico(img_rgba, x1, y1, x2, y2, escurecer, intensidade):
+    """
+    Scrim discreto por tratamento LOCAL da própria foto — não pinta uma forma
+    translúcida por cima do texto (isso sempre parece um adesivo colado).
+    Em vez disso: reduz contraste/saturação/nitidez da região atrás do texto,
+    aplica um leve escurecimento OU clareamento (conforme a cor do texto
+    precisa de mais contraste), e esmaece a borda em degradê radial bem
+    largo — como profundidade de campo/vinheta local, sem contorno perceptível.
+    intensidade: 0 (efeito quase nulo) a 1 (efeito no teto, ainda discreto).
+    """
+    pad = 90
+    bx1 = max(0, int(x1 - pad)); by1 = max(0, int(y1 - pad))
+    bx2 = min(W, int(x2 + pad)); by2 = min(H, int(y2 + pad))
+    if bx2 - bx1 < 4 or by2 - by1 < 4:
+        return img_rgba
+
+    regiao = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
+
+    # Reduz textura/nitidez, contraste e saturação — só aqui, não na foto toda
+    tratada = regiao.filter(ImageFilter.GaussianBlur(3 + 3 * intensidade))
+    tratada = ImageEnhance.Contrast(tratada).enhance(1 - 0.22 * intensidade)
+    tratada = ImageEnhance.Color(tratada).enhance(1 - 0.30 * intensidade)
+    fator   = (1 - 0.24 * intensidade) if escurecer else (1 + 0.24 * intensidade)
+    tratada = ImageEnhance.Brightness(tratada).enhance(fator)
+
+    # Máscara de transição: núcleo sólido no centro, esmaecendo em degradê
+    # radial largo até as bordas — evita qualquer contorno visível
+    mask  = Image.new("L", (bx2 - bx1, by2 - by1), 0)
+    mdraw = ImageDraw.Draw(mask)
+    inset = pad * 0.55
+    mdraw.ellipse([inset, inset, (bx2 - bx1) - inset, (by2 - by1) - inset], fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(pad * 0.85))
+
+    resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
+    img_rgba.paste(resultado, (bx1, by1))
+    return img_rgba
+
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True):
     img_rgba = img.convert("RGBA")
@@ -1182,8 +1219,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _zona_crop    = img_rgba.convert("RGB").crop(
             (MARGIN, Y_INI, min(W, MARGIN + MAX_PX), max(Y_INI + 1, Y_FIM)))
         lum_zona_real = float(np.array(_zona_crop).astype(np.float32).mean()) / 255.0
+        # Complexidade visual real da zona (desvio padrão de luminosidade) —
+        # usada depois para calibrar o scrim por "espaço negativo": zona já
+        # calma (baixa complexidade) precisa de pouquíssimo tratamento; zona
+        # visualmente bagunçada precisa de mais.
+        complexidade_zona = float(np.array(_zona_crop.convert("L")).astype(np.float32).std()) / 90.0
     except Exception:
         lum_zona_real = _luminosidade_zona_texto(img_rgba.convert("RGB")) / 255.0
+        complexidade_zona = 0.5
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -1340,38 +1383,37 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
 
-    # Scrim (véu) dedicado atrás do bloco de texto — independente da direção
-    # do overlay geral. A opacidade é calculada pela diferença real entre a
-    # luminosidade da zona (lum_zona_real) e a luminosidade da cor de texto
-    # escolhida: quanto mais parecidas (baixo contraste natural), mais forte
-    # o véu; quanto mais contraste já existe, mais fraco. Blur alto e teto de
-    # opacidade baixo para nunca parecer um retângulo colado — só um leve
-    # escurecimento/clareamento suave atrás do texto.
+    # Scrim discreto atrás do bloco de texto — trata a própria foto (blur +
+    # redução de contraste/saturação + leve escurecimento/clareamento) em vez
+    # de pintar uma forma translúcida por cima, evitando o efeito "adesivo
+    # colado". A intensidade considera o MAIOR entre duas necessidades reais:
+    # cores parecidas (baixo contraste natural) OU zona visualmente bagunçada
+    # (muita textura) — espaço negativo: se a área já é calma, o tratamento
+    # fica quase nulo e a sombra do texto reforça um pouco para compensar.
     try:
         _larguras_scrim = []
         for _lns, _fonte, _cor_txt, _sp, _est, _cor_rect, _tem_liga in blocos_render:
             for _ln in _lns:
                 _w = _medir_sp(_ln, _fonte, _sp) if _sp else _medir(_ln, _fonte)
                 _larguras_scrim.append(_w)
-        scrim_w = (max(_larguras_scrim) if _larguras_scrim else MAX_PX) + 30
+        scrim_w = (max(_larguras_scrim) if _larguras_scrim else MAX_PX) + 20
 
-        lum_txt     = _LUM_COR.get(_cor_principal, 0.5)
-        diff        = abs(lum_zona_real - lum_txt)
-        alpha_scrim = int(max(25, min(130, (1 - diff) * 140)))
-        cor_scrim   = BRANCO if lum_txt < 0.5 else MARINHO
+        lum_txt           = _LUM_COR.get(_cor_principal, 0.5)
+        diff              = abs(lum_zona_real - lum_txt)
+        necessidade_cor   = 1 - diff
+        necessidade_textu = min(1.0, complexidade_zona)
+        intensidade       = max(0.10, min(1.0, max(necessidade_cor, necessidade_textu * 0.85)))
+        escurecer         = lum_txt >= 0.5  # texto claro -> escurece o fundo; texto escuro -> clareia
 
-        sx1 = max(0, MARGIN - 14)
-        sy1 = max(0, y - 14)
-        sx2 = min(W, MARGIN + scrim_w)
-        sy2 = min(H, y + h_total + 14)
+        img_rgba = _aplicar_scrim_fotografico(
+            img_rgba, MARGIN, y, MARGIN + scrim_w, y + h_total,
+            escurecer=escurecer, intensidade=intensidade)
 
-        scrim_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        scrim_draw  = ImageDraw.Draw(scrim_layer)
-        scrim_draw.rounded_rectangle([sx1, sy1, sx2, sy2], radius=40,
-                                      fill=(*cor_scrim, alpha_scrim))
-        scrim_layer = scrim_layer.filter(ImageFilter.GaussianBlur(55))
-        img_rgba    = Image.alpha_composite(img_rgba, scrim_layer)
-        print(f"[scrim] cor={cor_scrim} alpha={alpha_scrim} diff={diff:.2f}")
+        if intensidade < 0.30:
+            sombra_forte = True
+
+        print(f"[scrim] escurecer={escurecer} intensidade={intensidade:.2f} "
+              f"diff={diff:.2f} complexidade={complexidade_zona:.2f} sombra_forte={sombra_forte}")
     except Exception as e:
         print(f"[scrim] erro: {e}")
 
