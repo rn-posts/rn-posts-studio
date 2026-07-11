@@ -665,7 +665,7 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
         # Lado esquerdo: cápsula (totalmente arredondado)
         # Lado direito: canto superior arredondado, canto inferior reto
         r_esq = max(0, min(lh // 2, _raio_seguro(lh // 2)))  # raio cápsula esquerda
-        r_dir = max(1, int(lh * 0.22))  # raio moderado para canto sup-direito
+        r_dir = max(1, int(lh * 0.42))  # canto sup-direito bem mais intenso
         r_dir = max(0, min(r_dir, _raio_seguro(r_dir)))
         if r_esq <= 0 and r_dir <= 0:
             ld.rectangle([0, 0, lw, lh], fill=fill)
@@ -1138,42 +1138,119 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         _linha(draw, x, y, texto, fonte, (*cor, 255), sp)
     return draw
 
-def _aplicar_scrim_fotografico(img_rgba, x1, y1, x2, y2, escurecer, intensidade):
-    """
-    Scrim discreto por tratamento LOCAL da própria foto — não pinta uma forma
-    translúcida por cima do texto (isso sempre parece um adesivo colado).
-    Em vez disso: reduz contraste/saturação/nitidez da região atrás do texto,
-    aplica um leve escurecimento OU clareamento (conforme a cor do texto
-    precisa de mais contraste), e esmaece a borda em degradê radial bem
-    largo — como profundidade de campo/vinheta local, sem contorno perceptível.
-    intensidade: 0 (efeito quase nulo) a 1 (efeito no teto, ainda discreto).
-    """
-    pad = 90
+def _regiao_com_margem(img_rgba, x1, y1, x2, y2, pad_frac=0.55):
+    """Recorta a região com margem proporcional à ALTURA do bloco de texto
+    — evita que blocos largos fiquem com margem relativamente pequena."""
+    h_bloco = max(20, y2 - y1)
+    pad = max(30, int(h_bloco * pad_frac))
     bx1 = max(0, int(x1 - pad)); by1 = max(0, int(y1 - pad))
     bx2 = min(W, int(x2 + pad)); by2 = min(H, int(y2 + pad))
-    if bx2 - bx1 < 4 or by2 - by1 < 4:
-        return img_rgba
+    return bx1, by1, bx2, by2
 
+def _mascara_radial(w, h):
+    """Máscara elíptica com esmaecimento proporcional às PRÓPRIAS dimensões
+    do bloco (nunca um valor fixo em pixels) — isso é o que evita blocos
+    largos ficarem com cara de "retângulo" (chapados no meio, só as pontas
+    suaves). O núcleo visível cobre uma fração menor da largura do que da
+    altura, e o blur escala com a menor dimensão do bloco.
+    """
+    mask = Image.new("L", (w, h), 0)
+    md = ImageDraw.Draw(mask)
+    inset_x = w * 0.14
+    inset_y = h * 0.30
+    md.ellipse([inset_x, inset_y, w - inset_x, h - inset_y], fill=255)
+    blur = max(20, int(min(w, h) * 0.35))
+    return mask.filter(ImageFilter.GaussianBlur(blur))
+
+def _efeito_scrim_suave(img_rgba, x1, y1, x2, y2, escurecer, intensidade):
+    """1. Scrim muito suave — véu de cor muito leve (baixa opacidade), sem
+    alterar textura, nitidez ou brilho de verdade. A opção mais neutra."""
+    bx1, by1, bx2, by2 = _regiao_com_margem(img_rgba, x1, y1, x2, y2)
+    if bx2 - bx1 < 4 or by2 - by1 < 4: return img_rgba
     regiao = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
-
-    # Reduz textura/nitidez, contraste e saturação — só aqui, não na foto toda
-    tratada = regiao.filter(ImageFilter.GaussianBlur(4 + 4 * intensidade))
-    tratada = ImageEnhance.Contrast(tratada).enhance(1 - 0.30 * intensidade)
-    tratada = ImageEnhance.Color(tratada).enhance(1 - 0.40 * intensidade)
-    fator   = (1 - 0.32 * intensidade) if escurecer else (1 + 0.32 * intensidade)
-    tratada = ImageEnhance.Brightness(tratada).enhance(fator)
-
-    # Máscara de transição: núcleo sólido no centro, esmaecendo em degradê
-    # radial largo até as bordas — evita qualquer contorno visível
-    mask  = Image.new("L", (bx2 - bx1, by2 - by1), 0)
-    mdraw = ImageDraw.Draw(mask)
-    inset = pad * 0.55
-    mdraw.ellipse([inset, inset, (bx2 - bx1) - inset, (by2 - by1) - inset], fill=255)
-    mask = mask.filter(ImageFilter.GaussianBlur(pad * 0.85))
-
+    cor    = (2, 20, 30) if escurecer else (250, 250, 248)
+    alpha  = (30 + 45 * intensidade) / 255
+    veu    = Image.new("RGB", regiao.size, cor)
+    tratada = Image.blend(regiao, veu, alpha)
+    mask   = _mascara_radial(regiao.width, regiao.height)
     resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
     img_rgba.paste(resultado, (bx1, by1))
     return img_rgba
+
+def _efeito_blur_local(img_rgba, x1, y1, x2, y2, intensidade):
+    """2. Blur local — desfoca a região atrás do texto, sem mudar cor ou luz."""
+    bx1, by1, bx2, by2 = _regiao_com_margem(img_rgba, x1, y1, x2, y2)
+    if bx2 - bx1 < 4 or by2 - by1 < 4: return img_rgba
+    regiao  = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
+    tratada = regiao.filter(ImageFilter.GaussianBlur(3 + 5 * intensidade))
+    mask    = _mascara_radial(regiao.width, regiao.height)
+    resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
+    img_rgba.paste(resultado, (bx1, by1))
+    return img_rgba
+
+def _efeito_escurecimento_seletivo(img_rgba, x1, y1, x2, y2, escurecer, intensidade):
+    """3/5. Escurecimento seletivo (máscara de luminosidade) — só ajusta o
+    brilho local; a direção (escurecer ou clarear) vem da cor do texto."""
+    bx1, by1, bx2, by2 = _regiao_com_margem(img_rgba, x1, y1, x2, y2)
+    if bx2 - bx1 < 4 or by2 - by1 < 4: return img_rgba
+    regiao = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
+    fator  = (1 - 0.38 * intensidade) if escurecer else (1 + 0.38 * intensidade)
+    tratada = ImageEnhance.Brightness(regiao).enhance(fator)
+    mask   = _mascara_radial(regiao.width, regiao.height)
+    resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
+    img_rgba.paste(resultado, (bx1, by1))
+    return img_rgba
+
+def _efeito_profundidade_campo(img_rgba, x1, y1, x2, y2, intensidade):
+    """7. Profundidade de campo artificial — blur mais forte e abrangente,
+    como se o fundo saísse de foco atrás do texto."""
+    bx1, by1, bx2, by2 = _regiao_com_margem(img_rgba, x1, y1, x2, y2, pad_frac=0.85)
+    if bx2 - bx1 < 4 or by2 - by1 < 4: return img_rgba
+    regiao  = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
+    tratada = regiao.filter(ImageFilter.GaussianBlur(8 + 6 * intensidade))
+    mask    = _mascara_radial(regiao.width, regiao.height)
+    resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
+    img_rgba.paste(resultado, (bx1, by1))
+    return img_rgba
+
+def _efeito_reducao_contraste(img_rgba, x1, y1, x2, y2, intensidade):
+    """8. Redução de contraste do fundo — diminui contraste, textura e
+    saturação, sem alterar o brilho geral."""
+    bx1, by1, bx2, by2 = _regiao_com_margem(img_rgba, x1, y1, x2, y2)
+    if bx2 - bx1 < 4 or by2 - by1 < 4: return img_rgba
+    regiao  = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
+    tratada = regiao.filter(ImageFilter.GaussianBlur(1.5))
+    tratada = ImageEnhance.Contrast(tratada).enhance(1 - 0.35 * intensidade)
+    tratada = ImageEnhance.Color(tratada).enhance(1 - 0.45 * intensidade)
+    mask    = _mascara_radial(regiao.width, regiao.height)
+    resultado = Image.composite(tratada.convert("RGBA"), regiao.convert("RGBA"), mask)
+    img_rgba.paste(resultado, (bx1, by1))
+    return img_rgba
+
+def _escolher_estrategia_legibilidade(necessidade_cor, complexidade):
+    """
+    Escolhe UMA estratégia por imagem (nunca soma vários efeitos), conforme
+    o que a zona realmente precisa:
+      - zona já calma e com bom contraste natural → espaço negativo (nada;
+        a sombra do texto, itens 4/9, reforça sozinha)
+      - zona muito bagunçada visualmente → profundidade de campo (blur forte)
+      - zona moderadamente bagunçada → blur local (mais leve)
+      - contraste de cor fraco, zona não tão bagunçada → escurecimento
+        seletivo / máscara de luminosidade
+      - zona vibrante mas nem tanto bagunçada → redução de contraste
+      - caso geral → scrim muito suave (opção mais neutra)
+    """
+    if necessidade_cor < 0.15 and complexidade < 0.35:
+        return "espaco_negativo"
+    if complexidade >= 0.70:
+        return "profundidade_campo"
+    if complexidade >= 0.45:
+        return "blur_local"
+    if necessidade_cor >= 0.55:
+        return "escurecimento_seletivo"
+    if complexidade >= 0.30:
+        return "reducao_contraste"
+    return "scrim_suave"
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True):
@@ -1384,13 +1461,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
 
-    # Scrim discreto atrás do bloco de texto — trata a própria foto (blur +
-    # redução de contraste/saturação + leve escurecimento/clareamento) em vez
-    # de pintar uma forma translúcida por cima, evitando o efeito "adesivo
-    # colado". A intensidade considera o MAIOR entre duas necessidades reais:
-    # cores parecidas (baixo contraste natural) OU zona visualmente bagunçada
-    # (muita textura) — espaço negativo: se a área já é calma, o tratamento
-    # fica quase nulo e a sombra do texto reforça um pouco para compensar.
+    # Legibilidade do título — escolhe UMA única estratégia (nunca soma
+    # vários efeitos ao mesmo tempo), conforme o que a zona realmente
+    # precisa: cor parecida (baixo contraste natural) e/ou zona visualmente
+    # bagunçada (muita textura). Se a zona já for calma o suficiente
+    # ("espaço negativo"), não mexe na foto — a sombra do texto reforça.
     try:
         _larguras_scrim = []
         for _lns, _fonte, _cor_txt, _sp, _est, _cor_rect, _tem_liga in blocos_render:
@@ -1403,20 +1478,30 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         diff              = abs(lum_zona_real - lum_txt)
         necessidade_cor   = 1 - diff
         necessidade_textu = min(1.0, complexidade_zona)
-        intensidade       = max(0.25, min(1.0, max(necessidade_cor, necessidade_textu * 0.85)))
+        intensidade       = max(0.35, min(1.0, max(necessidade_cor, necessidade_textu)))
         escurecer         = lum_txt >= 0.5  # texto claro -> escurece o fundo; texto escuro -> clareia
 
-        img_rgba = _aplicar_scrim_fotografico(
-            img_rgba, MARGIN, y, MARGIN + scrim_w, y + h_total,
-            escurecer=escurecer, intensidade=intensidade)
+        estrategia = _escolher_estrategia_legibilidade(necessidade_cor, necessidade_textu)
+        _x1, _y1, _x2, _y2 = MARGIN, y, MARGIN + scrim_w, y + h_total
 
-        if intensidade < 0.30:
-            sombra_forte = True
+        if estrategia == "espaco_negativo":
+            sombra_forte = True  # sem tratar a foto; a sombra do texto compensa
+        elif estrategia == "profundidade_campo":
+            img_rgba = _efeito_profundidade_campo(img_rgba, _x1, _y1, _x2, _y2, intensidade)
+        elif estrategia == "blur_local":
+            img_rgba = _efeito_blur_local(img_rgba, _x1, _y1, _x2, _y2, intensidade)
+        elif estrategia == "escurecimento_seletivo":
+            img_rgba = _efeito_escurecimento_seletivo(img_rgba, _x1, _y1, _x2, _y2, escurecer, intensidade)
+        elif estrategia == "reducao_contraste":
+            img_rgba = _efeito_reducao_contraste(img_rgba, _x1, _y1, _x2, _y2, intensidade)
+        else:  # scrim_suave
+            img_rgba = _efeito_scrim_suave(img_rgba, _x1, _y1, _x2, _y2, escurecer, intensidade)
 
-        print(f"[scrim] escurecer={escurecer} intensidade={intensidade:.2f} "
-              f"diff={diff:.2f} complexidade={complexidade_zona:.2f} sombra_forte={sombra_forte}")
+        print(f"[legibilidade] estrategia={estrategia} intensidade={intensidade:.2f} "
+              f"necessidade_cor={necessidade_cor:.2f} complexidade={complexidade_zona:.2f} "
+              f"sombra_forte={sombra_forte}")
     except Exception as e:
-        print(f"[scrim] erro: {e}")
+        print(f"[legibilidade] erro: {e}")
 
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
