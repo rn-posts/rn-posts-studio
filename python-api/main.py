@@ -476,7 +476,7 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "retangulo_arredondado", "paralelogramo"]
+_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "retangulo_arredondado", "paralelogramo", "capsula_reta"]
 _forma_fundo_idx = 0
 def _proxima_forma_fundo():
     """Contador sequencial (sem sorteio) — percorre a rotação fixa de formas,
@@ -486,7 +486,7 @@ def _proxima_forma_fundo():
     _forma_fundo_idx += 1
     return forma
 
-# ── Formas de preenchimento ("-palavra"): 5 variações na rotação — cada uma
+# ── Formas de preenchimento ("-palavra"): 6 variações na rotação — cada uma
 # calcula seu próprio raio/corte máximo para nunca ultrapassar o padding e
 # encostar no texto ─
 def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=10):
@@ -500,8 +500,10 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
       pilula                — cápsula: as duas pontas totalmente arredondadas
       bandeira              — diagonal: canto superior-esquerdo e inferior-direito
                               arredondados (raio longo), os outros dois retos
-      retangulo_arredondado — cantos moderadamente arredondados (não é cápsula)
+      retangulo_arredondado — cantos moderadamente arredondados com borda quadricolor
       paralelogramo         — retângulo inclinado (lados paralelos em diagonal)
+      capsula_reta          — lado esquerdo cápsula arredondada, lado direito com
+                              canto superior arredondado e inferior reto
 
     Implementadas mas fora da rotação (disponíveis chamando forma=... direto):
       cupula    — base reta, topo arredondado nos dois cantos superiores
@@ -590,12 +592,67 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
         if r <= 0:
             ld.rectangle([0, 0, lw, lh], fill=fill)
         else:
-            ld.rectangle([r, 0, lw - r, lh], fill=fill)
-            ld.rectangle([0, r, lw, lh - r], fill=fill)
-            ld.pieslice([0, 0, 2 * r, 2 * r], 180, 270, fill=fill)
-            ld.pieslice([lw - 2 * r, 0, lw, 2 * r], 270, 360, fill=fill)
-            ld.pieslice([0, lh - 2 * r, 2 * r, lh], 90, 180, fill=fill)
-            ld.pieslice([lw - 2 * r, lh - 2 * r, lw, lh], 0, 90, fill=fill)
+            # ── Borda quadricolor: cada lado recebe uma cor da paleta ──
+            bw = max(2 * SS, int(min(lh, lw) * 0.045))  # espessura da borda
+            fill_a = fill[3] if len(fill) == 4 else 255
+            border_colors = [
+                (*TEAL,          fill_a),  # topo     — Azul Claro #049DBF
+                (*VERDE_CITRICO, fill_a),  # direita  — Verde Cítrico #92CC1D
+                (*LARANJA,       fill_a),  # baixo    — Laranja Solar #F9AB0B
+                (*MARINHO,       fill_a),  # esquerda — Azul Marinho #024059
+            ]
+            cx, cy = lw // 2, lh // 2
+
+            # Camada de cores: 4 zonas triangulares a partir do centro
+            color_layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+            cd = ImageDraw.Draw(color_layer)
+            cd.polygon([(0, 0), (lw, 0), (cx, cy)], fill=border_colors[0])       # topo
+            cd.polygon([(lw, 0), (lw, lh), (cx, cy)], fill=border_colors[1])      # direita
+            cd.polygon([(lw, lh), (0, lh), (cx, cy)], fill=border_colors[2])      # baixo
+            cd.polygon([(0, lh), (0, 0), (cx, cy)], fill=border_colors[3])        # esquerda
+
+            # Máscara externa (retângulo arredondado)
+            outer_mask = Image.new("L", (lw, lh), 0)
+            om = ImageDraw.Draw(outer_mask)
+            om.rectangle([r, 0, lw - r, lh], fill=255)
+            om.rectangle([0, r, lw, lh - r], fill=255)
+            om.pieslice([0, 0, 2 * r, 2 * r], 180, 270, fill=255)
+            om.pieslice([lw - 2 * r, 0, lw, 2 * r], 270, 360, fill=255)
+            om.pieslice([0, lh - 2 * r, 2 * r, lh], 90, 180, fill=255)
+            om.pieslice([lw - 2 * r, lh - 2 * r, lw, lh], 0, 90, fill=255)
+
+            # Máscara interna (preenchimento — ligeiramente menor)
+            ri = max(0, r - bw)
+            inner_mask = Image.new("L", (lw, lh), 0)
+            im_d = ImageDraw.Draw(inner_mask)
+            if ri > 0:
+                im_d.rectangle([bw + ri, bw, lw - bw - ri, lh - bw], fill=255)
+                im_d.rectangle([bw, bw + ri, lw - bw, lh - bw - ri], fill=255)
+                im_d.pieslice([bw, bw, bw + 2 * ri, bw + 2 * ri], 180, 270, fill=255)
+                im_d.pieslice([lw - bw - 2 * ri, bw, lw - bw, bw + 2 * ri], 270, 360, fill=255)
+                im_d.pieslice([bw, lh - bw - 2 * ri, bw + 2 * ri, lh - bw], 90, 180, fill=255)
+                im_d.pieslice([lw - bw - 2 * ri, lh - bw - 2 * ri, lw - bw, lh - bw], 0, 90, fill=255)
+            else:
+                im_d.rectangle([bw, bw, lw - bw, lh - bw], fill=255)
+
+            # Aplicar máscara externa na camada de cores (recorta o contorno)
+            color_layer.putalpha(ImageChops.multiply(color_layer.split()[3], outer_mask))
+
+            # Camada de preenchimento interno
+            fill_layer = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+            fd = ImageDraw.Draw(fill_layer)
+            if ri > 0:
+                fd.rectangle([bw + ri, bw, lw - bw - ri, lh - bw], fill=fill)
+                fd.rectangle([bw, bw + ri, lw - bw, lh - bw - ri], fill=fill)
+                fd.pieslice([bw, bw, bw + 2 * ri, bw + 2 * ri], 180, 270, fill=fill)
+                fd.pieslice([lw - bw - 2 * ri, bw, lw - bw, bw + 2 * ri], 270, 360, fill=fill)
+                fd.pieslice([bw, lh - bw - 2 * ri, bw + 2 * ri, lh - bw], 90, 180, fill=fill)
+                fd.pieslice([lw - bw - 2 * ri, lh - bw - 2 * ri, lw - bw, lh - bw], 0, 90, fill=fill)
+            else:
+                fd.rectangle([bw, bw, lw - bw, lh - bw], fill=fill)
+
+            # Compor: borda colorida + preenchimento
+            layer = Image.alpha_composite(color_layer, fill_layer)
 
     elif forma == "paralelogramo":
         shift = max(0, min(int(lw * 0.25), _shift_seguro()))
@@ -603,6 +660,28 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
             ld.rectangle([0, 0, lw, lh], fill=fill)
         else:
             ld.polygon([(shift, 0), (lw, 0), (lw - shift, lh), (0, lh)], fill=fill)
+
+    elif forma == "capsula_reta":
+        # Lado esquerdo: cápsula (totalmente arredondado)
+        # Lado direito: canto superior arredondado, canto inferior reto
+        r_esq = max(0, min(lh // 2, _raio_seguro(lh // 2)))  # raio cápsula esquerda
+        r_dir = max(1, int(lh * 0.22))  # raio moderado para canto sup-direito
+        r_dir = max(0, min(r_dir, _raio_seguro(r_dir)))
+        if r_esq <= 0 and r_dir <= 0:
+            ld.rectangle([0, 0, lw, lh], fill=fill)
+        else:
+            r_esq = max(r_esq, 1)
+            r_dir = max(r_dir, 1)
+            # Corpo central
+            ld.rectangle([r_esq, 0, lw - r_dir, lh], fill=fill)
+            # Faixa vertical esquerda (entre as duas metades da elipse)
+            ld.rectangle([0, 0, r_esq, lh], fill=fill)  # será coberto pela elipse
+            # Elipse completa à esquerda (cápsula)
+            ld.ellipse([0, 0, 2 * r_esq, lh], fill=fill)
+            # Lado direito: canto superior arredondado
+            ld.rectangle([lw - r_dir, r_dir, lw, lh], fill=fill)  # coluna direita abaixo do arco
+            ld.pieslice([lw - 2 * r_dir, 0, lw, 2 * r_dir], 270, 360, fill=fill)  # arco sup-dir
+            # Canto inferior direito: reto (já coberto pelo rectangle central + coluna direita)
 
     else:  # "bandeira" (padrão) — diagonal SUP-ESQUERDO / INF-DIREITO
         ry = max(1, int(lh * 0.30))
