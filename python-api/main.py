@@ -337,19 +337,21 @@ ASSINATURA = (
 )
 PROMPT_LEGENDA = (
     "Escreva uma legenda para um post de Instagram sobre o tema: '{tema}'.\n\n"
+    "VARIAR O ESTILO A CADA VEZ! ESCOLHA UMA DAS OPÇÕES ABAIXO (ALEATORIAMENTE) PARA ABRIR E ENCERRAR:\n"
+    "Opção 1: Observação do dia a dia profissional → Afirmação reflexiva final\n"
+    "Opção 2: Questionamento sobre uma crença comum → Insight final\n"
+    "Opção 3: Contraponto a um equívoco comum → Frase de impacto final\n"
+    "Opção 4: Reflexão sobre uma tendência → Reflexão final\n"
+    "Opção 5: Insight sobre o tema → Pergunta (apenas às vezes)\n\n"
     "TOM DE VOZ E ESTRUTURA (NÃO COPIE FRASES — SIGA OS PADRÕES):\n"
-    "1. **ABERTURA**: Comece com uma reflexão, uma observação sobre o que você vê no trabalho, ou questionando uma crença comum — NÃO comece definindo o tema.\n"
-    "2. **VOZ**: Escreva como Ronilson Nogueira, psicólogo especialista em autismo e TDAH — com empatia, autoridade sem arrogância, como quem realmente acompanha histórias de pessoas.\n"
-    "3. **PÚBLICO**: Fale diretamente com adolescentes, jovens e adultos (+12) — NÃO fale sobre crianças ou pais.\n"
-    "4. **ESTRUTURA**:\n"
-    "   - Primeira parte: Observação ou questionamento sobre o tema.\n"
-    "   - Meio: Expanda a reflexão, talvez com um insight sobre o dia a dia profissional.\n"
-    "   - Fim: Uma reflexão que convide o leitor a pensar, não um conselho genérico.\n"
-    "5. **DETALHES**:\n"
+    "1. **VOZ**: Escreva como Ronilson Nogueira, psicólogo especialista em autismo e TDAH — com empatia, autoridade sem arrogância.\n"
+    "2. **PÚBLICO**: Fale diretamente com adolescentes, jovens e adultos (+12) — NÃO fale sobre crianças ou pais.\n"
+    "3. **DETALHES**:\n"
     "   - Use linguagem coloquial, natural, como se estivesse conversando.\n"
     "   - Fique APENAS no tema principal — NÃO adicione conceitos, termos ou histórias que não tenham conexão DIRETA com o tema.\n"
-    "   - Use 1 a 3 emojis relevantes por legenda (não mais que isso).\n\n"
-    "REGRAS ABSOLUTAS:\n"
+    "   - Use 1 a 3 emojis relevantes por legenda (não mais que isso).\n"
+    "   - DIVERSIFIQUE AS FRASES! NÃO repita 'Isso me', 'No meu', 'vejo' várias vezes na mesma legenda.\n\n"
+    "REGRAS ABSOLUTAS (NÃO VIOLAR NENHUMA):\n"
     "- NÃO copie frases prontas de nenhum lugar — crie frases originais.\n"
     "- NÃO comece com '[Tema] é...'\n"
     "- NÃO use nomes de autores.\n"
@@ -373,14 +375,7 @@ def _groq_legenda(tema):
         try:
             r = requests.post(GROQ_URL,
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": m,
-                    "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
-                    "max_tokens": 400,
-                    "temperature": 0.8,
-                    "top_p": 0.9,
-                    "seed": seed
-                },
+                json={"model": m, "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}], "max_tokens": 400, "temperature": 1.0, "top_p": 0.95, "seed": seed},
                 timeout=20)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
@@ -392,14 +387,7 @@ def _gemini_legenda(tema):
     import random
     seed = random.randint(0, 1000000)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    r = requests.post(url, json={
-        "contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}],
-        "generationConfig": {
-            "temperature": 0.8,
-            "topP": 0.9,
-            "seed": seed
-        }
-    }, timeout=25)
+    r = requests.post(url, json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}], "generationConfig": {"temperature": 1.0, "topP": 0.95, "seed": seed}}, timeout=25)
     if r.status_code == 429: raise Exception("Gemini 429")
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
