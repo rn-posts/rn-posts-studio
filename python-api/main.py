@@ -593,7 +593,7 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
             ld.rectangle([0, 0, lw, lh], fill=fill)
         else:
             # ── Borda quadricolor: cada lado recebe uma cor da paleta ──
-            bw = max(2 * SS, int(min(lh, lw) * 0.045))  # espessura da borda
+            bw = max(3 * SS, int(min(lh, lw) * 0.085))  # espessura da borda
             fill_a = fill[3] if len(fill) == 4 else 255
             border_colors = [
                 (*TEAL,          fill_a),  # topo     — Azul Claro #049DBF
@@ -672,11 +672,12 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
         else:
             r_esq = max(r_esq, 1)
             r_dir = max(r_dir, 1)
-            # Corpo central
+            # Corpo central (entre a cápsula esquerda e o canto direito)
             ld.rectangle([r_esq, 0, lw - r_dir, lh], fill=fill)
-            # Faixa vertical esquerda (entre as duas metades da elipse)
-            ld.rectangle([0, 0, r_esq, lh], fill=fill)  # será coberto pela elipse
-            # Elipse completa à esquerda (cápsula)
+            # Cápsula esquerda: elipse completa — cobre até x=2*r_esq, com
+            # sobreposição no corpo central garantindo emenda sem costura.
+            # (SEM retangulo quadrado por baixo — isso deixava os cantos
+            # superior/inferior esquerdos retos por baixo da curva)
             ld.ellipse([0, 0, 2 * r_esq, lh], fill=fill)
             # Lado direito: canto superior arredondado
             ld.rectangle([lw - r_dir, r_dir, lw, lh], fill=fill)  # coluna direita abaixo do arco
@@ -1156,10 +1157,10 @@ def _aplicar_scrim_fotografico(img_rgba, x1, y1, x2, y2, escurecer, intensidade)
     regiao = img_rgba.crop((bx1, by1, bx2, by2)).convert("RGB")
 
     # Reduz textura/nitidez, contraste e saturação — só aqui, não na foto toda
-    tratada = regiao.filter(ImageFilter.GaussianBlur(3 + 3 * intensidade))
-    tratada = ImageEnhance.Contrast(tratada).enhance(1 - 0.22 * intensidade)
-    tratada = ImageEnhance.Color(tratada).enhance(1 - 0.30 * intensidade)
-    fator   = (1 - 0.24 * intensidade) if escurecer else (1 + 0.24 * intensidade)
+    tratada = regiao.filter(ImageFilter.GaussianBlur(4 + 4 * intensidade))
+    tratada = ImageEnhance.Contrast(tratada).enhance(1 - 0.30 * intensidade)
+    tratada = ImageEnhance.Color(tratada).enhance(1 - 0.40 * intensidade)
+    fator   = (1 - 0.32 * intensidade) if escurecer else (1 + 0.32 * intensidade)
     tratada = ImageEnhance.Brightness(tratada).enhance(fator)
 
     # Máscara de transição: núcleo sólido no centro, esmaecendo em degradê
@@ -1402,7 +1403,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         diff              = abs(lum_zona_real - lum_txt)
         necessidade_cor   = 1 - diff
         necessidade_textu = min(1.0, complexidade_zona)
-        intensidade       = max(0.10, min(1.0, max(necessidade_cor, necessidade_textu * 0.85)))
+        intensidade       = max(0.25, min(1.0, max(necessidade_cor, necessidade_textu * 0.85)))
         escurecer         = lum_txt >= 0.5  # texto claro -> escurece o fundo; texto escuro -> clareia
 
         img_rgba = _aplicar_scrim_fotografico(
@@ -1427,7 +1428,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             for linha in lns:
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if est == "fundo":
-                    pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
+                    pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                     try:
                         w_texto = _medir(linha, fonte)
                         bb = fonte.getbbox(linha)
@@ -1495,7 +1496,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         w = _medir(ln, fonte)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         if est == "fundo":
-                            pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
+                            pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                             gap_before = 7 if idx_sl > 0 else 0
                             x_cursor += gap_before
                             try:
@@ -1530,9 +1531,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     draw = ImageDraw.Draw(img_rgba, "RGBA")
                     if est == "fundo":
                         # Espaço simétrico antes/depois da caixa (não cola nas palavras
-                        # vizinhas). Padding vertical levemente assimétrico: desloca a
-                        # caixa ~0.8px para baixo para alinhar melhor com o texto.
-                        pad_x, pad_y_top, pad_y_bottom = 14, 13.2, 6.8
+                        # vizinhas). Padding vertical centralizado — mesma folga em
+                        # cima e embaixo do texto, em todas as formas.
+                        pad_x, pad_y_top, pad_y_bottom = 14, 10, 10
                         try:
                             w_texto = _medir(linha, fonte)
                             bb = fonte.getbbox(linha)
