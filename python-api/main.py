@@ -336,46 +336,42 @@ ASSINATURA = (
     "CRP 04/57327"
 )
 PROMPT_LEGENDA = (
-    "Escreva uma legenda para um post de Instagram sobre: '{tema}'.\n\n"
-    "CONTEXTO (não repetir no texto): quem fala é Ronilson Nogueira, psicólogo "
-    "especialista em Autismo e TDAH da clínica AlvoreSer (Coronel Fabriciano/MG). "
-    "Isso é só para você calibrar o tom — a legenda NUNCA deve se apresentar, "
-    "citar o próprio nome, mencionar 'AlvoreSer' ou soar como texto institucional "
-    "de clínica. Uma assinatura com nome, cargo e CRP já é adicionada automaticamente "
-    "depois do texto — o corpo da legenda nunca deve se apresentar nem se assinar.\n\n"
-    "TOM DE VOZ (baseado no estilo real do autor):\n"
-    "- Primeira pessoa, reflexivo, humano — nunca didático ou de post de clínica.\n"
-    "- NUNCA abra repetindo a palavra-chave do tema como se fosse título (ex.: não "
-    "comece um texto sobre autismo com 'Autismo é...'). Entre pelo ângulo de uma ideia, "
-    "pergunta hipotética, contraposição a uma crença popular, observação clínica "
-    "despersonalizada, ou um dado/conceito técnico que vira metáfora — varie o ângulo "
-    "de abertura a cada legenda, escolhendo o que melhor serve o tema específico.\n"
-    "- Pode citar conceitos técnicos (neurodesenvolvimento, sistema nervoso, "
-    "regulação emocional etc.) com naturalidade, sempre a serviço da reflexão, "
-    "nunca como definição de dicionário.\n"
-    "- Pode citar autores de psicologia quando fizer sentido (ex.: Carl Rogers), "
-    "com a citação como ponto alto do raciocínio, não enfeite.\n"
-    "- Pode assumir posição/opinião quando o tema pedir (temas sensíveis merecem "
-    "um posicionamento claro, não neutralidade morna).\n"
-    "- Use metáforas próprias quando ajudarem a ideia a grudar.\n"
-    "- Varie o fechamento: às vezes uma pergunta genuína ao leitor, às vezes uma "
-    "frase reflexiva de fechamento sem pergunta nenhuma — não repita sempre a mesma "
-    "fórmula de encerramento.\n"
-    "- Nunca use linguagem de marketing de clínica ('agende sua consulta', 'clique "
-    "no link', 'saiba mais', etc.).\n\n"
-    "Sem saudações, sem hashtags, sem emojis. Máximo 150 palavras. "
-    "Retorne APENAS o texto da legenda, sem explicações, sem markdown, sem aspas."
+    "Escreva uma legenda para um post de Instagram sobre o tema: '{tema}'.\n\n"
+    "REGRAS ABSOLUTAS (NÃO VIOLAR NENHUMA):\n"
+    "1. NÃO REPITA A PALAVRA-CHAVE DO TEMA NO INÍCIO DO TEXTO (ex.: não comece com 'Autismo é...', 'Ansiedade é...').\n"
+    "2. NÃO USE NOMES DE AUTORES (Carl Rogers, Piaget, etc.) — NÃO MENCIONE NENHUM AUTOR.\n"
+    "3. NÃO SOE DIDÁTICO, NÃO DÊ DEFINIÇÕES DE DICIONÁRIO.\n"
+    "4. NÃO SE APRESENTE, NÃO CITE SEU NOME, NÃO CITE 'AlvoreSer'.\n"
+    "5. NÃO USE LINGUAGEM DE MARKETING ('agende sua consulta', 'saiba mais', etc.).\n"
+    "6. NÃO USE SAUDAÇÕES, NÃO USE EMOJIS, NÃO USE HASHTAGS.\n\n"
+    "TOM DE VOZ OBRIGATÓRIO:\n"
+    "- Primeira pessoa, reflexivo, conversacional, como se estivesse conversando com um amigo.\n"
+    "- Entre por um ângulo personalizado: uma observação, uma reflexão sobre algo que você viu ou experienciou, uma contraposição a algo comum, uma pergunta hipotética.\n"
+    "- Use linguagem coloquial, natural, humana.\n"
+    "- Pode usar conceitos técnicos, mas sempre integrados na reflexão, nunca como definição.\n"
+    "- Varie a abertura e o fechamento — NÃO repita a mesma estrutura sempre.\n\n"
+    "TAMANHO: Máximo 150 palavras.\n"
+    "RETORNE APENAS O TEXTO DA LEGENDA, SEM NADA MAIS."
 )
 GROQ_MODELOS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-4-scout"]
 
 def _groq_legenda(tema):
     if not GROQ_API_KEY: raise Exception("GROQ_API_KEY nao configurada")
     ultimo = None
+    import random
+    seed = random.randint(0, 1000000)
     for m in GROQ_MODELOS:
         try:
             r = requests.post(GROQ_URL,
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": m, "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}], "max_tokens": 400},
+                json={
+                    "model": m,
+                    "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}],
+                    "max_tokens": 400,
+                    "temperature": 0.8,
+                    "top_p": 0.9,
+                    "seed": seed
+                },
                 timeout=20)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
@@ -384,8 +380,17 @@ def _groq_legenda(tema):
 
 def _gemini_legenda(tema):
     if not GEMINI_API_KEY: raise Exception("GEMINI_API_KEY nao configurada")
+    import random
+    seed = random.randint(0, 1000000)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    r = requests.post(url, json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}]}, timeout=25)
+    r = requests.post(url, json={
+        "contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}],
+        "generationConfig": {
+            "temperature": 0.8,
+            "topP": 0.9,
+            "seed": seed
+        }
+    }, timeout=25)
     if r.status_code == 429: raise Exception("Gemini 429")
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
