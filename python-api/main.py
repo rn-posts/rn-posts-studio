@@ -478,7 +478,7 @@ def _quebrar(texto, fonte, max_px, sp=0):
     if atual: linhas.append(" ".join(atual))
     return linhas or [texto]
 
-_FORMAS_FUNDO = ["retangulo", "pilula", "bandeira", "retangulo_arredondado", "paralelogramo", "capsula_reta"]
+_FORMAS_FUNDO = ["pilula", "bandeira", "retangulo_arredondado", "paralelogramo", "capsula_reta"]
 _forma_fundo_idx = 0
 def _proxima_forma_fundo():
     """Contador sequencial (sem sorteio) — percorre a rotação fixa de formas,
@@ -1699,13 +1699,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     layout = seed % 5
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
 
-    base = aplicar_overlay(base, lum_media, layout, seed=seed,
-                           hist_cores=hist_cores,
-                           cor_destaque_texto=cor_dest,
-                           tem_pessoa=tem_pessoa)
-
-    cor_ov_usada = (_escolher_cor_overlay(hist_cores, cor_dest, seed)
-                   if hist_cores else MARINHO)
+    cor_ov_usada = None
 
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
