@@ -313,20 +313,23 @@ def f_display_est(t):
     try: return ImageFont.load_default(size=t)
     except Exception: return ImageFont.load_default()
 
-def _linha_est(draw, x, y, texto, fonte, cor):
+def _linha_est(draw, x, y, texto, fonte, cor, stroke_width=0, stroke_fill=None):
     """Renderiza com ligaturas e glifos alternativos via RAQM ou fallback."""
     if _RAQM_OK:
         try:
             draw.text((x, y), texto, font=fonte, fill=cor,
+                      stroke_width=stroke_width, stroke_fill=stroke_fill,
                       features=["+liga", "+aalt", "+calt", "+dlig"])
             return
         except Exception as e:
             print(f"[linha_est] RAQM features erro: {e}")
             try:
-                draw.text((x, y), texto, font=fonte, fill=cor)
+                draw.text((x, y), texto, font=fonte, fill=cor,
+                          stroke_width=stroke_width, stroke_fill=stroke_fill)
                 return
             except Exception: pass
-    draw.text((x, y), texto, font=fonte, fill=cor)
+    draw.text((x, y), texto, font=fonte, fill=cor,
+              stroke_width=stroke_width, stroke_fill=stroke_fill)
 
 # ── IA ────────────────────────────────────────────────────────────────────────
 ASSINATURA = (
@@ -487,6 +490,38 @@ def _proxima_forma_fundo():
     forma = _FORMAS_FUNDO[_forma_fundo_idx % len(_FORMAS_FUNDO)]
     _forma_fundo_idx += 1
     return forma
+
+# ── Estratégias de legibilidade (rotação persistida em disco) ────────────────
+# 8 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
+# translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
+# da lista, em sequência fixa (nunca sorteio). O índice é salvo em arquivo
+# (não só em memória, como o contador de formas acima) para sobreviver a
+# reinícios do processo/servidor — a rotação nunca reinicia do zero.
+_ESTRATEGIAS_LEGIBILIDADE = [
+    "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
+    "peso_fonte", "posicao_otima", "acento_grafico", "cor_por_linha",
+]
+_ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
+
+def _proxima_estrategia_legibilidade():
+    """Contador sequencial persistido em arquivo — percorre a rotação fixa
+    das 8 estratégias de legibilidade, uma por geração, nunca repetindo
+    nenhuma antes de todas as outras 7 já terem sido usadas. Diferente do
+    contador de formas (só em memória), este é lido/escrito em disco a cada
+    chamada, então sobrevive a reinícios do servidor."""
+    idx = 0
+    try:
+        with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
+            idx = int(json.load(f).get("estrategia_idx", 0))
+    except Exception:
+        idx = 0
+    estrategia = _ESTRATEGIAS_LEGIBILIDADE[idx % len(_ESTRATEGIAS_LEGIBILIDADE)]
+    try:
+        with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
+            json.dump({"estrategia_idx": idx + 1}, f)
+    except Exception as e:
+        print(f"[estrategia_leg] falha ao persistir: {e}")
+    return estrategia
 
 # ── Formas de preenchimento ("-palavra"): 6 variações na rotação — cada uma
 # calcula seu próprio raio/corte máximo para nunca ultrapassar o padding e
@@ -1021,9 +1056,26 @@ def _parse_blocos(tema):
     return blocos or [{"texto": linha, "estilo": "normal"}]
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
-def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False):
-    # Sombra leve única — não dupla, não pesada
-    if forte:
+def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intensidade=None):
+    """
+    Sombra do texto — 3 modos:
+      padrão (forte=True/False)  — sombra única, como antes
+      dupla=True                 — 3. duas camadas: sombra de CONTATO (curta,
+                                  mais escura, funde com a letra) + sombra
+                                  AMBIENTE (mais larga e suave, separa do
+                                  fundo à distância) — mais profundidade sem
+                                  parecer "photoshopado"
+      intensidade=0..1            — 4. blur/opacidade escalam CONTINUAMENTE
+                                  com um valor de risco medido na zona (em
+                                  vez do binário forte/não-forte)
+    """
+    if intensidade is not None:
+        blur   = 8 + 10 * intensidade
+        opac   = 0.22 + 0.28 * intensidade
+        params = [((4, 5), blur, opac)]
+    elif dupla:
+        params = [((3, 4), 6, 0.42), ((7, 9), 22, 0.22)]
+    elif forte:
         params = [((5, 6), 14, 0.38)]
     else:
         params = [((4, 5), 10, 0.28)]
@@ -1034,15 +1086,58 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False):
         layer = layer.filter(ImageFilter.GaussianBlur(blur))
         img_rgba.paste(layer, (0, 0), layer)
 
-def _linha(draw, x, y, texto, fonte, cor, sp=0):
+def _linha(draw, x, y, texto, fonte, cor, sp=0, stroke_width=0, stroke_fill=None):
     if sp == 0:
-        draw.text((x, y), texto, font=fonte, fill=cor); return
+        if stroke_width:
+            draw.text((x, y), texto, font=fonte, fill=cor,
+                      stroke_width=stroke_width, stroke_fill=stroke_fill)
+        else:
+            draw.text((x, y), texto, font=fonte, fill=cor)
+        return
     cursor = x
     for ch in texto:
-        draw.text((cursor, y), ch, font=fonte, fill=cor)
+        if stroke_width:
+            draw.text((cursor, y), ch, font=fonte, fill=cor,
+                      stroke_width=stroke_width, stroke_fill=stroke_fill)
+        else:
+            draw.text((cursor, y), ch, font=fonte, fill=cor)
         try:
             bb = fonte.getbbox(ch); cursor += (bb[2] - bb[0]) + sp
         except Exception: cursor += 30 + sp
+
+def _cor_contraste(cor):
+    """Retorna BRANCO ou MARINHO — o que mais contrasta com a cor dada —
+    usado por contorno/glow, que precisam se opor ao PREENCHIMENTO do texto,
+    não ao fundo da foto."""
+    lum = _LUM_COR.get(cor, 0.5)
+    return MARINHO if lum > 0.5 else BRANCO
+
+def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=10, alpha=190):
+    """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
+    do próprio texto (nunca um retângulo) e cola atrás do texto principal,
+    criando uma auréola orgânica que acompanha as curvas da tipografia."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp)
+    layer = layer.filter(ImageFilter.GaussianBlur(raio))
+    img_rgba.paste(layer, (0, 0), layer)
+
+def _cor_linha_por_fundo(img_rgba, x, y, w, h, seed=0):
+    """8. Reavalia a cor do texto POR LINHA, amostrando a luminosidade real
+    do fundo exatamente onde aquela linha cai — em vez de uma única cor para
+    o título inteiro. Útil quando o fundo muda de claro pra escuro dentro da
+    mesma zona (ex.: metade da foto clara, metade escura)."""
+    try:
+        x1 = max(0, int(x)); y1 = max(0, int(y))
+        x2 = min(W, int(x + max(10, w))); y2 = min(H, int(y + max(10, h)))
+        crop = img_rgba.convert("RGB").crop((x1, y1, x2, y2))
+        lum  = float(np.array(crop).astype(np.float32).mean()) / 255.0
+    except Exception:
+        lum = 0.4
+    if lum < 0.35:   pares = (BRANCO, AMARELO)
+    elif lum < 0.5:  pares = (BRANCO, LARANJA)
+    else:            pares = (MARINHO, PETROLEO)
+    return pares[seed % 2]
 
 # ── Variações tipográficas ───────────────────────────────────────────────────
 # 6 modos selecionados pelo seed — aplicados a TODOS os blocos
@@ -1130,14 +1225,30 @@ def _texto_para_modo(modo, texto):
     return texto
 
 def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
-                               tem_liga, sombra_forte):
-    """Renderiza uma linha AGILERA com sombra, respeitando o modo tipográfico."""
-    _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
-    draw = ImageDraw.Draw(img_rgba, "RGBA")
-    if tem_liga:
-        _linha_est(draw, x, y, texto, fonte, (*cor, 255))
+                               tem_liga, sombra_forte, estrategia_leg=None,
+                               intensidade_sombra=None, cor_glow=None):
+    """Renderiza uma linha AGILERA aplicando a estratégia de legibilidade da
+    vez (rotação de 8, ver _proxima_estrategia_legibilidade): contorno fino,
+    glow com a silhueta das letras, sombra em 2 camadas, sombra com
+    intensidade contínua, ou a sombra padrão (usada pelas demais estratégias,
+    que atuam em outros pontos de desenhar_titulo — peso de fonte, posição,
+    acento gráfico, cor por linha)."""
+    if estrategia_leg == "glow_glifo":
+        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_contraste(cor), sp)
+    elif estrategia_leg == "sombra_dupla":
+        _sombra(img_rgba, texto, fonte, x, y, sp, dupla=True)
+    elif estrategia_leg == "sombra_adaptativa" and intensidade_sombra is not None:
+        _sombra(img_rgba, texto, fonte, x, y, sp, intensidade=intensidade_sombra)
     else:
-        _linha(draw, x, y, texto, fonte, (*cor, 255), sp)
+        _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
+
+    draw = ImageDraw.Draw(img_rgba, "RGBA")
+    stroke_w = 2 if estrategia_leg == "contorno" else 0
+    stroke_c = (*_cor_contraste(cor), 255) if stroke_w else None
+    if tem_liga:
+        _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
+    else:
+        _linha(draw, x, y, texto, fonte, (*cor, 255), sp, stroke_w, stroke_c)
     return draw
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
@@ -1148,6 +1259,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # Para editoriais: texto na zona segura completa, mas posicionado na base
     MAX_PX   = (int(W * 0.44) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     layout   = seed % 5
+
+    # Estratégia de legibilidade da vez (rotação persistida de 8, ver
+    # _proxima_estrategia_legibilidade) — decidida uma vez por card e usada
+    # em vários pontos abaixo (posição, fonte, sombra/contorno/glow, cor,
+    # acento gráfico).
+    estrategia_leg = _proxima_estrategia_legibilidade()
+    print(f"[titulo] estrategia_legibilidade={estrategia_leg}")
 
     if cor_dest is None:
         cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
@@ -1163,9 +1281,22 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # (calculada só depois) — causava cor de texto e scrim desalinhados com
     # o lugar de fato usado.
     Y_MIN_GLOBAL = int(H * 0.44)
+
+    def _avaliar_zona(y_ini_raw, y_fim_raw):
+        y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
+        y_fim = min(SAFE_BOTTOM,  y_fim_raw)
+        try:
+            crop = img_rgba.convert("RGB").crop(
+                (MARGIN, y_ini, min(W, MARGIN + MAX_PX), max(y_ini + 1, y_fim)))
+            lum  = float(np.array(crop).astype(np.float32).mean()) / 255.0
+            comp = float(np.array(crop.convert("L")).astype(np.float32).std()) / 90.0
+        except Exception:
+            lum, comp = 0.3, 0.5
+        return y_ini, y_fim, lum, comp
+
     if not tem_pessoa:
-        Y_INI_raw = int(H * 0.44)
-        Y_FIM_raw = int(H * 0.82)
+        _zona_default     = (int(H * 0.44), int(H * 0.82))
+        _candidatas_zona  = [_zona_default, (int(H * 0.50), int(H * 0.86)), (int(H * 0.40), int(H * 0.78))]
     else:
         _zonas_pessoa = [
             (int(H * 0.46), int(H * 0.76)),
@@ -1174,25 +1305,28 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.46), int(H * 0.76)),
             (int(H * 0.47), int(H * 0.77)),
         ]
-        Y_INI_raw, Y_FIM_raw = _zonas_pessoa[layout % len(_zonas_pessoa)]
-    if tem_pessoa and em_pe:
-        Y_INI_raw -= 35
-        Y_FIM_raw -= 35
-    Y_INI = max(Y_MIN_GLOBAL, max(SAFE_TOP, Y_INI_raw))
-    Y_FIM = min(SAFE_BOTTOM,  Y_FIM_raw)
+        _zona_default    = _zonas_pessoa[layout % len(_zonas_pessoa)]
+        _candidatas_zona = _zonas_pessoa
 
-    try:
-        _zona_crop    = img_rgba.convert("RGB").crop(
-            (MARGIN, Y_INI, min(W, MARGIN + MAX_PX), max(Y_INI + 1, Y_FIM)))
-        lum_zona_real = float(np.array(_zona_crop).astype(np.float32).mean()) / 255.0
-        # Complexidade visual real da zona (desvio padrão de luminosidade) —
-        # usada depois para calibrar o scrim por "espaço negativo": zona já
-        # calma (baixa complexidade) precisa de pouquíssimo tratamento; zona
-        # visualmente bagunçada precisa de mais.
-        complexidade_zona = float(np.array(_zona_crop.convert("L")).astype(np.float32).std()) / 90.0
-    except Exception:
-        lum_zona_real = _luminosidade_zona_texto(img_rgba.convert("RGB")) / 255.0
-        complexidade_zona = 0.5
+    if estrategia_leg == "posicao_otima":
+        # 6. Em vez de usar a zona padrão do layout, testa as zonas candidatas
+        # e escolhe a de MENOR complexidade visual — evita a zona ruim em vez
+        # de tentar compensar depois.
+        melhor = None
+        for yi_raw, yf_raw in _candidatas_zona:
+            yi, yf = yi_raw, yf_raw
+            if tem_pessoa and em_pe:
+                yi -= 35; yf -= 35
+            cand = _avaliar_zona(yi, yf)
+            if melhor is None or cand[3] < melhor[3]:
+                melhor = cand
+        Y_INI, Y_FIM, lum_zona_real, complexidade_zona = melhor
+        print(f"[titulo] posicao_otima escolhida: complexidade={complexidade_zona:.2f}")
+    else:
+        yi_raw, yf_raw = _zona_default
+        if tem_pessoa and em_pe:
+            yi_raw -= 35; yf_raw -= 35
+        Y_INI, Y_FIM, lum_zona_real, complexidade_zona = _avaliar_zona(yi_raw, yf_raw)
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -1237,6 +1371,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # MALGUN: 3 variações por seed — regular, bold, light
     _malgun_vars = [f_bold(tam_ml), f_corpo(tam_ml), f_light(tam_ml)]
     fb = _malgun_vars[(seed // 6) % 3]
+
+    if estrategia_leg == "peso_fonte":
+        # 5. Peso da fonte reagindo ao fundo — MALGUN sempre na versão mais
+        # encorpada e tracking do AGILERA mais fechado (mais denso). Como o
+        # AGILERA não tem pesos OpenType, o "peso" vem só de tracking (sem
+        # mudar o tamanho da fonte já construída) — letras mais coladas
+        # aparentam mais densidade e absorvem mais contraste sozinhas.
+        fb = f_bold(tam_ml)
+        ag_sp = min(ag_sp, -4)
+        print(f"[titulo] peso_fonte: malgun=bold ag_sp={ag_sp}")
 
     # Paleta de blocos: cores escolhidas para CONTRASTAR com a foto
     # Analisa luminosidade e tom dominante da foto para escolher texto legível
@@ -1349,20 +1493,29 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
 
-    # Legibilidade do título — escolhe UMA única estratégia (nunca soma
-    # vários efeitos ao mesmo tempo), conforme o que a zona realmente
-    # precisa: cor parecida (baixo contraste natural) e/ou zona visualmente
-    # bagunçada (muita textura). Se a zona já for calma o suficiente
-    # ("espaço negativo"), não mexe na foto — a sombra do texto reforça.
-    # Legibilidade do título: nenhum tratamento translúcido é aplicado atrás
-    # do texto (sem scrim, sem blur, sem escurecimento seletivo) — a
-    # legibilidade vem apenas da sombra do texto (mais forte quando o
-    # contraste natural entre a cor do texto e a zona de fundo é baixo).
+    # Legibilidade do título — a ESTRATÉGIA ATIVA nesta geração decide como o
+    # texto se destaca do fundo (contorno, glow, sombra dupla/adaptativa, ou
+    # a sombra padrão usada pelas estratégias que atuam em outro ponto:
+    # peso de fonte, posição, acento gráfico, cor por linha). Nenhuma delas
+    # aplica véu/blur/retângulo sobre a foto — todas atuam no próprio texto.
+    largura_titulo = MAX_PX
     try:
-        lum_txt      = _LUM_COR.get(_cor_principal, 0.5)
-        sombra_forte = sombra_forte or abs(lum_zona_real - lum_txt) < 0.35
-        print(f"[legibilidade] sem_tratamento_fundo sombra_forte={sombra_forte}")
+        _larguras_titulo = []
+        for _lns, _fonte, _cor_txt, _sp, _est, _cor_rect, _tem_liga in blocos_render:
+            for _ln in _lns:
+                _larguras_titulo.append(_medir_sp(_ln, _fonte, _sp) if _sp else _medir(_ln, _fonte))
+        largura_titulo = max(_larguras_titulo) if _larguras_titulo else MAX_PX
+
+        lum_txt            = _LUM_COR.get(_cor_principal, 0.5)
+        diff               = abs(lum_zona_real - lum_txt)
+        necessidade_cor    = 1 - diff
+        necessidade_textu  = min(1.0, complexidade_zona)
+        intensidade_sombra = max(0.15, min(1.0, max(necessidade_cor, necessidade_textu)))
+        sombra_forte       = sombra_forte or necessidade_cor > 0.55 or necessidade_textu > 0.5
+        print(f"[legibilidade] estrategia={estrategia_leg} intensidade_sombra={intensidade_sombra:.2f} "
+              f"necessidade_cor={necessidade_cor:.2f} complexidade={complexidade_zona:.2f}")
     except Exception as e:
+        intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
 
     for gi, grupo in enumerate(grupos):
@@ -1392,8 +1545,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     except Exception:
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
+                    _cor_render = cor_txt
+                    if estrategia_leg == "cor_por_linha":
+                        _w_l = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), seed)
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
-                                              fonte, cor_txt, sp, tem_liga, sombra_forte)
+                                              fonte, _cor_render, sp, tem_liga, sombra_forte,
+                                              estrategia_leg, intensidade_sombra)
                 y += esp
         else:
             total_w = 0
@@ -1462,8 +1620,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _linha(draw, rx1 + pad_x - bb0, y, ln, fonte, (*cor_txt, 255), 0)
                             x_cursor = rx2 + 7
                         else:
+                            _cor_render = cor_txt
+                            if estrategia_leg == "cor_por_linha":
+                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), seed)
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
-                                                      fonte, cor_txt, sp, tem_liga, sombra_forte)
+                                                      fonte, _cor_render, sp, tem_liga, sombra_forte,
+                                                      estrategia_leg, intensidade_sombra)
                             x_cursor += (_medir_sp(ln, fonte, sp) if sp else w)
                     y += int(_altura_linha(sublinha[0][1]) * 1.10)
             else:
@@ -1502,10 +1664,28 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             print(f"[render] erro bloco fundo: {e}")
                             x_cursor += w + 20
                     else:
+                        _cor_render = cor_txt
+                        if estrategia_leg == "cor_por_linha":
+                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), seed)
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
-                                                  fonte, cor_txt, sp, tem_liga, sombra_forte)
+                                                  fonte, _cor_render, sp, tem_liga, sombra_forte,
+                                                  estrategia_leg, intensidade_sombra)
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 y += esp
+
+    if estrategia_leg == "acento_grafico":
+        # 7. Acento gráfico — um traço fino ABAIXO do bloco de título (nunca uma
+        # caixa/retângulo cobrindo a foto), ancorando visualmente o texto sem
+        # esconder nada por trás dele.
+        try:
+            draw = ImageDraw.Draw(img_rgba, "RGBA")
+            acento_y = min(SAFE_BOTTOM - 6, y + 8)
+            acento_cor = _cor_principal if lum_zona_real < 0.5 else _cor_sec
+            largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
+            draw.line([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y)],
+                      fill=(*acento_cor, 255), width=5)
+        except Exception as e:
+            print(f"[acento_grafico] erro: {e}")
 
     return img_rgba.convert("RGB"), layout
 
