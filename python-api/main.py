@@ -1074,7 +1074,7 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
         opac   = 0.22 + 0.28 * intensidade
         params = [((4, 5), blur, opac)]
     elif dupla:
-        params = [((3, 4), 6, 0.42), ((7, 9), 22, 0.22)]
+        params = [((3, 4), 6, 0.42), ((11, 14), 30, 0.30)]
     elif forte:
         params = [((5, 6), 14, 0.38)]
     else:
@@ -1112,21 +1112,26 @@ def _cor_contraste(cor):
     lum = _LUM_COR.get(cor, 0.5)
     return MARINHO if lum > 0.5 else BRANCO
 
-def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=10, alpha=190):
+def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=14, alpha=215):
     """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
     do próprio texto (nunca um retângulo) e cola atrás do texto principal,
-    criando uma auréola orgânica que acompanha as curvas da tipografia."""
+    criando uma auréola orgânica que acompanha as curvas da tipografia.
+    Raio/alpha aumentados (v2) para o efeito ficar perceptivel em tamanho de
+    post real, não só em crop ampliado."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp)
     layer = layer.filter(ImageFilter.GaussianBlur(raio))
     img_rgba.paste(layer, (0, 0), layer)
 
-def _cor_linha_por_fundo(img_rgba, x, y, w, h, seed=0):
+def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0):
     """8. Reavalia a cor do texto POR LINHA, amostrando a luminosidade real
-    do fundo exatamente onde aquela linha cai — em vez de uma única cor para
-    o título inteiro. Útil quando o fundo muda de claro pra escuro dentro da
-    mesma zona (ex.: metade da foto clara, metade escura)."""
+    do fundo exatamente onde aquela linha cai. CORRIGIDO (v2): antes o par
+    de cores era escolhido por `seed % 2`, que é CONSTANTE para a imagem
+    inteira — na prática todas as linhas saiam com a mesma cor (fosco/
+    desbotado) sempre que caissem na mesma faixa de luminosidade. Agora
+    alterna pelo ÍNDICE DA LINHA (cada linha chamada nesta geração), o que
+    garante variação real de cor entre as linhas do título."""
     try:
         x1 = max(0, int(x)); y1 = max(0, int(y))
         x2 = min(W, int(x + max(10, w))); y2 = min(H, int(y + max(10, h)))
@@ -1136,8 +1141,8 @@ def _cor_linha_por_fundo(img_rgba, x, y, w, h, seed=0):
         lum = 0.4
     if lum < 0.35:   pares = (BRANCO, AMARELO)
     elif lum < 0.5:  pares = (BRANCO, LARANJA)
-    else:            pares = (MARINHO, PETROLEO)
-    return pares[seed % 2]
+    else:            pares = (MARINHO, TEAL)
+    return pares[idx_linha % 2]
 
 # ── Variações tipográficas ───────────────────────────────────────────────────
 # 6 modos selecionados pelo seed — aplicados a TODOS os blocos
@@ -1243,7 +1248,7 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
 
     draw = ImageDraw.Draw(img_rgba, "RGBA")
-    stroke_w = 2 if estrategia_leg == "contorno" else 0
+    stroke_w = 3 if estrategia_leg == "contorno" else 0
     stroke_c = (*_cor_contraste(cor), 255) if stroke_w else None
     if tem_liga:
         _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
@@ -1306,7 +1311,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.47), int(H * 0.77)),
         ]
         _zona_default    = _zonas_pessoa[layout % len(_zonas_pessoa)]
-        _candidatas_zona = _zonas_pessoa
+        # Candidatas para a estratégia posicao_otima: leque mais amplo que as
+        # zonas do layout padrão (que ficam a poucos % de distância entre si)
+        # — assim, quando essa estratégia entra, o reposicionamento fica de
+        # fato perceptível, não só alguns pixels de diferença.
+        _candidatas_zona = [
+            _zona_default,
+            (int(H * 0.40), int(H * 0.70)),
+            (int(H * 0.52), int(H * 0.82)),
+            (int(H * 0.44), int(H * 0.74)),
+            (int(H * 0.48), int(H * 0.86)),
+        ]
 
     if estrategia_leg == "posicao_otima":
         # 6. Em vez de usar a zona padrão do layout, testa as zonas candidatas
@@ -1518,6 +1533,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
 
+    _idx_cor_linha = 0  # contador de linha, usado pela estrategia cor_por_linha
+
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
         lns0, f0, *_ = grupo[0]
@@ -1548,7 +1565,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _cor_render = cor_txt
                     if estrategia_leg == "cor_por_linha":
                         _w_l = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
-                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), seed)
+                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), _idx_cor_linha)
+                        _idx_cor_linha += 1
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
                                               estrategia_leg, intensidade_sombra)
@@ -1622,7 +1640,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         else:
                             _cor_render = cor_txt
                             if estrategia_leg == "cor_por_linha":
-                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), seed)
+                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha)
+                                _idx_cor_linha += 1
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                       estrategia_leg, intensidade_sombra)
@@ -1666,7 +1685,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     else:
                         _cor_render = cor_txt
                         if estrategia_leg == "cor_por_linha":
-                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), seed)
+                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha)
+                            _idx_cor_linha += 1
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                   estrategia_leg, intensidade_sombra)
