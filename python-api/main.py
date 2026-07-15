@@ -1411,12 +1411,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
           conjuntos diferentes
         """
         if lum_overlay < 0.25:  # fundo muito escuro
-            pares = [(BRANCO, AMARELO), (AMARELO, BRANCO),
+            pares = [(BRANCO, AMARELO), (AMARELO, LARANJA),
                      (BRANCO, LARANJA), (TEAL, BRANCO)]
         elif lum_overlay < 0.45:  # fundo escuro-medio
-            pares = [(BRANCO, AMARELO), (AMARELO, BRANCO), (BRANCO, LARANJA)]
+            pares = [(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, TEAL)]
         else:  # fundo claro — só cores realmente escuras (nunca BRANCO/AMARELO aqui)
-            pares = [(MARINHO, PETROLEO), (PETROLEO, MARINHO), (MARINHO, TEAL)]
+            pares = [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL)]
 
         return pares[seed % len(pares)]
 
@@ -1699,7 +1699,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # esconder nada por trás dele.
         try:
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            acento_y = min(SAFE_BOTTOM - 6, y + 8)
+            # Margem generosa abaixo da última linha — y aqui já avançou além da
+            # última linha renderizada, mas blocos "fundo" (pilulas) têm um
+            # padding vertical extra (pad_y_bottom=10) que não entra no cálculo
+            # de altura da linha — sem essa folga extra o traço cortava a
+            # pílula "desordem" e as descendentes do texto acima dele.
+            acento_y = min(SAFE_BOTTOM - 6, y + 26)
             acento_cor = _cor_principal if lum_zona_real < 0.5 else _cor_sec
             largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
             draw.line([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y)],
