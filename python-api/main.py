@@ -1070,11 +1070,11 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
                                   vez do binário forte/não-forte)
     """
     if intensidade is not None:
-        blur   = 8 + 10 * intensidade
-        opac   = 0.22 + 0.28 * intensidade
+        blur   = 10 + 16 * intensidade
+        opac   = 0.28 + 0.36 * intensidade
         params = [((4, 5), blur, opac)]
     elif dupla:
-        params = [((3, 4), 6, 0.42), ((11, 14), 30, 0.30)]
+        params = [((3, 4), 7, 0.48), ((15, 19), 38, 0.42)]
     elif forte:
         params = [((5, 6), 14, 0.38)]
     else:
@@ -1112,12 +1112,11 @@ def _cor_contraste(cor):
     lum = _LUM_COR.get(cor, 0.5)
     return MARINHO if lum > 0.5 else BRANCO
 
-def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=14, alpha=215):
+def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=20, alpha=235):
     """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
     do próprio texto (nunca um retângulo) e cola atrás do texto principal,
     criando uma auréola orgânica que acompanha as curvas da tipografia.
-    Raio/alpha aumentados (v2) para o efeito ficar perceptivel em tamanho de
-    post real, não só em crop ampliado."""
+    Raio/alpha aumentados (v3) para o halo ficar bem marcado, não sutil."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp)
@@ -1248,8 +1247,15 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
 
     draw = ImageDraw.Draw(img_rgba, "RGBA")
-    stroke_w = 3 if estrategia_leg == "contorno" else 0
-    stroke_c = (*_cor_contraste(cor), 255) if stroke_w else None
+    if estrategia_leg == "contorno":
+        stroke_w, stroke_c = 3, (*_cor_contraste(cor), 255)
+    elif estrategia_leg == "peso_fonte":
+        # 5. Faux-bold: contorno da MESMA cor do preenchimento engrossa o
+        # traço de verdade (não é só tracking) — a AGILERA não tem peso
+        # OpenType, então essa é a forma de simular peso marcado nela.
+        stroke_w, stroke_c = 2, (*cor, 255)
+    else:
+        stroke_w, stroke_c = 0, None
     if tem_liga:
         _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
     else:
@@ -1321,22 +1327,26 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.52), int(H * 0.82)),
             (int(H * 0.44), int(H * 0.74)),
             (int(H * 0.48), int(H * 0.86)),
+            (int(H * 0.58), int(H * 0.90)),
         ]
 
     if estrategia_leg == "posicao_otima":
         # 6. Em vez de usar a zona padrão do layout, testa as zonas candidatas
-        # e escolhe a de MENOR complexidade visual — evita a zona ruim em vez
-        # de tentar compensar depois.
-        melhor = None
+        # e escolhe a que combina MENOR complexidade visual com uma zona mais
+        # ESCURA (mais "ancorada", como se tivesse mais sombra natural ali) —
+        # evita a zona ruim em vez de tentar compensar depois.
+        melhor = None; melhor_score = None
         for yi_raw, yf_raw in _candidatas_zona:
             yi, yf = yi_raw, yf_raw
             if tem_pessoa and em_pe:
                 yi -= 35; yf -= 35
             cand = _avaliar_zona(yi, yf)
-            if melhor is None or cand[3] < melhor[3]:
-                melhor = cand
+            _, _, _lum, _comp = cand
+            score = _comp * 0.65 + _lum * 0.35
+            if melhor is None or score < melhor_score:
+                melhor, melhor_score = cand, score
         Y_INI, Y_FIM, lum_zona_real, complexidade_zona = melhor
-        print(f"[titulo] posicao_otima escolhida: complexidade={complexidade_zona:.2f}")
+        print(f"[titulo] posicao_otima escolhida: complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
     else:
         yi_raw, yf_raw = _zona_default
         if tem_pessoa and em_pe:
@@ -1534,6 +1544,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         print(f"[legibilidade] erro: {e}")
 
     _idx_cor_linha = 0  # contador de linha, usado pela estrategia cor_por_linha
+    _palavra_destaque_rect = None  # (x,y,largura,altura) da ultima palavra
+                                     # agilera_est ("*palavra", ex. "Generalizada"),
+                                     # usado pelo acento_grafico para ancorar
+                                     # o traco bem na base dela
 
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
@@ -1570,6 +1584,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
                                               estrategia_leg, intensidade_sombra)
+                    if est == "agilera_est":
+                        _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                        _palavra_destaque_rect = (MARGIN, y, _w_est, _altura_linha(fonte))
                 y += esp
         else:
             total_w = 0
@@ -1694,21 +1711,24 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
 
     if estrategia_leg == "acento_grafico":
-        # 7. Acento gráfico — um traço fino ABAIXO do bloco de título (nunca uma
-        # caixa/retângulo cobrindo a foto), ancorando visualmente o texto sem
-        # esconder nada por trás dele.
+        # 7. Acento gráfico — um traço fino ancorado bem na BASE da palavra de
+        # destaque ("*palavra", ex. "Generalizada"), como um sublinhado
+        # elegante só daquela palavra — nunca uma caixa/retângulo cobrindo a
+        # foto. Se não houver palavra de destaque no tema, cai no traco
+        # abaixo do bloco inteiro como reserva.
         try:
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            # Margem generosa abaixo da última linha — y aqui já avançou além da
-            # última linha renderizada, mas blocos "fundo" (pilulas) têm um
-            # padding vertical extra (pad_y_bottom=10) que não entra no cálculo
-            # de altura da linha — sem essa folga extra o traço cortava a
-            # pílula "desordem" e as descendentes do texto acima dele.
-            acento_y = min(SAFE_BOTTOM - 6, y + 26)
             acento_cor = _cor_principal if lum_zona_real < 0.5 else _cor_sec
-            largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
-            draw.line([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y)],
-                      fill=(*acento_cor, 255), width=5)
+            if _palavra_destaque_rect:
+                px, py, pw, ph = _palavra_destaque_rect
+                acento_y = min(SAFE_BOTTOM - 6, py + ph + 6)
+                draw.line([(px, acento_y), (px + pw, acento_y)],
+                          fill=(*acento_cor, 255), width=5)
+            else:
+                acento_y = min(SAFE_BOTTOM - 6, y + 26)
+                largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
+                draw.line([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y)],
+                          fill=(*acento_cor, 255), width=5)
         except Exception as e:
             print(f"[acento_grafico] erro: {e}")
 
