@@ -10,6 +10,21 @@ CORREÇÕES v16
 - Blocos renderizados linha por linha (sem flow inline entre segmentos diferentes)
 - Overlay: lógica mantida da v15, sem regressão
 
+CORREÇÕES v17
+=============
+- CORES_DESTAQUE agora usa as 9 cores da paleta sem repetição (antes MARINHO,
+  VERDE_VIVO e VERDE_CITRICO nunca eram sorteados como cor de destaque)
+- _escolher_cores_texto: pares agora incluem VERDE_VIVO/VERDE_CITRICO nas
+  faixas de luminosidade média/escura
+- Busca de zona ótima (antes só na estratégia "posicao_otima", 1 a cada 8
+  gerações) agora roda em TODA geração — a posição do texto varia por
+  imagem, nunca fixa
+- Guarda de contraste real: compara a cor escolhida com a cor MÉDIA real
+  (RGB) da zona onde o texto cai, não só a luminosidade — evita letra e
+  fundo na mesma cor/tom
+- Contorno sutil padrão em todas as estratégias de legibilidade (antes só
+  "contorno" e "peso_fonte" desenhavam stroke) + sombra padrão mais forte
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -112,8 +127,10 @@ CORES_OVERLAY_PERMITIDAS = PALETA_9
 # Destaque de texto: todas as 9 cores
 CORES_DESTAQUE = [
     LARANJA, AMARELO, TEAL, BRANCO, VERDE_NEUTRO,
-    PETROLEO, LARANJA, AMARELO, TEAL,
+    PETROLEO, VERDE_VIVO, VERDE_CITRICO, MARINHO,
 ]
+# v17: as 9 posições agora cobrem as 9 cores da paleta sem repetição — antes
+# MARINHO, VERDE_VIVO e VERDE_CITRICO nunca eram sorteados como destaque
 CORES_FUNDO_TEXTO = {
     LARANJA: MARINHO, AMARELO: MARINHO, TEAL: BRANCO,
     VERDE_VIVO: MARINHO, VERDE_CITRICO: MARINHO, BRANCO: MARINHO,
@@ -1078,7 +1095,8 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
     elif forte:
         params = [((5, 6), 14, 0.38)]
     else:
-        params = [((4, 5), 10, 0.28)]
+        # v17: sombra padrão um pouco mais forte — mais profundidade/halo
+        params = [((5, 6), 13, 0.34)]
     for (ox, oy), blur, opac in params:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d     = ImageDraw.Draw(layer)
@@ -1255,7 +1273,10 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         # OpenType, então essa é a forma de simular peso marcado nela.
         stroke_w, stroke_c = 2, (*cor, 255)
     else:
-        stroke_w, stroke_c = 0, None
+        # v17: contorno sutil padrão nas demais estratégias — reforça
+        # profundidade/destaque do texto mesmo fora de "contorno" e
+        # "peso_fonte" (antes ficava sem nenhum stroke nesses casos)
+        stroke_w, stroke_c = 1, (*_cor_contraste(cor), 200)
     if tem_liga:
         _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
     else:
@@ -1299,11 +1320,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         try:
             crop = img_rgba.convert("RGB").crop(
                 (MARGIN, y_ini, min(W, MARGIN + MAX_PX), max(y_ini + 1, y_fim)))
-            lum  = float(np.array(crop).astype(np.float32).mean()) / 255.0
-            comp = float(np.array(crop.convert("L")).astype(np.float32).std()) / 90.0
+            arr_crop  = np.array(crop).astype(np.float32)
+            lum       = float(arr_crop.mean()) / 255.0
+            comp      = float(np.array(crop.convert("L")).astype(np.float32).std()) / 90.0
+            # v17: cor MÉDIA real (RGB) da zona — usada pela guarda de
+            # contraste, que compara cor de verdade, não só luminosidade
+            cor_media = tuple(float(arr_crop[:, :, c].mean()) for c in range(3))
         except Exception:
-            lum, comp = 0.3, 0.5
-        return y_ini, y_fim, lum, comp
+            lum, comp, cor_media = 0.3, 0.5, (90.0, 90.0, 90.0)
+        return y_ini, y_fim, lum, comp, cor_media
 
     if not tem_pessoa:
         _zona_default     = (int(H * 0.44), int(H * 0.82))
@@ -1330,28 +1355,26 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.58), int(H * 0.90)),
         ]
 
-    if estrategia_leg == "posicao_otima":
-        # 6. Em vez de usar a zona padrão do layout, testa as zonas candidatas
-        # e escolhe a que combina MENOR complexidade visual com uma zona mais
-        # ESCURA (mais "ancorada", como se tivesse mais sombra natural ali) —
-        # evita a zona ruim em vez de tentar compensar depois.
-        melhor = None; melhor_score = None
-        for yi_raw, yf_raw in _candidatas_zona:
-            yi, yf = yi_raw, yf_raw
-            if tem_pessoa and em_pe:
-                yi -= 35; yf -= 35
-            cand = _avaliar_zona(yi, yf)
-            _, _, _lum, _comp = cand
-            score = _comp * 0.65 + _lum * 0.35
-            if melhor is None or score < melhor_score:
-                melhor, melhor_score = cand, score
-        Y_INI, Y_FIM, lum_zona_real, complexidade_zona = melhor
-        print(f"[titulo] posicao_otima escolhida: complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
-    else:
-        yi_raw, yf_raw = _zona_default
+    # v17: a busca pela zona ótima (antes exclusiva da estratégia
+    # "posicao_otima", 1 a cada 8 gerações) agora roda em TODA geração — a
+    # posição vertical do texto varia por imagem, nunca fica travada no
+    # mesmo lugar. Testa as zonas candidatas e escolhe a que combina MENOR
+    # complexidade visual com uma zona mais ESCURA (mais "ancorada", como se
+    # tivesse mais sombra natural ali) — evita a zona ruim em vez de tentar
+    # compensar depois.
+    melhor = None; melhor_score = None
+    for yi_raw, yf_raw in _candidatas_zona:
+        yi, yf = yi_raw, yf_raw
         if tem_pessoa and em_pe:
-            yi_raw -= 35; yf_raw -= 35
-        Y_INI, Y_FIM, lum_zona_real, complexidade_zona = _avaliar_zona(yi_raw, yf_raw)
+            yi -= 35; yf -= 35
+        cand = _avaliar_zona(yi, yf)
+        _, _, _lum, _comp, _ = cand
+        score = _comp * 0.65 + _lum * 0.35
+        if melhor is None or score < melhor_score:
+            melhor, melhor_score = cand, score
+    Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = melhor
+    print(f"[titulo] zona ótima escolhida (busca ativa sempre, v17): "
+          f"complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -1415,22 +1438,48 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         pré-definidos que já combinam entre si — evita que cada linha do
         título saia de uma cor diferente e sem relação com a outra (ex.:
         laranja + verde na mesma peça). Regras:
-        - Fundo escuro (marinho/petróleo) → par claro (branco/amarelo)
-        - Fundo claro → par escuro (marinho/petróleo/teal)
+        - Fundo escuro (marinho/petróleo) → par claro (branco/amarelo/verde-cítrico)
+        - Fundo claro → par escuro (marinho/petróleo/teal/verde-vivo)
         - Sempre varia pelo seed dentro do conjunto coerente, sem misturar
           conjuntos diferentes
+        v17: pares expandidos para cobrir as 9 cores da paleta (antes
+        VERDE_VIVO e VERDE_CITRICO nunca apareciam aqui)
         """
         if lum_overlay < 0.25:  # fundo muito escuro
             pares = [(BRANCO, AMARELO), (AMARELO, LARANJA),
-                     (BRANCO, LARANJA), (TEAL, BRANCO)]
+                     (BRANCO, LARANJA), (TEAL, BRANCO),
+                     (VERDE_CITRICO, BRANCO), (AMARELO, VERDE_CITRICO)]
         elif lum_overlay < 0.45:  # fundo escuro-medio
-            pares = [(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, TEAL)]
+            pares = [(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, TEAL),
+                     (VERDE_CITRICO, BRANCO), (LARANJA, VERDE_VIVO)]
         else:  # fundo claro — só cores realmente escuras (nunca BRANCO/AMARELO aqui)
-            pares = [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL)]
+            pares = [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL),
+                     (MARINHO, VERDE_CITRICO), (PETROLEO, VERDE_VIVO)]
 
         return pares[seed % len(pares)]
 
     _cor_principal, _cor_sec = _escolher_cores_texto(cor_overlay, lum_zona_real)
+
+    # v17: guarda de contraste real — compara a cor escolhida com a cor
+    # MÉDIA de verdade (RGB) da zona onde o texto cai (cor_zona_real), não
+    # só a luminosidade. Evita letra e fundo na mesma cor/tom (ex.: teal
+    # sobre foto azulada) mesmo quando o brilho geral parecia suficiente.
+    def _contraste_real_ok(cor):
+        return distancia_cor(cor, cor_zona_real) >= 90
+
+    if not _contraste_real_ok(_cor_principal):
+        _pares_fallback = ([(BRANCO, AMARELO), (AMARELO, LARANJA), (BRANCO, LARANJA),
+                            (TEAL, BRANCO), (VERDE_CITRICO, BRANCO)]
+                           if lum_zona_real < 0.5 else
+                           [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL),
+                            (MARINHO, VERDE_CITRICO)])
+        for _cp, _cs in _pares_fallback:
+            if _contraste_real_ok(_cp):
+                _cor_principal, _cor_sec = _cp, _cs
+                break
+        else:
+            _cor_principal, _cor_sec = (BRANCO, AMARELO) if lum_zona_real < 0.5 else (MARINHO, BRANCO)
+        print(f"[titulo] cor ajustada por baixo contraste real com o fundo: {_cor_principal}")
 
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
                       _cor_sec, _cor_principal, _cor_sec,
