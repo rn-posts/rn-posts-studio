@@ -1548,6 +1548,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                      # agilera_est ("*palavra", ex. "Generalizada"),
                                      # usado pelo acento_grafico para ancorar
                                      # o traco bem na base dela
+    _palavra_destaque_info = None  # (texto, fonte, cor, sp, tem_liga) da mesma
+                                     # palavra, para redesenha-la por cima da barra
 
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
@@ -1587,6 +1589,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     if est == "agilera_est":
                         _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
                         _palavra_destaque_rect = (MARGIN, y, _w_est, _altura_linha(fonte))
+                        _palavra_destaque_info = (linha, fonte, _cor_render, sp, tem_liga)
                 y += esp
         else:
             total_w = 0
@@ -1711,19 +1714,25 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
 
     if estrategia_leg == "acento_grafico":
-        # 7. Acento gráfico — um traço fino ancorado bem na BASE da palavra de
-        # destaque ("*palavra", ex. "Generalizada"), como um sublinhado
-        # elegante só daquela palavra — nunca uma caixa/retângulo cobrindo a
-        # foto. Se não houver palavra de destaque no tema, cai no traco
-        # abaixo do bloco inteiro como reserva.
+        # 7. Acento gráfico — uma barra sólida atrás da BASE da palavra de
+        # destaque ("*palavra", ex. "Generalizada"), com a palavra redesenhada
+        # por cima. Não precisa ser da mesma cor do texto — cria a própria base
+        # tipográfica, como um marca-texto grosso só daquela palavra. Nunca uma
+        # caixa cobrindo a foto inteira — só o comprimento exato da palavra.
         try:
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            acento_cor = _cor_principal if lum_zona_real < 0.5 else _cor_sec
-            if _palavra_destaque_rect:
+            acento_cor = _cor_sec if lum_zona_real < 0.5 else _cor_principal
+            if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
-                acento_y = min(SAFE_BOTTOM - 6, py + ph + 6)
-                draw.line([(px, acento_y), (px + pw, acento_y)],
-                          fill=(*acento_cor, 255), width=5)
+                txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
+                barra_h  = max(10, int(ph * 0.30))
+                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.35))
+                barra_y2 = barra_y1 + barra_h
+                draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, 255))
+                if liga_pd:
+                    _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255))
+                else:
+                    _linha(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255), sp_pd)
             else:
                 acento_y = min(SAFE_BOTTOM - 6, y + 26)
                 largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
