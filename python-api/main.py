@@ -45,6 +45,27 @@ CORREÇÕES v18
   posição acabava sempre igual; o viés garante variedade real sem vencer
   uma zona genuinamente melhor
 
+CORREÇÕES v19
+=============
+- REMOVIDO "scrim_suave" (v18): virava uma névoa/blob atrás do bloco
+  inteiro em vez de blur nas próprias letras — efeito errado, tirado da
+  rotação
+- REMOVIDO "posicao_otima" da rotação: como a busca de zona ótima já roda
+  em TODA geração desde a v17, mantê-lo como estratégia separada não
+  tinha mais efeito visual próprio — rotação agora tem exatamente as 7
+  estratégias reais: contorno, glow_glifo, sombra_dupla, sombra_adaptativa,
+  peso_fonte, acento_grafico, cor_por_linha
+- CORRIGIDO: texto sobrepondo o ROSTO em fotos onde a pessoa ocupa mais
+  espaço horizontal que o normal (gestos, braços abertos) — compor_pessoa
+  agora calcula a faixa horizontal real da CABEÇA (cabeca_bbox) e
+  desenhar_titulo nunca escolhe uma zona que cruze essa faixa; se mesmo
+  assim cruzar, reduz a largura do texto ou empurra a zona pra baixo
+- Diferenciadas as estratégias 2/3/4/5 (glow_glifo, sombra_dupla,
+  sombra_adaptativa, peso_fonte), que estavam ficando parecidas demais
+  entre si: glow mais largo/intenso, sombra_dupla com camada ambiente mais
+  afastada, sombra_adaptativa com faixa bem mais ampla entre os extremos,
+  peso_fonte com stroke bem mais grosso (2→4px)
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -529,15 +550,14 @@ def _proxima_forma_fundo():
     return forma
 
 # ── Estratégias de legibilidade (rotação persistida em disco) ────────────────
-# 8 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
+# 7 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
 # translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
 # da lista, em sequência fixa (nunca sorteio). O índice é salvo em arquivo
 # (não só em memória, como o contador de formas acima) para sobreviver a
 # reinícios do processo/servidor — a rotação nunca reinicia do zero.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
-    "peso_fonte", "posicao_otima", "acento_grafico", "cor_por_linha",
-    "scrim_suave",
+    "peso_fonte", "acento_grafico", "cor_por_linha",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
@@ -547,7 +567,9 @@ def _proxima_estrategia_legibilidade(seed=None):
     então depender só do contador em disco fazia a rotação sempre
     recomeçar do índice 0 = "contorno". Somando o seed, que sempre varia
     por hash(tema)+timestamp, a estratégia varia de verdade mesmo quando o
-    disco reseta. Se seed não for passado, comporta-se como antes."""
+    disco reseta. Se seed não for passado, comporta-se como antes.
+    v19: lista reduzida a exatamente 7 (removidos posicao_otima, que virou
+    global, e scrim_suave, que produzia o efeito errado)."""
     idx = 0
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
@@ -884,12 +906,31 @@ def tratar_foto_editorial(img, cor_paleta, seed):
     return img
 
 def compor_pessoa(pessoa_rgba, fundo_rgb):
+    """Retorna (imagem_composta, cabeca_bbox). cabeca_bbox e a faixa
+    (x0,y0,x1,y1) em coordenadas do CANVAS final ocupada pela CABEÇA da
+    pessoa (topo ~22% da altura do recorte) — usada depois por
+    desenhar_titulo pra garantir que o titulo nunca seja desenhado por cima
+    do rosto, mesmo quando a pessoa nao fica coladinha na borda direita
+    (fotos de gesto/corpo mais largo empurram a faixa da cabeca pra dentro
+    da zona onde o texto normalmente vai). v19."""
     pw, ph = pessoa_rgba.size
     nw     = int(pw * H / ph)
     pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
     x = W - nw + 50
     x = max(int(W * 0.35), min(x, W - 120))
     alpha  = pessoa_rgba.split()[3]
+
+    cabeca_bbox = None
+    try:
+        alpha_np = np.array(alpha)
+        topo = alpha_np[:int(H * 0.22), :]
+        cols = np.where(topo.max(axis=0) > 10)[0]
+        if len(cols) > 0:
+            cx0, cx1 = int(cols.min()), int(cols.max())
+            cabeca_bbox = (x + cx0 - 20, 0, x + cx1 + 20, int(H * 0.30))
+    except Exception as e:
+        print(f"[cabeca] erro: {e}")
+
     sombra = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sil    = Image.new("RGBA", (nw, H), (0, 0, 0, 0))
     sil.paste(Image.new("RGB", (nw, H), MARINHO),
@@ -899,16 +940,19 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     res = fundo_rgb.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
-    return res.convert("RGB")
+    return res.convert("RGB"), cabeca_bbox
 
 def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe, tem_pessoa). tem_pessoa é decidido pelo nome do
-    arquivo/pasta no Cloudinary (precisa conter "ronilson") — o rembg só é
-    chamado nesse caso, evitando o custo (e o risco de timeout na primeira
-    execução do worker) de rodar o recorte em toda foto, inclusive as que
-    não têm pessoa. em_pe só tem efeito quando tem_pessoa é True."""
-    em_pe      = True
-    tem_pessoa = eh_foto_ronilson(pid)
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). tem_pessoa e decidido
+    pelo nome do arquivo/pasta no Cloudinary (precisa conter "ronilson") —
+    o rembg so e chamado nesse caso, evitando o custo (e o risco de timeout
+    na primeira execução do worker) de rodar o recorte em toda foto,
+    inclusive as que nao tem pessoa. em_pe so tem efeito quando tem_pessoa
+    e True. cabeca_bbox (ver compor_pessoa, v19) e None quando nao ha
+    pessoa ou o rembg falhou."""
+    em_pe       = True
+    tem_pessoa  = eh_foto_ronilson(pid)
+    cabeca_bbox = None
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -924,7 +968,7 @@ def preparar_foto(url, pid, cor1, cor2, seed):
             try:
                 rgba  = remover_fundo_rembg(img)
                 em_pe = _detectar_pose_em_pe(rgba)
-                img   = compor_pessoa(rgba, fundo)
+                img, cabeca_bbox = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
             except Exception as e:
@@ -935,9 +979,9 @@ def preparar_foto(url, pid, cor1, cor2, seed):
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
 
-        return img, em_pe, tem_pessoa
+        return img, em_pe, tem_pessoa, cabeca_bbox
     except Exception as e:
-        print(f"[foto] ERRO: {e}"); return None, em_pe, False
+        print(f"[foto] ERRO: {e}"); return None, em_pe, False, None
 
 # ── Overlay ───────────────────────────────────────────────────────────────────
 def aplicar_overlay(img, lum_media, layout, seed=0,
@@ -1110,11 +1154,16 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
                                   vez do binário forte/não-forte)
     """
     if intensidade is not None:
-        blur   = 10 + 16 * intensidade
-        opac   = 0.28 + 0.36 * intensidade
+        # v19: faixa mais ampla (antes 10-26 / 0.28-0.64) — no extremo baixo
+        # fica nitidamente mais leve que a sombra padrao, no extremo alto
+        # fica mais pesada que a sombra_dupla, diferenciando de verdade
+        blur   = 6 + 26 * intensidade
+        opac   = 0.22 + 0.50 * intensidade
         params = [((4, 5), blur, opac)]
     elif dupla:
-        params = [((3, 4), 7, 0.48), ((15, 19), 38, 0.42)]
+        # v19: camada ambiente mais afastada/maior — deixa a diferenca com
+        # sombra_adaptativa e a sombra padrao claramente perceptivel
+        params = [((3, 4), 7, 0.48), ((18, 24), 46, 0.42)]
     elif forte:
         params = [((5, 6), 14, 0.38)]
     else:
@@ -1153,7 +1202,7 @@ def _cor_contraste(cor):
     lum = _LUM_COR.get(cor, 0.5)
     return MARINHO if lum > 0.5 else BRANCO
 
-def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=20, alpha=235):
+def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=26, alpha=245):
     """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
     do próprio texto (nunca um retângulo) e cola atrás do texto principal,
     criando uma auréola orgânica que acompanha as curvas da tipografia.
@@ -1312,7 +1361,10 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         # 5. Faux-bold: contorno da MESMA cor do preenchimento engrossa o
         # traço de verdade (não é só tracking) — a AGILERA não tem peso
         # OpenType, então essa é a forma de simular peso marcado nela.
-        stroke_w, stroke_c = 2, (*cor, 255)
+        # v19: stroke bem mais grosso (2→4) — com o contorno sutil padrao
+        # (1px) agora ativo em toda estrategia, 2px tinha ficado parecido
+        # demais com o padrao
+        stroke_w, stroke_c = 4, (*cor, 255)
     else:
         # v17: contorno sutil padrão nas demais estratégias — reforça
         # profundidade/destaque do texto mesmo fora de "contorno" e
@@ -1325,7 +1377,8 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
     return draw
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
-                    cor_overlay=None, tem_pessoa=False, em_pe=True):
+                    cor_overlay=None, tem_pessoa=False, em_pe=True,
+                    cabeca_bbox=None):
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
     # Para fotos com pessoa à direita: texto na terça parte esquerda
@@ -1408,6 +1461,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # complexidade visual com uma zona mais ESCURA (mais "ancorada", como se
     # tivesse mais sombra natural ali) — evita a zona ruim em vez de tentar
     # compensar depois.
+    def _intersecta_cabeca(rx0, ry0, rx1, ry1):
+        """v19: True se o retângulo do texto cruza a faixa da cabeça
+        (cabeca_bbox, ver compor_pessoa) — usado pra NUNCA escolher uma
+        zona que passe por cima do rosto, mesmo em fotos onde a pessoa
+        ocupa mais espaço horizontal que o normal (gestos, braços abertos)."""
+        if not cabeca_bbox:
+            return False
+        bx0, by0, bx1, by1 = cabeca_bbox
+        return not (rx1 <= bx0 or rx0 >= bx1 or ry1 <= by0 or ry0 >= by1)
+
     melhor = None; melhor_score = None
     for _i_c, (yi_raw, yf_raw) in enumerate(_candidatas_zona):
         yi, yf = yi_raw, yf_raw
@@ -1422,11 +1485,30 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # uma zona genuinamente melhor.
         vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.12
         score = _comp * 0.65 + _lum * 0.35 - vies
+        # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
+        # essa zona a menos que TODAS as outras também cruzem
+        if _intersecta_cabeca(MARGIN, yi, MARGIN + MAX_PX, yf):
+            score += 5.0
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
     Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = melhor
     print(f"[titulo] zona ótima escolhida (busca ativa sempre, v17): "
           f"complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
+
+    # v19: última rede de segurança — se mesmo assim a zona escolhida ainda
+    # cruza a cabeça (caso extremo: todas as candidatas cruzavam), reduz a
+    # largura do texto pra parar antes da cabeça, ou empurra a zona pra
+    # baixo dela. Texto sobre o rosto é inaceitável, então isso nunca fica
+    # só na pontuação — há sempre um corretivo final.
+    if _intersecta_cabeca(MARGIN, Y_INI, MARGIN + MAX_PX, Y_FIM):
+        cbx0, cby0, cbx1, cby1 = cabeca_bbox
+        if cbx0 - MARGIN >= 220:
+            MAX_PX = min(MAX_PX, cbx0 - MARGIN - 24)
+            print(f"[titulo] MAX_PX reduzido pra nao cruzar a cabeca: {MAX_PX}")
+        else:
+            Y_INI = min(SAFE_BOTTOM - 150, max(Y_INI, cby1 + 10))
+            print(f"[titulo] zona empurrada pra baixo da cabeca: Y_INI={Y_INI}")
+        Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = _avaliar_zona(Y_INI, Y_FIM)
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -1652,19 +1734,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
 
-    if estrategia_leg == "scrim_suave":
-        # v18: névoa/glow atrás de todo o bloco do título — só nesta
-        # estratégia (1 a cada 9 gerações), garante contraste mesmo quando a
-        # cor de texto escolhida não é a mais óbvia pra aquela foto (permite
-        # cores quentes aparecerem de novo mesmo em fotos claras)
-        try:
-            _cor_scrim = _cor_contraste(_cor_principal)
-            _scrim_suave(img_rgba, MARGIN, Y_INI,
-                         MARGIN + min(largura_titulo, MAX_PX), y + h_total,
-                         _cor_scrim, alpha=150, raio=60)
-        except Exception as e:
-            print(f"[scrim_suave] erro: {e}")
-
     _idx_cor_linha = 0  # contador de linha, usado pela estrategia cor_por_linha
     _palavra_destaque_rect = None  # (x,y,largura,altura) da ultima palavra
                                      # agilera_est ("*palavra", ex. "Generalizada"),
@@ -1888,6 +1957,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     hist_cores = None
     tem_pessoa = False
     em_pe      = True
+    cabeca_bbox = None
 
     if imagem_url:
         try:
@@ -1900,7 +1970,7 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
         except Exception as e: print(f"[cor] {e}")
 
     if imagem_url:
-        base, em_pe, tem_pessoa = preparar_foto(imagem_url, pid, cor1, cor2, seed)
+        base, em_pe, tem_pessoa, cabeca_bbox = preparar_foto(imagem_url, pid, cor1, cor2, seed)
         if base is None:
             base = gerar_fundo_rico(cor1, cor2, seed)
             lum_media  = luminosidade_media(base)
@@ -1922,7 +1992,8 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
                               cor_fundo_txt=cor_fundo_txt,
                               cor_overlay=cor_ov_usada,
                               tem_pessoa=tem_pessoa,
-                              em_pe=em_pe)
+                              em_pe=em_pe,
+                              cabeca_bbox=cabeca_bbox)
     return base
 
 # ── Planilha ──────────────────────────────────────────────────────────────────
