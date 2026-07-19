@@ -25,6 +25,26 @@ CORREÇÕES v17
 - Contorno sutil padrão em todas as estratégias de legibilidade (antes só
   "contorno" e "peso_fonte" desenhavam stroke) + sombra padrão mais forte
 
+CORREÇÕES v18
+=============
+- CORRIGIDO: rotação de estratégias sempre caindo em "contorno" — causa
+  raiz era o disco do Render ser EFÊMERO (reseta a cada deploy/reinicio),
+  então o contador persistido sempre voltava a 0. Agora combina o contador
+  com o seed da geração, que sempre varia — robusto a reset de disco
+- Nova 9ª estratégia "scrim_suave": glow/névoa orgânico (bordas bem
+  borradas, nunca um retângulo nítido) atrás do bloco inteiro do título —
+  garante contraste independente da cor real da foto por baixo
+- Guarda de contraste real agora valida a cor SECUNDÁRIA também, não só a
+  principal (corrigia letras sumindo em roupas escuras quando só a
+  principal passava no teste)
+- Zona mínima do título (Y_MIN_GLOBAL) agora é bem mais alta para fotos
+  SEM pessoa (sem risco de cobrir rosto) — antes ficava travada a 44% da
+  altura mesmo quando a zona de cima era a mais legível
+- Pequeno viés por seed no desempate de zonas — em fundos muito uniformes
+  (estúdio, parede lisa) a pontuação de todas as zonas quase empatava e a
+  posição acabava sempre igual; o viés garante variedade real sem vencer
+  uma zona genuinamente melhor
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -517,22 +537,25 @@ def _proxima_forma_fundo():
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
     "peso_fonte", "posicao_otima", "acento_grafico", "cor_por_linha",
+    "scrim_suave",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
-def _proxima_estrategia_legibilidade():
-    """Contador sequencial persistido em arquivo — percorre a rotação fixa
-    das 8 estratégias de legibilidade, uma por geração, nunca repetindo
-    nenhuma antes de todas as outras 7 já terem sido usadas. Diferente do
-    contador de formas (só em memória), este é lido/escrito em disco a cada
-    chamada, então sobrevive a reinícios do servidor."""
+def _proxima_estrategia_legibilidade(seed=None):
+    """v18: combina o contador persistido em disco com o seed da geração —
+    CORREÇÃO: o disco do Render é EFÊMERO (reseta a cada deploy/reinicio),
+    então depender só do contador em disco fazia a rotação sempre
+    recomeçar do índice 0 = "contorno". Somando o seed, que sempre varia
+    por hash(tema)+timestamp, a estratégia varia de verdade mesmo quando o
+    disco reseta. Se seed não for passado, comporta-se como antes."""
     idx = 0
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
             idx = int(json.load(f).get("estrategia_idx", 0))
     except Exception:
         idx = 0
-    estrategia = _ESTRATEGIAS_LEGIBILIDADE[idx % len(_ESTRATEGIAS_LEGIBILIDADE)]
+    idx_efetivo = (idx + (seed or 0)) % len(_ESTRATEGIAS_LEGIBILIDADE)
+    estrategia = _ESTRATEGIAS_LEGIBILIDADE[idx_efetivo]
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
             json.dump({"estrategia_idx": idx + 1}, f)
@@ -1141,6 +1164,24 @@ def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=20, alpha=235
     layer = layer.filter(ImageFilter.GaussianBlur(raio))
     img_rgba.paste(layer, (0, 0), layer)
 
+def _scrim_suave(img_rgba, x0, y0, x1, y1, cor, alpha=150, raio=60):
+    """9. v18: glow/névoa orgânico atrás de TODO o bloco do título (não só das
+    letras) — desenha um retângulo arredondado e borra tanto que as bordas
+    somem por completo antes de chegar na foto ao redor (nunca fica um
+    retângulo nítido). Dá contraste garantido independente da cor real da
+    foto por baixo — permite usar qualquer cor de texto mesmo sobre fundos
+    difíceis (roupas escuras, texturas, fotos muito claras)."""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    pad = int(raio * 0.4)
+    try:
+        d.rounded_rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad],
+                             radius=max(8, pad), fill=(*cor, alpha))
+    except Exception:
+        d.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad], fill=(*cor, alpha))
+    layer = layer.filter(ImageFilter.GaussianBlur(raio))
+    img_rgba.paste(layer, (0, 0), layer)
+
 def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0):
     """8. Reavalia a cor do texto POR LINHA, amostrando a luminosidade real
     do fundo exatamente onde aquela linha cai. CORRIGIDO (v2): antes o par
@@ -1296,7 +1337,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # _proxima_estrategia_legibilidade) — decidida uma vez por card e usada
     # em vários pontos abaixo (posição, fonte, sombra/contorno/glow, cor,
     # acento gráfico).
-    estrategia_leg = _proxima_estrategia_legibilidade()
+    estrategia_leg = _proxima_estrategia_legibilidade(seed)
     print(f"[titulo] estrategia_legibilidade={estrategia_leg}")
 
     if cor_dest is None:
@@ -1312,7 +1353,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # essa amostra usava uma faixa fixa que não acompanhava a zona real
     # (calculada só depois) — causava cor de texto e scrim desalinhados com
     # o lugar de fato usado.
-    Y_MIN_GLOBAL = int(H * 0.44)
+    # v18: para fotos SEM pessoa (fundo/textura/ambiente) não existe risco de
+    # cobrir rosto — libera o mínimo bem mais alto, permitindo o título subir
+    # de verdade quando a zona de cima for a mais legível. Para fotos COM
+    # pessoa mantém o mínimo mais baixo (evita cobrir cabeça/rosto).
+    Y_MIN_GLOBAL = int(H * 0.44) if tem_pessoa else int(H * 0.12)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -1332,7 +1377,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
     if not tem_pessoa:
         _zona_default     = (int(H * 0.44), int(H * 0.82))
-        _candidatas_zona  = [_zona_default, (int(H * 0.50), int(H * 0.86)), (int(H * 0.40), int(H * 0.78))]
+        _candidatas_zona  = [_zona_default, (int(H * 0.50), int(H * 0.86)),
+                             (int(H * 0.40), int(H * 0.78)), (int(H * 0.16), int(H * 0.50))]
     else:
         _zonas_pessoa = [
             (int(H * 0.46), int(H * 0.76)),
@@ -1363,13 +1409,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # tivesse mais sombra natural ali) — evita a zona ruim em vez de tentar
     # compensar depois.
     melhor = None; melhor_score = None
-    for yi_raw, yf_raw in _candidatas_zona:
+    for _i_c, (yi_raw, yf_raw) in enumerate(_candidatas_zona):
         yi, yf = yi_raw, yf_raw
         if tem_pessoa and em_pe:
             yi -= 35; yf -= 35
         cand = _avaliar_zona(yi, yf)
         _, _, _lum, _comp, _ = cand
-        score = _comp * 0.65 + _lum * 0.35
+        # v18: pequeno viés pelo seed — em fundos muito uniformes (estúdio,
+        # parede lisa) lum/complexidade quase não variam entre zonas, e sem
+        # isso a escolha sempre "empatava" pro mesmo candidato (a variedade
+        # ficava só na teoria). O viés é pequeno o bastante pra não vencer
+        # uma zona genuinamente melhor.
+        vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.12
+        score = _comp * 0.65 + _lum * 0.35 - vies
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
     Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = melhor
@@ -1474,12 +1526,20 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                            [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL),
                             (MARINHO, VERDE_CITRICO)])
         for _cp, _cs in _pares_fallback:
-            if _contraste_real_ok(_cp):
+            if _contraste_real_ok(_cp) and _contraste_real_ok(_cs):
                 _cor_principal, _cor_sec = _cp, _cs
                 break
         else:
             _cor_principal, _cor_sec = (BRANCO, AMARELO) if lum_zona_real < 0.5 else (MARINHO, BRANCO)
         print(f"[titulo] cor ajustada por baixo contraste real com o fundo: {_cor_principal}")
+
+    # v18: valida a SECUNDÁRIA separadamente da principal — antes só a
+    # principal era checada, então um bloco usando a cor secundária podia
+    # sumir mesmo com a principal ok (ex.: terno escuro engolindo a cor
+    # secundária numa das linhas do título)
+    if not _contraste_real_ok(_cor_sec):
+        _cor_sec = BRANCO if lum_zona_real < 0.5 else MARINHO
+        print(f"[titulo] cor secundária ajustada por baixo contraste real: {_cor_sec}")
 
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
                       _cor_sec, _cor_principal, _cor_sec,
@@ -1591,6 +1651,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     except Exception as e:
         intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
+
+    if estrategia_leg == "scrim_suave":
+        # v18: névoa/glow atrás de todo o bloco do título — só nesta
+        # estratégia (1 a cada 9 gerações), garante contraste mesmo quando a
+        # cor de texto escolhida não é a mais óbvia pra aquela foto (permite
+        # cores quentes aparecerem de novo mesmo em fotos claras)
+        try:
+            _cor_scrim = _cor_contraste(_cor_principal)
+            _scrim_suave(img_rgba, MARGIN, Y_INI,
+                         MARGIN + min(largura_titulo, MAX_PX), y + h_total,
+                         _cor_scrim, alpha=150, raio=60)
+        except Exception as e:
+            print(f"[scrim_suave] erro: {e}")
 
     _idx_cor_linha = 0  # contador de linha, usado pela estrategia cor_por_linha
     _palavra_destaque_rect = None  # (x,y,largura,altura) da ultima palavra
@@ -1774,7 +1847,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                barra_h  = max(10, int(ph * 0.30))
+                barra_h  = max(12, int(ph * 0.34))
                 barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.35))
                 barra_y2 = barra_y1 + barra_h
                 draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, 255))
