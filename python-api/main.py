@@ -45,26 +45,29 @@ CORREÇÕES v18
   posição acabava sempre igual; o viés garante variedade real sem vencer
   uma zona genuinamente melhor
 
-CORREÇÕES v19
+CORREÇÕES v20
 =============
-- REMOVIDO "scrim_suave" (v18): virava uma névoa/blob atrás do bloco
-  inteiro em vez de blur nas próprias letras — efeito errado, tirado da
-  rotação
-- REMOVIDO "posicao_otima" da rotação: como a busca de zona ótima já roda
-  em TODA geração desde a v17, mantê-lo como estratégia separada não
-  tinha mais efeito visual próprio — rotação agora tem exatamente as 7
-  estratégias reais: contorno, glow_glifo, sombra_dupla, sombra_adaptativa,
-  peso_fonte, acento_grafico, cor_por_linha
-- CORRIGIDO: texto sobrepondo o ROSTO em fotos onde a pessoa ocupa mais
-  espaço horizontal que o normal (gestos, braços abertos) — compor_pessoa
-  agora calcula a faixa horizontal real da CABEÇA (cabeca_bbox) e
-  desenhar_titulo nunca escolhe uma zona que cruze essa faixa; se mesmo
-  assim cruzar, reduz a largura do texto ou empurra a zona pra baixo
-- Diferenciadas as estratégias 2/3/4/5 (glow_glifo, sombra_dupla,
-  sombra_adaptativa, peso_fonte), que estavam ficando parecidas demais
-  entre si: glow mais largo/intenso, sombra_dupla com camada ambiente mais
-  afastada, sombra_adaptativa com faixa bem mais ampla entre os extremos,
-  peso_fonte com stroke bem mais grosso (2→4px)
+- CORRIGIDO: peso_fonte com stroke 4px (v19) ficava borrado no AGILERA —
+  voltou pra 2px
+- CORRIGIDO: acento_grafico cobria o corpo da letra e podia usar a mesma
+  cor da propria palavra (letra sumindo dentro da barra) — barra agora
+  fina, cor sempre oposta a da palavra especifica, com leve sobreposicao
+  proposital na base (efeito 3D pedido, v20b) em vez de ficar 100% abaixo
+- Y_MIN_GLOBAL para fotos sem pessoa recuado de volta pra 30% da altura
+  (era 12% na v18) — reduz o risco em fotos mal-tagueadas como "ronilson"
+
+CORREÇÕES v21
+=============
+- CORRIGIDO: a rotacao de estrategias (v18) somava seed ao contador do
+  disco pra resolver o travamento em "contorno", mas isso tornou a escolha
+  praticamente aleatoria — podia repetir estrategia em cards consecutivos,
+  sem garantir as 7 em sequencia sem repeticao. Trocado pelo mesmo padrao
+  de baralho sem reposicao usado pras fotos (_proxima_foto_baralho):
+  embaralha as 7 estrategias, consome uma por vez ate esgotar, so entao
+  embaralha um novo ciclo — garante as 7 sem repetir nenhuma antes de
+  todas as outras terem sido usadas, e como o baralho embaralhado nunca
+  comeca fixo em "contorno", tambem resolve o bug original do disco
+  efemero do Render sem precisar do hack de seed
 
 PIPELINE
 ========
@@ -560,27 +563,36 @@ _ESTRATEGIAS_LEGIBILIDADE = [
     "peso_fonte", "acento_grafico", "cor_por_linha",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
+_baralho_estrategias = []  # fila embaralhada restante (baralho sem reposicao)
 
 def _proxima_estrategia_legibilidade(seed=None):
-    """v18: combina o contador persistido em disco com o seed da geração —
-    CORREÇÃO: o disco do Render é EFÊMERO (reseta a cada deploy/reinicio),
-    então depender só do contador em disco fazia a rotação sempre
-    recomeçar do índice 0 = "contorno". Somando o seed, que sempre varia
-    por hash(tema)+timestamp, a estratégia varia de verdade mesmo quando o
-    disco reseta. Se seed não for passado, comporta-se como antes.
-    v19: lista reduzida a exatamente 7 (removidos posicao_otima, que virou
-    global, e scrim_suave, que produzia o efeito errado)."""
-    idx = 0
-    try:
-        with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
-            idx = int(json.load(f).get("estrategia_idx", 0))
-    except Exception:
-        idx = 0
-    idx_efetivo = (idx + (seed or 0)) % len(_ESTRATEGIAS_LEGIBILIDADE)
-    estrategia = _ESTRATEGIAS_LEGIBILIDADE[idx_efetivo]
+    """v21: baralho sem reposicao, no mesmo padrao de _proxima_foto_baralho
+    (fotos) — consome as 7 estrategias embaralhadas ate esgotar a lista, so
+    entao embaralha um novo ciclo completo. GARANTE as 7 sem repetir
+    nenhuma antes de todas as outras terem sido usadas no ciclo (diferente
+    da v18, que somava seed ao contador e virava praticamente aleatorio,
+    podendo repetir estrategia em cards consecutivos). Persistido em disco
+    (a fila restante) pra sobreviver a reinicios do processo; se o disco
+    resetar (Render e efemero), so comeca um baralho novo embaralhado —
+    nunca mais trava sempre no mesmo indice."""
+    global _baralho_estrategias
+    if not _baralho_estrategias:
+        fila = None
+        try:
+            with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
+                fila = json.load(f).get("fila")
+        except Exception:
+            fila = None
+        if fila and all(e in _ESTRATEGIAS_LEGIBILIDADE for e in fila):
+            _baralho_estrategias = fila
+        else:
+            _baralho_estrategias = _ESTRATEGIAS_LEGIBILIDADE[:]
+            random.shuffle(_baralho_estrategias)
+            print(f"[estrategia_leg] novo baralho: {_baralho_estrategias}")
+    estrategia = _baralho_estrategias.pop()
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
-            json.dump({"estrategia_idx": idx + 1}, f)
+            json.dump({"fila": _baralho_estrategias}, f)
     except Exception as e:
         print(f"[estrategia_leg] falha ao persistir: {e}")
     return estrategia
