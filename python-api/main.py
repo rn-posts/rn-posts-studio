@@ -1361,10 +1361,13 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
         # 5. Faux-bold: contorno da MESMA cor do preenchimento engrossa o
         # traço de verdade (não é só tracking) — a AGILERA não tem peso
         # OpenType, então essa é a forma de simular peso marcado nela.
-        # v19: stroke bem mais grosso (2→4) — com o contorno sutil padrao
-        # (1px) agora ativo em toda estrategia, 2px tinha ficado parecido
-        # demais com o padrao
-        stroke_w, stroke_c = 4, (*cor, 255)
+        # v20: CORRIGIDO — o stroke 4px da v19 (tentando diferenciar de
+        # peso_fonte vs. o contorno sutil padrao) ficou pesado demais pro
+        # AGILERA (fecha os "olhos" das letras arredondadas, lê como
+        # borrado). Voltou pra 2px; a diferenciacao de peso_fonte vem do
+        # tracking bem mais fechado (ag_sp) e do MALGUN sempre bold, nao
+        # precisa do stroke sozinho fazer todo o trabalho.
+        stroke_w, stroke_c = 2, (*cor, 255)
     else:
         # v17: contorno sutil padrão nas demais estratégias — reforça
         # profundidade/destaque do texto mesmo fora de "contorno" e
@@ -1410,7 +1413,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # cobrir rosto — libera o mínimo bem mais alto, permitindo o título subir
     # de verdade quando a zona de cima for a mais legível. Para fotos COM
     # pessoa mantém o mínimo mais baixo (evita cobrir cabeça/rosto).
-    Y_MIN_GLOBAL = int(H * 0.44) if tem_pessoa else int(H * 0.12)
+    Y_MIN_GLOBAL = int(H * 0.44) if tem_pessoa else int(H * 0.30)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -1916,9 +1919,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                barra_h  = max(12, int(ph * 0.34))
-                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.35))
+                # v20b: ajustado a pedido — a barra deve ficar PARCIALMENTE
+                # atras da base das letras (nao totalmente abaixo), como um
+                # "fundo" que espia por tras do texto, dando profundidade
+                # 3D. Sobe a barra pra cobrir a faixa dos descendentes/base
+                # da letra, mantendo a redesenha da palavra por cima pra
+                # garantir que ela continue legivel na frente da barra.
+                barra_h  = max(10, int(ph * 0.22))
+                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.55))
                 barra_y2 = barra_y1 + barra_h
+                acento_cor = _cor_contraste(cor_pd)
                 draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, 255))
                 if liga_pd:
                     _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255))
