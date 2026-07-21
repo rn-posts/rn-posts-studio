@@ -1164,27 +1164,27 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
       intensidade=0..1            — 4. blur/opacidade escalam CONTINUAMENTE
                                   com um valor de risco medido na zona (em
                                   vez do binário forte/não-forte)
+    v22: cada modo agora tem uma cor de sombra PRÓPRIA (antes todas usavam
+    o mesmo preto-azulado neutro) — dá assinatura visual distinta pra
+    sombra_dupla (halo petróleo saturado na camada ambiente) e
+    sombra_adaptativa (tingido marinho), que antes ficavam quase idênticas
+    à sombra padrão a olho nu.
     """
+    NEUTRA = (2, 20, 30)
     if intensidade is not None:
-        # v19: faixa mais ampla (antes 10-26 / 0.28-0.64) — no extremo baixo
-        # fica nitidamente mais leve que a sombra padrao, no extremo alto
-        # fica mais pesada que a sombra_dupla, diferenciando de verdade
         blur   = 6 + 26 * intensidade
         opac   = 0.22 + 0.50 * intensidade
-        params = [((4, 5), blur, opac)]
+        params = [((4, 5), blur, opac, (8, 12, 45))]
     elif dupla:
-        # v19: camada ambiente mais afastada/maior — deixa a diferenca com
-        # sombra_adaptativa e a sombra padrao claramente perceptivel
-        params = [((3, 4), 7, 0.48), ((18, 24), 46, 0.42)]
+        params = [((3, 4), 7, 0.48, NEUTRA), ((18, 24), 46, 0.44, (6, 80, 100))]
     elif forte:
-        params = [((5, 6), 14, 0.38)]
+        params = [((5, 6), 14, 0.38, NEUTRA)]
     else:
-        # v17: sombra padrão um pouco mais forte — mais profundidade/halo
-        params = [((5, 6), 13, 0.34)]
-    for (ox, oy), blur, opac in params:
+        params = [((5, 6), 13, 0.34, NEUTRA)]
+    for (ox, oy), blur, opac, cor_sombra in params:
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d     = ImageDraw.Draw(layer)
-        _linha(d, x + ox, y + oy, texto, fonte, (2, 20, 30, int(255 * opac)), sp)
+        _linha(d, x + ox, y + oy, texto, fonte, (*cor_sombra, int(255 * opac)), sp)
         layer = layer.filter(ImageFilter.GaussianBlur(blur))
         img_rgba.paste(layer, (0, 0), layer)
 
@@ -1210,9 +1210,33 @@ def _linha(draw, x, y, texto, fonte, cor, sp=0, stroke_width=0, stroke_fill=None
 def _cor_contraste(cor):
     """Retorna BRANCO ou MARINHO — o que mais contrasta com a cor dada —
     usado por contorno/glow, que precisam se opor ao PREENCHIMENTO do texto,
-    não ao fundo da foto."""
+    nao ao fundo da foto."""
     lum = _LUM_COR.get(cor, 0.5)
     return MARINHO if lum > 0.5 else BRANCO
+
+def _cor_acento(cor_pd, seed):
+    """v22b: cor do acento gráfico — precisa DESTACAR a palavra sem BRIGAR
+    com ela. Quando a palavra é clara, o branco já funciona bem sozinho,
+    então continua sendo a opção mais frequente; quando não é branco,
+    alterna entre tons escuros com opacidade reduzida (suavização), pra
+    funcionar como uma base suave atrás da palavra, não como um bloco de
+    cor competindo por atenção. Retorna (cor, alpha)."""
+    lum_pd = _LUM_COR.get(cor_pd, 0.5)
+    if lum_pd > 0.5:
+        opcoes = [(MARINHO, 255), (PETROLEO, 195), (MARINHO, 195)]
+    else:
+        opcoes = [(BRANCO, 255), (BRANCO, 255), (VERDE_NEUTRO, 175)]
+    return opcoes[seed % len(opcoes)]
+
+def _cor_glow_vivida(cor_texto, seed):
+    """v22: cor de glow SATURADA (nunca so binario branco/marinho) — da ao
+    glow_glifo uma identidade visual propria de "halo neon colorido", bem
+    diferente de um contorno ou sombra comuns. Nunca repete a cor do
+    proprio texto, pra o halo sempre aparecer como uma cor extra visivel."""
+    opcoes = [c for c in (AMARELO, LARANJA, VERDE_CITRICO, TEAL, VERDE_VIVO) if c != cor_texto]
+    if not opcoes:
+        opcoes = [AMARELO, TEAL]
+    return opcoes[seed % len(opcoes)]
 
 def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=26, alpha=245):
     """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
@@ -1243,14 +1267,13 @@ def _scrim_suave(img_rgba, x0, y0, x1, y1, cor, alpha=150, raio=60):
     layer = layer.filter(ImageFilter.GaussianBlur(raio))
     img_rgba.paste(layer, (0, 0), layer)
 
-def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0):
+def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0, evitar=()):
     """8. Reavalia a cor do texto POR LINHA, amostrando a luminosidade real
-    do fundo exatamente onde aquela linha cai. CORRIGIDO (v2): antes o par
-    de cores era escolhido por `seed % 2`, que é CONSTANTE para a imagem
-    inteira — na prática todas as linhas saiam com a mesma cor (fosco/
-    desbotado) sempre que caissem na mesma faixa de luminosidade. Agora
-    alterna pelo ÍNDICE DA LINHA (cada linha chamada nesta geração), o que
-    garante variação real de cor entre as linhas do título."""
+    do fundo exatamente onde aquela linha cai. v22: paleta expandida pra 3
+    opções por faixa (era 2) e agora EVITA coincidir com as cores
+    principal/secundária que o resto do título já usa (parâmetro `evitar`)
+    — antes podia escolher exatamente os mesmos 2 tons do resto do texto,
+    ficando visualmente idêntica a qualquer outra estratégia."""
     try:
         x1 = max(0, int(x)); y1 = max(0, int(y))
         x2 = min(W, int(x + max(10, w))); y2 = min(H, int(y + max(10, h)))
@@ -1258,10 +1281,11 @@ def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0):
         lum  = float(np.array(crop).astype(np.float32).mean()) / 255.0
     except Exception:
         lum = 0.4
-    if lum < 0.35:   pares = (BRANCO, AMARELO)
-    elif lum < 0.5:  pares = (BRANCO, LARANJA)
-    else:            pares = (MARINHO, TEAL)
-    return pares[idx_linha % 2]
+    if lum < 0.35:   pares = (BRANCO, AMARELO, VERDE_CITRICO)
+    elif lum < 0.5:  pares = (BRANCO, LARANJA, VERDE_VIVO)
+    else:            pares = (MARINHO, TEAL, PETROLEO)
+    candidatas = [c for c in pares if c not in evitar] or list(pares)
+    return candidatas[idx_linha % len(candidatas)]
 
 # ── Variações tipográficas ───────────────────────────────────────────────────
 # 6 modos selecionados pelo seed — aplicados a TODOS os blocos
@@ -1350,15 +1374,15 @@ def _texto_para_modo(modo, texto):
 
 def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
                                tem_liga, sombra_forte, estrategia_leg=None,
-                               intensidade_sombra=None, cor_glow=None):
+                               intensidade_sombra=None, cor_glow=None, seed=0):
     """Renderiza uma linha AGILERA aplicando a estratégia de legibilidade da
-    vez (rotação de 8, ver _proxima_estrategia_legibilidade): contorno fino,
-    glow com a silhueta das letras, sombra em 2 camadas, sombra com
-    intensidade contínua, ou a sombra padrão (usada pelas demais estratégias,
-    que atuam em outros pontos de desenhar_titulo — peso de fonte, posição,
-    acento gráfico, cor por linha)."""
+    vez (rotação de 7, ver _proxima_estrategia_legibilidade): contorno fino,
+    glow colorido com a silhueta das letras, sombra em 2 camadas coloridas,
+    sombra com intensidade contínua tingida, ou a sombra padrão (usada pelas
+    demais estratégias, que atuam em outros pontos de desenhar_titulo —
+    peso de fonte, posição, acento gráfico, cor por linha)."""
     if estrategia_leg == "glow_glifo":
-        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_contraste(cor), sp)
+        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
     elif estrategia_leg == "sombra_dupla":
         _sombra(img_rgba, texto, fonte, x, y, sp, dupla=True)
     elif estrategia_leg == "sombra_adaptativa" and intensidade_sombra is not None:
@@ -1787,13 +1811,28 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _cor_render = cor_txt
                     if estrategia_leg == "cor_por_linha":
                         _w_l = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
-                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), _idx_cor_linha)
+                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
                         _idx_cor_linha += 1
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                              estrategia_leg, intensidade_sombra)
+                                              estrategia_leg, intensidade_sombra, seed=seed)
                     if est == "agilera_est":
-                        _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                        # v22b: CORRIGIDO — a largura estimada manualmente
+                        # (soma de cada caractere) nao sabia que a palavra
+                        # e desenhada com LIGATURAS via RAQM (que conectam/
+                        # estreitam as letras de verdade), entao sempre
+                        # superestimava a largura real e a barra do acento
+                        # sobrava pra direita, passando da letra. Agora mede
+                        # o bbox real pos-shaping quando ha ligatura.
+                        if tem_liga and _RAQM_OK:
+                            try:
+                                _bb_real = draw.textbbox((MARGIN, y), linha, font=fonte,
+                                                          features=["+liga", "+aalt", "+calt", "+dlig"])
+                                _w_est = _bb_real[2] - MARGIN
+                            except Exception:
+                                _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                        else:
+                            _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
                         _palavra_destaque_rect = (MARGIN, y, _w_est, _altura_linha(fonte))
                         _palavra_destaque_info = (linha, fonte, _cor_render, sp, tem_liga)
                 y += esp
@@ -1866,11 +1905,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         else:
                             _cor_render = cor_txt
                             if estrategia_leg == "cor_por_linha":
-                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha)
+                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
                                 _idx_cor_linha += 1
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                                      estrategia_leg, intensidade_sombra)
+                                                      estrategia_leg, intensidade_sombra, seed=seed)
                             x_cursor += (_medir_sp(ln, fonte, sp) if sp else w)
                     y += int(_altura_linha(sublinha[0][1]) * 1.10)
             else:
@@ -1911,11 +1950,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     else:
                         _cor_render = cor_txt
                         if estrategia_leg == "cor_por_linha":
-                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha)
+                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
                             _idx_cor_linha += 1
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                                  estrategia_leg, intensidade_sombra)
+                                                  estrategia_leg, intensidade_sombra, seed=seed)
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 y += esp
 
@@ -1931,17 +1970,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                # v20b: ajustado a pedido — a barra deve ficar PARCIALMENTE
-                # atras da base das letras (nao totalmente abaixo), como um
-                # "fundo" que espia por tras do texto, dando profundidade
-                # 3D. Sobe a barra pra cobrir a faixa dos descendentes/base
-                # da letra, mantendo a redesenha da palavra por cima pra
-                # garantir que ela continue legivel na frente da barra.
-                barra_h  = max(10, int(ph * 0.22))
-                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.55))
+                # v22: reduzida a sobreposicao na base (v20b tinha exagerado
+                # e a barra chegava a cruzar visivelmente o texto) — agora
+                # so uma fresta minima conecta a barra a letra, sem nunca
+                # cruzar o corpo/contorno visivel dela
+                barra_h  = max(8, int(ph * 0.14))
+                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.15))
                 barra_y2 = barra_y1 + barra_h
-                acento_cor = _cor_contraste(cor_pd)
-                draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, 255))
+                acento_cor, acento_alpha = _cor_acento(cor_pd, seed)
+                draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, acento_alpha))
                 if liga_pd:
                     _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255))
                 else:
