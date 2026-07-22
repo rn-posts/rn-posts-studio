@@ -69,6 +69,14 @@ CORREÇÕES v21
   comeca fixo em "contorno", tambem resolve o bug original do disco
   efemero do Render sem precisar do hack de seed
 
+CORREÇÕES v22
+=============
+- ALTERADO: estrategias de legibilidade agora em sequencia FIXA, sem
+  embaralhamento nenhum. Ordem sempre: contorno → glow_glifo →
+  sombra_dupla → sombra_adaptativa → peso_fonte → acento_grafico →
+  cor_por_linha → volta pro contorno. Indice (0-6) persistido em disco.
+  Quando o disco nao existe ou reseta, comeca do 0 = contorno.
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -555,44 +563,39 @@ def _proxima_forma_fundo():
 # ── Estratégias de legibilidade (rotação persistida em disco) ────────────────
 # 7 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
 # translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
-# da lista, em sequência fixa (nunca sorteio). O índice é salvo em arquivo
-# (não só em memória, como o contador de formas acima) para sobreviver a
-# reinícios do processo/servidor — a rotação nunca reinicia do zero.
+# da lista, em sequência FIXA (nunca sorteio, nunca embaralha).
+# Ordem fixa: contorno → glow_glifo → sombra_dupla → sombra_adaptativa →
+# peso_fonte → acento_grafico → cor_por_linha → volta pro contorno.
+# O índice é salvo em arquivo para sobreviver a reinícios do processo/servidor.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
     "peso_fonte", "acento_grafico", "cor_por_linha",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
-_baralho_estrategias = []  # fila embaralhada restante (baralho sem reposicao)
 
 def _proxima_estrategia_legibilidade(seed=None):
-    """v21: baralho sem reposicao, no mesmo padrao de _proxima_foto_baralho
-    (fotos) — consome as 7 estrategias embaralhadas ate esgotar a lista, so
-    entao embaralha um novo ciclo completo. GARANTE as 7 sem repetir
-    nenhuma antes de todas as outras terem sido usadas no ciclo (diferente
-    da v18, que somava seed ao contador e virava praticamente aleatorio,
-    podendo repetir estrategia em cards consecutivos). Persistido em disco
-    (a fila restante) pra sobreviver a reinicios do processo; se o disco
-    resetar (Render e efemero), so comeca um baralho novo embaralhado —
-    nunca mais trava sempre no mesmo indice."""
-    global _baralho_estrategias
-    if not _baralho_estrategias:
-        fila = None
-        try:
-            with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
-                fila = json.load(f).get("fila")
-        except Exception:
-            fila = None
-        if fila and all(e in _ESTRATEGIAS_LEGIBILIDADE for e in fila):
-            _baralho_estrategias = fila
-        else:
-            _baralho_estrategias = _ESTRATEGIAS_LEGIBILIDADE[:]
-            random.shuffle(_baralho_estrategias)
-            print(f"[estrategia_leg] novo baralho: {_baralho_estrategias}")
-    estrategia = _baralho_estrategias.pop()
+    """v22: sequência FIXA 1→2→3→4→5→6→7→1→... sempre começando por contorno.
+    Sem embaralhamento, sem aleatoriedade — ordem determinística e previsível.
+    O índice (0-6) é persistido em disco pra sobreviver a reinícios."""
+    # Ler índice atual do disco (default 0 = contorno)
+    indice = 0
+    try:
+        with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
+            dados = json.load(f)
+            indice_salvo = dados.get("indice")
+            if isinstance(indice_salvo, int) and 0 <= indice_salvo < len(_ESTRATEGIAS_LEGIBILIDADE):
+                indice = indice_salvo
+    except Exception:
+        indice = 0
+
+    estrategia = _ESTRATEGIAS_LEGIBILIDADE[indice]
+    proximo = (indice + 1) % len(_ESTRATEGIAS_LEGIBILIDADE)
+    print(f"[estrategia_leg] fixa #{indice+1}/7: {estrategia}  (próxima será #{proximo+1})")
+
+    # Persistir o próximo índice em disco
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
-            json.dump({"fila": _baralho_estrategias}, f)
+            json.dump({"indice": proximo}, f)
     except Exception as e:
         print(f"[estrategia_leg] falha ao persistir: {e}")
     return estrategia
