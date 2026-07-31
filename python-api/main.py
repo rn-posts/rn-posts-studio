@@ -74,8 +74,14 @@ CORREÇÕES v22
 - ALTERADO: estrategias de legibilidade agora em sequencia FIXA, sem
   embaralhamento nenhum. Ordem sempre: contorno → glow_glifo →
   sombra_dupla → sombra_adaptativa → peso_fonte → acento_grafico →
-  cor_por_linha → volta pro contorno. Indice (0-6) persistido em disco.
+  posicao_criteriosa → volta pro contorno. Indice (0-6) persistido em disco.
   Quando o disco nao existe ou reseta, comeca do 0 = contorno.
+- SUBSTITUIDO: estrategia "cor_por_linha" removida e trocada por
+  "posicao_criteriosa" — em vez de trocar a cor do texto por linha,
+  amplia agressivamente o leque de zonas candidatas (topo, meio, base)
+  e escolhe a posicao que tem mais contraste natural com a foto.
+  Resultado: o texto pode aparecer numa posicao visivelmente diferente
+  das outras estrategias, conforme a foto pedir.
 
 PIPELINE
 ========
@@ -565,11 +571,11 @@ def _proxima_forma_fundo():
 # translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
 # da lista, em sequência FIXA (nunca sorteio, nunca embaralha).
 # Ordem fixa: contorno → glow_glifo → sombra_dupla → sombra_adaptativa →
-# peso_fonte → acento_grafico → cor_por_linha → volta pro contorno.
+# peso_fonte → acento_grafico → posicao_criteriosa → volta pro contorno.
 # O índice é salvo em arquivo para sobreviver a reinícios do processo/servidor.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
-    "peso_fonte", "acento_grafico", "cor_por_linha",
+    "peso_fonte", "acento_grafico", "posicao_criteriosa",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
@@ -1383,7 +1389,7 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
     glow colorido com a silhueta das letras, sombra em 2 camadas coloridas,
     sombra com intensidade contínua tingida, ou a sombra padrão (usada pelas
     demais estratégias, que atuam em outros pontos de desenhar_titulo —
-    peso de fonte, posição, acento gráfico, cor por linha)."""
+    peso de fonte, posição criteriosa, acento gráfico)."""
     if estrategia_leg == "glow_glifo":
         _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
     elif estrategia_leg == "sombra_dupla":
@@ -1474,6 +1480,20 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _zona_default     = (int(H * 0.44), int(H * 0.82))
         _candidatas_zona  = [_zona_default, (int(H * 0.50), int(H * 0.86)),
                              (int(H * 0.40), int(H * 0.78)), (int(H * 0.16), int(H * 0.50))]
+        # v22b: posicao_criteriosa — leque MUITO mais amplo de zonas testadas,
+        # incluindo topo, meio e base da imagem. O texto pode cair numa
+        # posicao radicalmente diferente das outras estrategias.
+        if estrategia_leg == "posicao_criteriosa":
+            _candidatas_zona = [
+                (int(H * 0.08), int(H * 0.38)),   # topo
+                (int(H * 0.15), int(H * 0.45)),   # topo-meio
+                (int(H * 0.25), int(H * 0.55)),   # meio-alto
+                (int(H * 0.35), int(H * 0.65)),   # meio
+                (int(H * 0.44), int(H * 0.74)),   # meio-baixo (padrao)
+                (int(H * 0.50), int(H * 0.80)),   # baixo
+                (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
+                (int(H * 0.60), int(H * 0.90)),   # base
+            ]
     else:
         _zonas_pessoa = [
             (int(H * 0.46), int(H * 0.76)),
@@ -1483,10 +1503,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.47), int(H * 0.77)),
         ]
         _zona_default    = _zonas_pessoa[layout % len(_zonas_pessoa)]
-        # Candidatas para a estratégia posicao_otima: leque mais amplo que as
-        # zonas do layout padrão (que ficam a poucos % de distância entre si)
-        # — assim, quando essa estratégia entra, o reposicionamento fica de
-        # fato perceptível, não só alguns pixels de diferença.
         _candidatas_zona = [
             _zona_default,
             (int(H * 0.40), int(H * 0.70)),
@@ -1495,6 +1511,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.48), int(H * 0.86)),
             (int(H * 0.58), int(H * 0.90)),
         ]
+        # v22b: posicao_criteriosa COM pessoa — explora zonas mais variadas
+        # mas ainda respeitando a colisao com cabeca (penalidade +5.0)
+        if estrategia_leg == "posicao_criteriosa":
+            _candidatas_zona = [
+                (int(H * 0.12), int(H * 0.40)),   # topo (pode funcionar se pessoa esta embaixo)
+                (int(H * 0.22), int(H * 0.50)),   # topo-meio
+                (int(H * 0.35), int(H * 0.65)),   # meio
+                _zona_default,                      # padrao do layout
+                (int(H * 0.50), int(H * 0.80)),   # baixo
+                (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
+                (int(H * 0.60), int(H * 0.92)),   # base
+            ]
 
     # v17: a busca pela zona ótima (antes exclusiva da estratégia
     # "posicao_otima", 1 a cada 8 gerações) agora roda em TODA geração — a
@@ -1776,7 +1804,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
 
-    _idx_cor_linha = 0  # contador de linha, usado pela estrategia cor_por_linha
+    # (contador _idx_cor_linha removido — cor_por_linha substituida por posicao_criteriosa)
     _palavra_destaque_rect = None  # (x,y,largura,altura) da ultima palavra
                                      # agilera_est ("*palavra", ex. "Generalizada"),
                                      # usado pelo acento_grafico para ancorar
@@ -1812,10 +1840,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                 else:
                     _cor_render = cor_txt
-                    if estrategia_leg == "cor_por_linha":
-                        _w_l = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
-                        _cor_render = _cor_linha_por_fundo(img_rgba, MARGIN, y, _w_l, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
-                        _idx_cor_linha += 1
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
                                               estrategia_leg, intensidade_sombra, seed=seed)
@@ -1907,9 +1931,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             x_cursor = rx2 + 7
                         else:
                             _cor_render = cor_txt
-                            if estrategia_leg == "cor_por_linha":
-                                _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
-                                _idx_cor_linha += 1
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                       estrategia_leg, intensidade_sombra, seed=seed)
@@ -1952,9 +1973,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             x_cursor += w + 20
                     else:
                         _cor_render = cor_txt
-                        if estrategia_leg == "cor_por_linha":
-                            _cor_render = _cor_linha_por_fundo(img_rgba, x_cursor, y, w, _altura_linha(fonte), _idx_cor_linha, evitar=(_cor_principal, _cor_sec))
-                            _idx_cor_linha += 1
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                   estrategia_leg, intensidade_sombra, seed=seed)
