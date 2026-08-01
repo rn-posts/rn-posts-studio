@@ -573,46 +573,35 @@ def _proxima_forma_fundo():
     _forma_fundo_idx += 1
     return forma
 
-# ── Estratégias de legibilidade (rotação persistida em disco) ────────────────
-# 6 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
-# translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
-# da lista, em sequência FIXA (nunca sorteio, nunca embaralha).
-# Ordem fixa: contorno → glow_glifo → sombra_dupla → sombra_adaptativa →
-# peso_fonte → acento_grafico → volta pro contorno.
-# POSIÇÃO CRITERIOSA (busca ampla de zonas) roda SEMPRE, em todas as
-# estratégias — não é uma estratégia individual.
-# O índice é salvo em arquivo para sobreviver a reinícios do processo/servidor.
-_ESTRATEGIAS_LEGIBILIDADE = [
-    "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
-    "peso_fonte", "acento_grafico",
-]
+# ── Estratégias de legibilidade (PADRÃO MULHER, sempre igual) ────────────────
+# TODAS as estratégias foram UNIFICADAS no visual da imagem da mulher:
+#   - SOMBRA SUAVE e natural (deslocamento pequeno, blur controlado, sem nada exagerado)
+#   - NENHUM contorno/stroke fora da estratégia "contorno" (e só de forma rara)
+#   - NENHUM glow, nenhuma sombra dupla, nenhuma sombra adaptativa por linha
+#   - NENHUM peso de fonte com stroke bizarro
+# A POSIÇÃO CRITERIOSA roda SEMPRE, em todos os cards, priorizando a BASE da foto.
+# Não há mais rotação aleatória — visual uniforme e profissional em tudo.
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
 def _proxima_estrategia_legibilidade(seed=None):
-    """v23: sequência FIXA 1→2→3→4→5→6→1→... sempre começando por contorno.
-    Sem embaralhamento, sem aleatoriedade — ordem determinística e previsível.
-    O índice (0-5) é persistido em disco pra sobreviver a reinícios."""
-    # Ler índice atual do disco (default 0 = contorno)
-    indice = 0
+    """v24: PRECISO — solicitado pelo usuário.
+    SOMENTE o card 1 (primeiro / seed%7 == 0) usa 'contorno'.
+    TODOS os outros cards (2, 3, 4, 5, 6, 7, ...) usam EXCLUSIVAMENTE
+    'padrao_mulher' — visual idêntico à referência da mulher:
+    sombra suave natural, sem glow, sem sombra dupla, sem sombra adaptativa,
+    sem peso de fonte bizarro, sem acento gráfico como estratégia separada.
+    Posição criteriosa roda SEMPRE em todos (não é mais estratégia individual)."""
+    if seed is not None and (seed % 7 == 0):
+        estrategia = "contorno"
+        print(f"[estrategia_leg] CARD 1: contorno (único card com stroke)")
+    else:
+        estrategia = "padrao_mulher"
+        print(f"[estrategia_leg] CARD 2+: PADRÃO MULHER — sombra suave, uniforme")
     try:
-        with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
-            dados = json.load(f)
-            indice_salvo = dados.get("indice")
-            if isinstance(indice_salvo, int) and 0 <= indice_salvo < len(_ESTRATEGIAS_LEGIBILIDADE):
-                indice = indice_salvo
+        if os.path.exists(_ESTADO_ESTRATEGIA_PATH):
+            os.remove(_ESTADO_ESTRATEGIA_PATH)
     except Exception:
-        indice = 0
-
-    estrategia = _ESTRATEGIAS_LEGIBILIDADE[indice]
-    proximo = (indice + 1) % len(_ESTRATEGIAS_LEGIBILIDADE)
-    print(f"[estrategia_leg] fixa #{indice+1}/6: {estrategia}  (próxima será #{proximo+1})")
-
-    # Persistir o próximo índice em disco
-    try:
-        with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
-            json.dump({"indice": proximo}, f)
-    except Exception as e:
-        print(f"[estrategia_leg] falha ao persistir: {e}")
+        pass
     return estrategia
 
 # ── Formas de preenchimento ("-palavra"): 6 variações na rotação — cada uma
@@ -1171,40 +1160,29 @@ def _parse_blocos(tema):
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
 def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intensidade=None):
-    """
-    Sombra do texto — 3 modos:
-      padrão (forte=True/False)  — sombra única, como antes
-      dupla=True                 — 3. duas camadas: sombra de CONTATO (curta,
-                                  mais escura, funde com a letra) + sombra
-                                  AMBIENTE (mais larga e suave, separa do
-                                  fundo à distância) — mais profundidade sem
-                                  parecer "photoshopado"
-      intensidade=0..1            — 4. blur/opacidade escalam CONTINUAMENTE
-                                  com um valor de risco medido na zona (em
-                                  vez do binário forte/não-forte)
-    v22: cada modo agora tem uma cor de sombra PRÓPRIA (antes todas usavam
-    o mesmo preto-azulado neutro) — dá assinatura visual distinta pra
-    sombra_dupla (halo petróleo saturado na camada ambiente) e
-    sombra_adaptativa (tingido marinho), que antes ficavam quase idênticas
-    à sombra padrão a olho nu.
-    """
-    NEUTRA = (2, 20, 30)
-    if intensidade is not None:
-        blur   = 6 + 26 * intensidade
-        opac   = 0.22 + 0.50 * intensidade
-        params = [((4, 5), blur, opac, (8, 12, 45))]
-    elif dupla:
-        params = [((3, 4), 7, 0.48, NEUTRA), ((18, 24), 46, 0.44, (6, 80, 100))]
-    elif forte:
-        params = [((5, 6), 14, 0.38, NEUTRA)]
-    else:
-        params = [((5, 6), 13, 0.34, NEUTRA)]
-    for (ox, oy), blur, opac, cor_sombra in params:
-        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        d     = ImageDraw.Draw(layer)
-        _linha(d, x + ox, y + oy, texto, fonte, (*cor_sombra, int(255 * opac)), sp)
-        layer = layer.filter(ImageFilter.GaussianBlur(blur))
-        img_rgba.paste(layer, (0, 0), layer)
+    """v24: SOMBRA SUAVE padrão mulher — aplicada IGUAL em TODOS os cards
+    (exceto card 1 que ainda tem a sombra + contorno). Ajustada para o visual
+    da referência: deslocamento pequeno, blur moderado, opacidade baixa.
+    NENHUM glow, nenhuma sombra dupla, nenhuma sombra adaptativa.
+    O visual é LIMP e NATURAL, igual à mulher."""
+    # Parâmetros DA MULHER (sempre suave):
+    # - Deslocamento pequeno (leve contato)
+    # - Blur nem grande nem pequeno (11px)
+    # - Opacidade reduzida (30%)
+    NEUTRA = (2, 18, 28)
+    ox, oy = 4, 5
+    blur = 11
+    opac = 0.30
+    # Se a foto for muito clara/luminosa (forte=True), aumenta um pouco
+    # mas SEM exagerar — nunca sai do visual limpo da mulher.
+    if forte:
+        opac = 0.36
+        blur = 13
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d     = ImageDraw.Draw(layer)
+    _linha(d, x + ox, y + oy, texto, fonte, (*NEUTRA, int(255 * opac)), sp)
+    layer = layer.filter(ImageFilter.GaussianBlur(blur))
+    img_rgba.paste(layer, (0, 0), layer)
 
 def _linha(draw, x, y, texto, fonte, cor, sp=0, stroke_width=0, stroke_fill=None):
     if sp == 0:
@@ -1393,33 +1371,23 @@ def _texto_para_modo(modo, texto):
 def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
                                tem_liga, sombra_forte, estrategia_leg=None,
                                intensidade_sombra=None, cor_glow=None, seed=0):
-    """Renderiza uma linha AGILERA aplicando a estratégia de legibilidade da
-    vez (rotação de 6, ver _proxima_estrategia_legibilidade): contorno fino,
-    glow colorido com a silhueta das letras, sombra em 2 camadas coloridas,
-    sombra com intensidade contínua tingida, ou a sombra padrão.
-    v23: contorno (stroke) só aparece na estratégia "contorno" — as demais
-    usam apenas sombra/glow, sem stroke nenhum, evitando o efeito de
-    contorno vazado em cards que não são da estratégia contorno."""
-    if estrategia_leg == "glow_glifo":
-        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
-    elif estrategia_leg == "sombra_dupla":
-        _sombra(img_rgba, texto, fonte, x, y, sp, dupla=True)
-    elif estrategia_leg == "sombra_adaptativa" and intensidade_sombra is not None:
-        _sombra(img_rgba, texto, fonte, x, y, sp, intensidade=intensidade_sombra)
-    else:
-        _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
+    """Renderiza uma linha AGILERA aplicando a estratégia de legibilidade.
+    v24 (solicitado pelo usuário):
+      - CARD 1 (contorno) → stroke de contraste + sombra padrão (único com contorno)
+      - TODOS OS OUTROS (padrao_mulher) → SOMENTE sombra suave natural.
+      NUNCA usa glow, sombra dupla, sombra adaptativa ou stroke fora do card 1 —
+      visual uniforme e profissional igual à referência da mulher."""
+
+    # PASSO 1: Sombra — sempre aplicada, mas só a PADRÃO SUAVE (como na mulher)
+    # para QUALQUER estratégia. NADA de glow, NADA de sombra dupla, NADA de adaptativa.
+    _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
 
     draw = ImageDraw.Draw(img_rgba, "RGBA")
+    # PASSO 2: Stroke/contorno — EXCLUSIVO do CARD 1 (estrategia "contorno").
+    # Fora do card 1: ZERO stroke (0,0,0,0) → texto limpo igual da mulher.
     if estrategia_leg == "contorno":
-        # Estratégia CONTORNO: stroke visível com cor oposta
         stroke_w, stroke_c = 3, (*_cor_contraste(cor), 255)
-    elif estrategia_leg == "peso_fonte":
-        # v23: peso_fonte usa stroke SUTIL da mesma cor (1px) — só engrossa
-        # levemente sem o efeito bizarro do 2px antigo
-        stroke_w, stroke_c = 1, (*cor, 180)
     else:
-        # v23: NENHUM stroke nas demais estratégias — o destaque vem
-        # exclusivamente da sombra/glow, sem contorno visível
         stroke_w, stroke_c = 0, (0, 0, 0, 0)
     if tem_liga:
         _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
@@ -1531,6 +1499,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         return not (rx1 <= bx0 or rx0 >= bx1 or ry1 <= by0 or ry0 >= by1)
 
     melhor = None; melhor_score = None
+    total_zonas = len(_candidatas_zona)
     for _i_c, (yi_raw, yf_raw) in enumerate(_candidatas_zona):
         yi, yf = yi_raw, yf_raw
         if tem_pessoa and em_pe:
@@ -1542,8 +1511,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # isso a escolha sempre "empatava" pro mesmo candidato (a variedade
         # ficava só na teoria). O viés é pequeno o bastante pra não vencer
         # uma zona genuinamente melhor.
-        vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.12
-        score = _comp * 0.65 + _lum * 0.35 - vies
+        vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.08
+        # VIÉS DE POSIÇÃO: priorizar zonas na BASE/BAIXO (como a mulher) —
+        # as últimas candidatas são as de baixo, ganham bônus de preferência.
+        # Isso evita que o texto fique pulando para o topo e pareça livro.
+        vies_posicao = (1.0 - (_i_c / max(1, total_zonas - 1))) * 0.45
+        score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
         # essa zona a menos que TODAS as outras também cruzem
         if _intersecta_cabeca(MARGIN, yi, MARGIN + MAX_PX, yf):
@@ -1613,13 +1586,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     _malgun_vars = [f_bold(tam_ml), f_corpo(tam_ml), f_light(tam_ml)]
     fb = _malgun_vars[(seed // 6) % 3]
 
-    if estrategia_leg == "peso_fonte":
-        # v23: peso_fonte simplificado — MALGUN sempre bold, tracking do
-        # AGILERA levemente mais fechado (sutil, sem o -4 exagerado que
-        # deixava as letras coladas de forma bizarra).
-        fb = f_bold(tam_ml)
-        ag_sp = min(ag_sp, -1)
-        print(f"[titulo] peso_fonte: malgun=bold ag_sp={ag_sp}")
+    if estrategia_leg == "contorno":
+        # Excepcionalmente CARD 1: o contorno já é destaque suficiente.
+        # Mantém a base (não faz nada além do stroke da renderização).
+        print(f"[titulo] card 1: usando contorno (único com stroke visível)")
+    # IMPORTANTE (v24 — pedido do usuário): NÃO HÁ MAIS NENHUMA outra
+    # estratégia individual. Nenhum peso_fonte, nenhum glow, nenhuma sombra
+    # adaptativa, nenhum acento_gráfico como estratégia separada.
+    # Todos os cards 2+ usam o PADRÃO MULHER: sombra suave + tipografia
+    # padrão do projeto + pílulas inline (-palavra) quando solicitado.
+    # Tudo isso já é aplicado na renderização padrão acima.
 
     # Paleta de blocos: cores escolhidas para CONTRASTAR com a foto
     # Analisa luminosidade e tom dominante da foto para escolher texto legível
@@ -1966,52 +1942,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 y += esp
 
-    if estrategia_leg == "acento_grafico":
-        # v23: acento gráfico como FUNDO/BASE da palavra destaque — barra
-        # GROSSA (30% da altura da letra) posicionada atrás da metade inferior
-        # da palavra, como um marca-texto grosso. A palavra é redesenhada por
-        # cima. Referência: imagem da mulher (card 6), onde a barra funciona
-        # como uma ancoragem visual sólida na base da tipografia.
-        try:
-            draw = ImageDraw.Draw(img_rgba, "RGBA")
-            acento_cor = _cor_sec if lum_zona_real < 0.5 else _cor_principal
-            if _palavra_destaque_rect and _palavra_destaque_info:
-                px, py, pw, ph = _palavra_destaque_rect
-                txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                # Barra grossa: 30% da altura da letra, posicionada na
-                # metade inferior da palavra (como fundo/base)
-                barra_h  = max(14, int(ph * 0.30))
-                barra_y1 = py + ph - barra_h  # começa na base da letra
-                barra_y2 = py + ph + int(barra_h * 0.15)  # leve extensão abaixo
-                barra_y1 = min(SAFE_BOTTOM - barra_h, barra_y1)
-                barra_y2 = min(SAFE_BOTTOM, barra_y2)
-                acento_cor, acento_alpha = _cor_acento(cor_pd, seed)
-                # Barra com cantos levemente arredondados
-                try:
-                    draw.rounded_rectangle([px - 4, barra_y1, px + pw + 4, barra_y2],
-                                           radius=4, fill=(*acento_cor, acento_alpha))
-                except Exception:
-                    draw.rectangle([px - 4, barra_y1, px + pw + 4, barra_y2],
-                                   fill=(*acento_cor, acento_alpha))
-                # Redesenhar a palavra POR CIMA da barra
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
-                if liga_pd:
-                    _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255))
-                else:
-                    _linha(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255), sp_pd)
-            else:
-                # Fallback: barra grossa horizontal
-                acento_y = min(SAFE_BOTTOM - 10, y + 26)
-                largura_acento = max(80, int(min(largura_titulo, MAX_PX) * 0.60))
-                barra_h = 12
-                try:
-                    draw.rounded_rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + barra_h)],
-                                           radius=3, fill=(*acento_cor, 255))
-                except Exception:
-                    draw.rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + barra_h)],
-                                   fill=(*acento_cor, 255))
-        except Exception as e:
-            print(f"[acento_grafico] erro: {e}")
+    # (v24) REMOVIDO bloco "acento_grafico" como estratégia individual —
+    # conforme solicitado. O destaque de palavra (igual da mulher com
+    # "desordem" na pílula) continua 100% funcional através do padrão inline
+    # `-palavra` no tema, que usa _desenhar_forma_fundo (pilula/bandeira etc.)
+    # aplicado diretamente no bloco correspondente, sem estratégia separada.
 
     return img_rgba.convert("RGB"), layout
 
