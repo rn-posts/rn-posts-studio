@@ -72,16 +72,23 @@ CORREÇÕES v21
 CORREÇÕES v22
 =============
 - ALTERADO: estrategias de legibilidade agora em sequencia FIXA, sem
-  embaralhamento nenhum. Ordem sempre: contorno → glow_glifo →
-  sombra_dupla → sombra_adaptativa → peso_fonte → acento_grafico →
-  posicao_criteriosa → volta pro contorno. Indice (0-6) persistido em disco.
-  Quando o disco nao existe ou reseta, comeca do 0 = contorno.
-- SUBSTITUIDO: estrategia "cor_por_linha" removida e trocada por
-  "posicao_criteriosa" — em vez de trocar a cor do texto por linha,
-  amplia agressivamente o leque de zonas candidatas (topo, meio, base)
-  e escolhe a posicao que tem mais contraste natural com a foto.
-  Resultado: o texto pode aparecer numa posicao visivelmente diferente
-  das outras estrategias, conforme a foto pedir.
+  embaralhamento nenhum.
+- SUBSTITUIDO: estrategia "cor_por_linha" removida.
+
+CORREÇÕES v23
+=============
+- REDUZIDO de 7 para 6 estrategias: contorno, glow_glifo, sombra_dupla,
+  sombra_adaptativa, peso_fonte, acento_grafico. Indice (0-5) persistido.
+- POSICAO CRITERIOSA agora roda SEMPRE em todas as estrategias (nao e
+  mais estrategia individual) — leque amplo de zonas candidatas (topo,
+  meio, base) testado em toda geracao, texto sempre na melhor posicao.
+- REMOVIDO contorno sutil (1px) que sangrava nas estrategias que nao sao
+  "contorno" — agora stroke=0 nas demais, destaque vem so da sombra/glow.
+- CORRIGIDO peso_fonte: tracking -4 exagerado trocado por -1 sutil,
+  stroke 2px trocado por 1px quase invisivel.
+- CORRIGIDO acento_grafico: barra agora GROSSA (30% da altura da letra),
+  posicionada na base/fundo da palavra como marca-texto, com cantos
+  arredondados e palavra redesenhada por cima (ref: imagem da mulher).
 
 PIPELINE
 ========
@@ -567,22 +574,24 @@ def _proxima_forma_fundo():
     return forma
 
 # ── Estratégias de legibilidade (rotação persistida em disco) ────────────────
-# 7 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
+# 6 abordagens elegantes para o texto se destacar do fundo SEM nenhuma camada
 # translúcida/retangular sobre a foto — a cada card gerado usa-se a próxima
 # da lista, em sequência FIXA (nunca sorteio, nunca embaralha).
 # Ordem fixa: contorno → glow_glifo → sombra_dupla → sombra_adaptativa →
-# peso_fonte → acento_grafico → posicao_criteriosa → volta pro contorno.
+# peso_fonte → acento_grafico → volta pro contorno.
+# POSIÇÃO CRITERIOSA (busca ampla de zonas) roda SEMPRE, em todas as
+# estratégias — não é uma estratégia individual.
 # O índice é salvo em arquivo para sobreviver a reinícios do processo/servidor.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_dupla", "sombra_adaptativa",
-    "peso_fonte", "acento_grafico", "posicao_criteriosa",
+    "peso_fonte", "acento_grafico",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
 def _proxima_estrategia_legibilidade(seed=None):
-    """v22: sequência FIXA 1→2→3→4→5→6→7→1→... sempre começando por contorno.
+    """v23: sequência FIXA 1→2→3→4→5→6→1→... sempre começando por contorno.
     Sem embaralhamento, sem aleatoriedade — ordem determinística e previsível.
-    O índice (0-6) é persistido em disco pra sobreviver a reinícios."""
+    O índice (0-5) é persistido em disco pra sobreviver a reinícios."""
     # Ler índice atual do disco (default 0 = contorno)
     indice = 0
     try:
@@ -596,7 +605,7 @@ def _proxima_estrategia_legibilidade(seed=None):
 
     estrategia = _ESTRATEGIAS_LEGIBILIDADE[indice]
     proximo = (indice + 1) % len(_ESTRATEGIAS_LEGIBILIDADE)
-    print(f"[estrategia_leg] fixa #{indice+1}/7: {estrategia}  (próxima será #{proximo+1})")
+    print(f"[estrategia_leg] fixa #{indice+1}/6: {estrategia}  (próxima será #{proximo+1})")
 
     # Persistir o próximo índice em disco
     try:
@@ -1385,11 +1394,12 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
                                tem_liga, sombra_forte, estrategia_leg=None,
                                intensidade_sombra=None, cor_glow=None, seed=0):
     """Renderiza uma linha AGILERA aplicando a estratégia de legibilidade da
-    vez (rotação de 7, ver _proxima_estrategia_legibilidade): contorno fino,
+    vez (rotação de 6, ver _proxima_estrategia_legibilidade): contorno fino,
     glow colorido com a silhueta das letras, sombra em 2 camadas coloridas,
-    sombra com intensidade contínua tingida, ou a sombra padrão (usada pelas
-    demais estratégias, que atuam em outros pontos de desenhar_titulo —
-    peso de fonte, posição criteriosa, acento gráfico)."""
+    sombra com intensidade contínua tingida, ou a sombra padrão.
+    v23: contorno (stroke) só aparece na estratégia "contorno" — as demais
+    usam apenas sombra/glow, sem stroke nenhum, evitando o efeito de
+    contorno vazado em cards que não são da estratégia contorno."""
     if estrategia_leg == "glow_glifo":
         _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
     elif estrategia_leg == "sombra_dupla":
@@ -1401,23 +1411,16 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 
     draw = ImageDraw.Draw(img_rgba, "RGBA")
     if estrategia_leg == "contorno":
+        # Estratégia CONTORNO: stroke visível com cor oposta
         stroke_w, stroke_c = 3, (*_cor_contraste(cor), 255)
     elif estrategia_leg == "peso_fonte":
-        # 5. Faux-bold: contorno da MESMA cor do preenchimento engrossa o
-        # traço de verdade (não é só tracking) — a AGILERA não tem peso
-        # OpenType, então essa é a forma de simular peso marcado nela.
-        # v20: CORRIGIDO — o stroke 4px da v19 (tentando diferenciar de
-        # peso_fonte vs. o contorno sutil padrao) ficou pesado demais pro
-        # AGILERA (fecha os "olhos" das letras arredondadas, lê como
-        # borrado). Voltou pra 2px; a diferenciacao de peso_fonte vem do
-        # tracking bem mais fechado (ag_sp) e do MALGUN sempre bold, nao
-        # precisa do stroke sozinho fazer todo o trabalho.
-        stroke_w, stroke_c = 2, (*cor, 255)
+        # v23: peso_fonte usa stroke SUTIL da mesma cor (1px) — só engrossa
+        # levemente sem o efeito bizarro do 2px antigo
+        stroke_w, stroke_c = 1, (*cor, 180)
     else:
-        # v17: contorno sutil padrão nas demais estratégias — reforça
-        # profundidade/destaque do texto mesmo fora de "contorno" e
-        # "peso_fonte" (antes ficava sem nenhum stroke nesses casos)
-        stroke_w, stroke_c = 1, (*_cor_contraste(cor), 200)
+        # v23: NENHUM stroke nas demais estratégias — o destaque vem
+        # exclusivamente da sombra/glow, sem contorno visível
+        stroke_w, stroke_c = 0, (0, 0, 0, 0)
     if tem_liga:
         _linha_est(draw, x, y, texto, fonte, (*cor, 255), stroke_w, stroke_c)
     else:
@@ -1476,24 +1479,21 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             lum, comp, cor_media = 0.3, 0.5, (90.0, 90.0, 90.0)
         return y_ini, y_fim, lum, comp, cor_media
 
+    # v23: posição criteriosa SEMPRE ATIVA — leque amplo de zonas candidatas
+    # para TODAS as estratégias (não é mais estratégia individual). O texto
+    # sempre busca a melhor posição na foto inteira.
     if not tem_pessoa:
         _zona_default     = (int(H * 0.44), int(H * 0.82))
-        _candidatas_zona  = [_zona_default, (int(H * 0.50), int(H * 0.86)),
-                             (int(H * 0.40), int(H * 0.78)), (int(H * 0.16), int(H * 0.50))]
-        # v22b: posicao_criteriosa — leque MUITO mais amplo de zonas testadas,
-        # incluindo topo, meio e base da imagem. O texto pode cair numa
-        # posicao radicalmente diferente das outras estrategias.
-        if estrategia_leg == "posicao_criteriosa":
-            _candidatas_zona = [
-                (int(H * 0.08), int(H * 0.38)),   # topo
-                (int(H * 0.15), int(H * 0.45)),   # topo-meio
-                (int(H * 0.25), int(H * 0.55)),   # meio-alto
-                (int(H * 0.35), int(H * 0.65)),   # meio
-                (int(H * 0.44), int(H * 0.74)),   # meio-baixo (padrao)
-                (int(H * 0.50), int(H * 0.80)),   # baixo
-                (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
-                (int(H * 0.60), int(H * 0.90)),   # base
-            ]
+        _candidatas_zona  = [
+            (int(H * 0.08), int(H * 0.38)),   # topo
+            (int(H * 0.15), int(H * 0.45)),   # topo-meio
+            (int(H * 0.25), int(H * 0.55)),   # meio-alto
+            (int(H * 0.35), int(H * 0.65)),   # meio
+            _zona_default,                      # meio-baixo (padrao)
+            (int(H * 0.50), int(H * 0.80)),   # baixo
+            (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
+            (int(H * 0.60), int(H * 0.90)),   # base
+        ]
     else:
         _zonas_pessoa = [
             (int(H * 0.46), int(H * 0.76)),
@@ -1504,25 +1504,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         ]
         _zona_default    = _zonas_pessoa[layout % len(_zonas_pessoa)]
         _candidatas_zona = [
-            _zona_default,
-            (int(H * 0.40), int(H * 0.70)),
-            (int(H * 0.52), int(H * 0.82)),
-            (int(H * 0.44), int(H * 0.74)),
-            (int(H * 0.48), int(H * 0.86)),
-            (int(H * 0.58), int(H * 0.90)),
+            (int(H * 0.12), int(H * 0.40)),   # topo
+            (int(H * 0.22), int(H * 0.50)),   # topo-meio
+            (int(H * 0.35), int(H * 0.65)),   # meio
+            _zona_default,                      # padrao do layout
+            (int(H * 0.50), int(H * 0.80)),   # baixo
+            (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
+            (int(H * 0.60), int(H * 0.92)),   # base
         ]
-        # v22b: posicao_criteriosa COM pessoa — explora zonas mais variadas
-        # mas ainda respeitando a colisao com cabeca (penalidade +5.0)
-        if estrategia_leg == "posicao_criteriosa":
-            _candidatas_zona = [
-                (int(H * 0.12), int(H * 0.40)),   # topo (pode funcionar se pessoa esta embaixo)
-                (int(H * 0.22), int(H * 0.50)),   # topo-meio
-                (int(H * 0.35), int(H * 0.65)),   # meio
-                _zona_default,                      # padrao do layout
-                (int(H * 0.50), int(H * 0.80)),   # baixo
-                (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
-                (int(H * 0.60), int(H * 0.92)),   # base
-            ]
 
     # v17: a busca pela zona ótima (antes exclusiva da estratégia
     # "posicao_otima", 1 a cada 8 gerações) agora roda em TODA geração — a
@@ -1625,13 +1614,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     fb = _malgun_vars[(seed // 6) % 3]
 
     if estrategia_leg == "peso_fonte":
-        # 5. Peso da fonte reagindo ao fundo — MALGUN sempre na versão mais
-        # encorpada e tracking do AGILERA mais fechado (mais denso). Como o
-        # AGILERA não tem pesos OpenType, o "peso" vem só de tracking (sem
-        # mudar o tamanho da fonte já construída) — letras mais coladas
-        # aparentam mais densidade e absorvem mais contraste sozinhas.
+        # v23: peso_fonte simplificado — MALGUN sempre bold, tracking do
+        # AGILERA levemente mais fechado (sutil, sem o -4 exagerado que
+        # deixava as letras coladas de forma bizarra).
         fb = f_bold(tam_ml)
-        ag_sp = min(ag_sp, -4)
+        ag_sp = min(ag_sp, -1)
         print(f"[titulo] peso_fonte: malgun=bold ag_sp={ag_sp}")
 
     # Paleta de blocos: cores escolhidas para CONTRASTAR com a foto
@@ -1980,35 +1967,49 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 y += esp
 
     if estrategia_leg == "acento_grafico":
-        # 7. Acento gráfico — uma barra sólida atrás da BASE da palavra de
-        # destaque ("*palavra", ex. "Generalizada"), com a palavra redesenhada
-        # por cima. Não precisa ser da mesma cor do texto — cria a própria base
-        # tipográfica, como um marca-texto grosso só daquela palavra. Nunca uma
-        # caixa cobrindo a foto inteira — só o comprimento exato da palavra.
+        # v23: acento gráfico como FUNDO/BASE da palavra destaque — barra
+        # GROSSA (30% da altura da letra) posicionada atrás da metade inferior
+        # da palavra, como um marca-texto grosso. A palavra é redesenhada por
+        # cima. Referência: imagem da mulher (card 6), onde a barra funciona
+        # como uma ancoragem visual sólida na base da tipografia.
         try:
             draw = ImageDraw.Draw(img_rgba, "RGBA")
             acento_cor = _cor_sec if lum_zona_real < 0.5 else _cor_principal
             if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                # v22: reduzida a sobreposicao na base (v20b tinha exagerado
-                # e a barra chegava a cruzar visivelmente o texto) — agora
-                # so uma fresta minima conecta a barra a letra, sem nunca
-                # cruzar o corpo/contorno visivel dela
-                barra_h  = max(8, int(ph * 0.14))
-                barra_y1 = min(SAFE_BOTTOM - 4, py + ph - int(barra_h * 0.15))
-                barra_y2 = barra_y1 + barra_h
+                # Barra grossa: 30% da altura da letra, posicionada na
+                # metade inferior da palavra (como fundo/base)
+                barra_h  = max(14, int(ph * 0.30))
+                barra_y1 = py + ph - barra_h  # começa na base da letra
+                barra_y2 = py + ph + int(barra_h * 0.15)  # leve extensão abaixo
+                barra_y1 = min(SAFE_BOTTOM - barra_h, barra_y1)
+                barra_y2 = min(SAFE_BOTTOM, barra_y2)
                 acento_cor, acento_alpha = _cor_acento(cor_pd, seed)
-                draw.rectangle([px, barra_y1, px + pw, barra_y2], fill=(*acento_cor, acento_alpha))
+                # Barra com cantos levemente arredondados
+                try:
+                    draw.rounded_rectangle([px - 4, barra_y1, px + pw + 4, barra_y2],
+                                           radius=4, fill=(*acento_cor, acento_alpha))
+                except Exception:
+                    draw.rectangle([px - 4, barra_y1, px + pw + 4, barra_y2],
+                                   fill=(*acento_cor, acento_alpha))
+                # Redesenhar a palavra POR CIMA da barra
+                draw = ImageDraw.Draw(img_rgba, "RGBA")
                 if liga_pd:
                     _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255))
                 else:
                     _linha(draw, px, py, txt_pd, fonte_pd, (*cor_pd, 255), sp_pd)
             else:
-                acento_y = min(SAFE_BOTTOM - 6, y + 26)
-                largura_acento = max(60, int(min(largura_titulo, MAX_PX) * 0.55))
-                draw.line([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y)],
-                          fill=(*acento_cor, 255), width=5)
+                # Fallback: barra grossa horizontal
+                acento_y = min(SAFE_BOTTOM - 10, y + 26)
+                largura_acento = max(80, int(min(largura_titulo, MAX_PX) * 0.60))
+                barra_h = 12
+                try:
+                    draw.rounded_rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + barra_h)],
+                                           radius=3, fill=(*acento_cor, 255))
+                except Exception:
+                    draw.rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + barra_h)],
+                                   fill=(*acento_cor, 255))
         except Exception as e:
             print(f"[acento_grafico] erro: {e}")
 
