@@ -1986,51 +1986,86 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 y += esp
 
-    # Card 6 = Acento Gráfico Pequeno (Ancoragem Visual — igual a mulher):
-    # desenha a pílula de acento ABAIXO do título, NA BASE, ancorando visualmente
-    # o bloco tipográfico (igual a mulher do card6). Apenas se o usuário tiver
-    # escolhido esta estratégia. Os preenchimentos inline `-palavra` não são
-    # afetados e continuam funcionando normalmente em qualquer estratégia.
+    # Card 6 = Acento Gráfico Pequeno (Ancoragem Visual — IGUAL A MULHER):
+    # 1) POSIÇÃO: SEMPRE se sobrepõe SÓ aos ~15% DE BAIXO da ÚLTIMA linha do
+    #    título (não fica flutuando abaixo, nem cobre metade do texto) — serve
+    #    como LINHA DE APOIO visual, ancorando o bloco tipográfico na base.
+    # 2) COR: NUNCA cor parecida com o texto. Se texto for da família AZUL /
+    #    TEAL / MARINHO / PETRÓLEO, acento é CREME (amarelo quente, igual a
+    #    mulher). Se texto for claro, acento é MARINHO. Garante contraste
+    #    total para não sumir.
+    # 3) LARGURA: ~60% da largura da última linha, altura fina (22px máximo,
+    #    como a mulher).
+    # 4) FORMA: cantos arredondados mas puxados = "traço redondo" (como
+    #    na mulher — tem formato de pílula mas alongado).
+    # Os preenchimentos inline `-palavra` não são afetados.
     if estrategia_leg == "acento_grafico":
         try:
+            CREME_ACENTO = (247, 231, 173)  # cor da mulher: off-white amarelado
+            # Determina Y e largura da ÚLTIMA LINHA do título:
+            # - se tiver palavra destaque: usa o rect dela (é a última agilera_est)
+            # - senão: calcula a partir de Y_FIM — exatamente no pé da última linha
             if _palavra_destaque_rect and _palavra_destaque_info:
-                # Tem palavra de destaque -> pílula atrás dela, na base, como a mulher
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                acento_cor, _ = _cor_acento(cor_pd, seed)
-                lum_acento = _LUM_COR.get(acento_cor, 0.5)
-                cor_texto_sobre = BRANCO if lum_acento < 0.5 else MARINHO
-                pad_x = 18
-                pad_y = 12
-                rx1 = max(MARGIN, px - pad_x)
-                ry1 = py + ph - pad_y - int(ph * 0.12)  # ancorado NA BASE do texto
-                rx2 = px + pw + pad_x
-                ry2 = py + ph + pad_y + int(ph * 0.08)
-                ry2 = min(SAFE_BOTTOM, ry2)
-                ry1 = max(SAFE_TOP, min(ry1, ry2 - 20))
-                _desenhar_forma_fundo(img_rgba, [(rx1, ry1), (rx2, ry2)],
-                                      fill=(*acento_cor, 250),
-                                      forma="pilula",
-                                      pad_x=pad_x, pad_y=pad_y)
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
+                ultimo_x1, ultimo_y1 = px, py
+                ultimo_largura, ultimo_altura = pw, ph
+            else:
+                # Usa a largura do título (~60% dela) e Y_FIM como base do pé da linha
+                ultimo_x1 = MARGIN
+                ultimo_largura = int(min(largura_titulo, MAX_PX) * 0.60)
+                ultimo_largura = max(180, ultimo_largura)  # mínimo de 180px pra não ficar minúsculo
+                # A altura da linha final é ~60% de `tam_ag` (altura útil da agilera)
+                ultimo_altura = int(tam_ag * 0.60)
+                ultimo_y1 = Y_FIM - ultimo_altura  # topo da última linha
+                txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = (None, None, _cor_principal, ag_sp, False)
+
+            # Escolhe COR do ACENTO — NUNCA parecida com a cor do texto
+            cor_txt = cor_pd if cor_pd else _cor_principal
+            lum_txt = _LUM_COR.get(cor_txt, 0.5)
+            # Se texto for da família AZUL / TEAL / MARINHO / PETRÓLEO (escuros)
+            # → acento sempre CREME (cor quente da mulher)
+            if cor_txt in (MARINHO, PETROLEO) or (lum_txt < 0.55 and 10 < cor_txt[2] < 200):
+                acento_cor = CREME_ACENTO
+                cor_texto_sobre = MARINHO  # texto sobre o creme: escuro
+            elif lum_txt < 0.5:
+                acento_cor = CREME_ACENTO
+                cor_texto_sobre = MARINHO
+            else:
+                # texto claro: acento escuro
+                acento_cor = MARINHO
+                cor_texto_sobre = BRANCO
+
+            # POSICIONAMENTO FINAL: barra SÓ sobrepõe os ~15% inferiores da
+            # última linha (ancora visual, igual a mulher)
+            sobrerpoe = int(ultimo_altura * 0.17)  # 17% da altura da linha
+            altura_barra = max(18, int(ultimo_altura * 0.52))  # altura fina (52% da linha)
+            rx1 = max(MARGIN, ultimo_x1 - 6)
+            ry1 = (ultimo_y1 + ultimo_altura) - sobrerpoe
+            rx2 = rx1 + ultimo_largura + 12
+            ry2 = ry1 + altura_barra
+            # Nunca ultrapassa a zona segura
+            ry2 = min(SAFE_BOTTOM, ry2)
+            ry1 = max(SAFE_TOP, min(ry1, ry2 - 16))
+            # Desenha a forma: TRAÇO COM CANTOS ARREDONDADOS (como a mulher)
+            draw = ImageDraw.Draw(img_rgba, "RGBA")
+            raio_barra = altura_barra // 2
+            try:
+                draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
+                                       radius=raio_barra,
+                                       fill=(*acento_cor, 245))
+            except Exception:
+                draw.rectangle([(rx1, ry1), (rx2, ry2)],
+                               fill=(*acento_cor, 245))
+            # Se tiver palavra destaque: REDESENHA ela POR CIMA da barra,
+            # na cor de contraste total
+            if _palavra_destaque_rect and _palavra_destaque_info and txt_pd:
                 if liga_pd:
                     _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255))
                 else:
                     _linha(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255), sp_pd)
-            else:
-                # Fallback: pílula curta na base, abaixo do título, ancoragem visual
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
-                acento_cor = _cor_sec if lum_zona_real < 0.5 else _cor_principal
-                acento_y = min(SAFE_BOTTOM - 30, Y_FIM + 36)
-                largura_acento = max(140, int(min(largura_titulo, MAX_PX) * 0.50))
-                try:
-                    draw.rounded_rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + 28)],
-                                           radius=14, fill=(*acento_cor, 240))
-                except Exception:
-                    draw.rectangle([(MARGIN, acento_y), (MARGIN + largura_acento, acento_y + 28)],
-                                   fill=(*acento_cor, 240))
         except Exception as e:
-            print(f"[acento_grafico] card6: {e}")
+            print(f"[acento_grafico] card6 (mulher): {e}")
 
     return img_rgba.convert("RGB"), layout
 
