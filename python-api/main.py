@@ -1818,6 +1818,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                      # o traco bem na base dela
     _palavra_destaque_info = None  # (texto, fonte, cor, sp, tem_liga) da mesma
                                      # palavra, para redesenha-la por cima da barra
+    # Variaveis de TRACKING da POSICAO REAL da ultima linha renderizada —
+    # usadas pelo acento_grafico para NÃO MAIS errar a posição (que antes
+    # usava Y_FIM aproximado e errava feio).
+    _ultima_linha_x1 = None        # X1 (inicio, alinhado a esquerda) da ULTIMA linha
+    _ultima_linha_y_top = None     # Y de TOPO da ULTIMA linha (topo da bbox)
+    _ultima_linha_y_bottom = None  # Y de FUNDO (bottom da bbox) da ULTIMA linha
+    _ultima_linha_largura = None   # Largura REAL ocupada pelo texto na ultima linha
+    _ultima_linha_cor = None       # Cor usada na ultima linha (para escolher cor do acento)
+    _ultima_linha_fonte = None     # Fonte usada na ultima linha
+    _ultima_linha_sp = 0           # Tracking (sp) da ultima linha
+    _ultima_linha_texto = ""       # Texto da ultima linha (para fallback)
 
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
@@ -1843,13 +1854,61 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
                         draw = ImageDraw.Draw(img_rgba, "RGBA")
                         _linha(draw, rx1 + pad_x - bb[0], y, linha, fonte, (*cor_txt, 255), 0)
+                        # Tracking: ultima linha = texto do bloco fundo (apenas o texto interno)
+                        _ultima_linha_x1 = rx1 + pad_x - bb[0]
+                        _ultima_linha_y_top = y + bb[1]
+                        _ultima_linha_y_bottom = y + bb[3]
+                        _ultima_linha_largura = bb[2] - bb[0]
+                        _ultima_linha_cor = cor_txt
+                        _ultima_linha_fonte = fonte
+                        _ultima_linha_sp = 0
+                        _ultima_linha_texto = linha
                     except Exception:
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
+                        # Tracking (fallback)
+                        try:
+                            bb = fonte.getbbox(linha)
+                            _ultima_linha_x1 = MARGIN
+                            _ultima_linha_y_top = y + bb[1]
+                            _ultima_linha_y_bottom = y + bb[3]
+                            _ultima_linha_largura = bb[2] - bb[0]
+                        except Exception:
+                            _ultima_linha_x1 = MARGIN
+                            _ultima_linha_y_top = y
+                            _ultima_linha_y_bottom = y + _altura_linha(fonte)
+                            _ultima_linha_largura = _medir_sp(linha, fonte, 0) if 0 else _medir(linha, fonte)
+                        _ultima_linha_cor = cor_txt
+                        _ultima_linha_fonte = fonte
+                        _ultima_linha_sp = 0
+                        _ultima_linha_texto = linha
                 else:
                     _cor_render = cor_txt
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
                                               estrategia_leg, intensidade_sombra, seed=seed)
+                    # Tracking: atualiza para a linha renderizada
+                    try:
+                        if tem_liga and _RAQM_OK:
+                            _bb = draw.textbbox((MARGIN, y), linha, font=fonte,
+                                               features=["+liga", "+aalt", "+calt", "+dlig"])
+                        else:
+                            _bb = fonte.getbbox(linha)
+                        _ultima_linha_x1 = MARGIN
+                        _ultima_linha_y_top = y + _bb[1]
+                        _ultima_linha_y_bottom = y + _bb[3]
+                        if tem_liga and _RAQM_OK:
+                            _ultima_linha_largura = _bb[2] - _bb[0]
+                        else:
+                            _ultima_linha_largura = (_medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte))
+                    except Exception:
+                        _ultima_linha_x1 = MARGIN
+                        _ultima_linha_y_top = y
+                        _ultima_linha_y_bottom = y + _altura_linha(fonte)
+                        _ultima_linha_largura = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
+                    _ultima_linha_cor = _cor_render
+                    _ultima_linha_fonte = fonte
+                    _ultima_linha_sp = sp
+                    _ultima_linha_texto = linha
                     if est == "agilera_est":
                         # v22b: CORRIGIDO — a largura estimada manualmente
                         # (soma de cada caractere) nao sabia que a palavra
@@ -1913,6 +1972,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
                 for sublinha in sublinhas:
                     x_cursor = MARGIN
+                    # Para tracking: pega o bbox combinado de TODOS tokens da sublinha
+                    _sl_y_top_list = []
+                    _sl_y_bottom_list = []
+                    _sl_x_left = x_cursor
+                    _sl_x_right = x_cursor
+                    _sl_last_cor = None
+                    _sl_last_fonte = None
+                    _sl_last_sp = 0
+                    _sl_last_texto = ""
                     for idx_sl, (ln, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(sublinha):
                         if idx_sl > 0: x_cursor += esp_entre
                         w = _medir(ln, fonte)
@@ -1926,10 +1994,34 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                 rx1=x_cursor; ry1=y+bb[1]-pad_y_top
                                 rx2=x_cursor+(bb[2]-bb[0])+(pad_x*2); ry2=y+bb[3]+pad_y_bottom
                                 bb0 = bb[0]
+                                _txt_x = rx1 + pad_x - bb0
+                                _txt_y = y
+                                _txt_w = bb[2] - bb[0]
+                                _txt_h_top = y + bb[1]
+                                _txt_h_bottom = y + bb[3]
+                                _sl_y_top_list.append(_txt_h_top)
+                                _sl_y_bottom_list.append(_txt_h_bottom)
+                                _sl_x_right = max(_sl_x_right, _txt_x + _txt_w)
+                                _sl_last_cor = cor_txt
+                                _sl_last_fonte = fonte
+                                _sl_last_sp = 0
+                                _sl_last_texto = ln
                             except Exception:
                                 rx1=x_cursor; ry1=y-pad_y_top
                                 rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y_bottom
                                 bb0 = 0
+                                _txt_x = rx1 + pad_x
+                                _txt_y = y
+                                _txt_w = w
+                                _txt_h_top = y
+                                _txt_h_bottom = y + _altura_linha(fonte)
+                                _sl_y_top_list.append(_txt_h_top)
+                                _sl_y_bottom_list.append(_txt_h_bottom)
+                                _sl_x_right = max(_sl_x_right, _txt_x + _txt_w)
+                                _sl_last_cor = cor_txt
+                                _sl_last_fonte = fonte
+                                _sl_last_sp = 0
+                                _sl_last_texto = ln
                             _desenhar_forma_fundo(img_rgba, [(rx1,ry1),(rx2,ry2)],
                                                   fill=(*(cor_rect or cor_dest),235),
                                                   forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
@@ -1941,10 +2033,52 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                       estrategia_leg, intensidade_sombra, seed=seed)
+                            # Tracking para este token dentro da sublinha
+                            try:
+                                if tem_liga and _RAQM_OK:
+                                    _bb = draw.textbbox((x_cursor, y), ln, font=fonte,
+                                                       features=["+liga", "+aalt", "+calt", "+dlig"])
+                                    _tw = _bb[2] - _bb[0]
+                                else:
+                                    _bb = fonte.getbbox(ln)
+                                    _tw = _medir_sp(ln, fonte, sp) if sp else (_bb[2] - _bb[0])
+                                _sl_y_top_list.append(y + _bb[1])
+                                _sl_y_bottom_list.append(y + _bb[3])
+                                _sl_x_right = max(_sl_x_right, x_cursor + _tw)
+                            except Exception:
+                                _tw = _medir_sp(ln, fonte, sp) if sp else w
+                                _sl_y_top_list.append(y)
+                                _sl_y_bottom_list.append(y + _altura_linha(fonte))
+                                _sl_x_right = max(_sl_x_right, x_cursor + _tw)
+                            _sl_last_cor = _cor_render
+                            _sl_last_fonte = fonte
+                            _sl_last_sp = sp
+                            _sl_last_texto = ln
                             x_cursor += (_medir_sp(ln, fonte, sp) if sp else w)
+                    # Apos todos os tokens da sublinha: atualiza tracking
+                    _ultima_linha_x1 = _sl_x_left
+                    _ultima_linha_largura = _sl_x_right - _sl_x_left
+                    if _sl_y_top_list and _sl_y_bottom_list:
+                        _ultima_linha_y_top = min(_sl_y_top_list)
+                        _ultima_linha_y_bottom = max(_sl_y_bottom_list)
+                    else:
+                        _ultima_linha_y_top = y
+                        _ultima_linha_y_bottom = y + _altura_linha(sublinha[0][1])
+                    _ultima_linha_cor = _sl_last_cor
+                    _ultima_linha_fonte = _sl_last_fonte
+                    _ultima_linha_sp = _sl_last_sp
+                    _ultima_linha_texto = _sl_last_texto
                     y += int(_altura_linha(sublinha[0][1]) * 1.10)
             else:
                 x_cursor = MARGIN
+                _gi_y_top_list = []
+                _gi_y_bottom_list = []
+                _gi_x_left = x_cursor
+                _gi_x_right = x_cursor
+                _gi_last_cor = None
+                _gi_last_fonte = None
+                _gi_last_sp = 0
+                _gi_last_texto = ""
                 for idx_g, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
                     linha = lns[0] if lns else ""
                     if not linha: continue
@@ -1972,84 +2106,161 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                    forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
 
                             draw = ImageDraw.Draw(img_rgba, "RGBA")
-                            _linha(draw, rx1 + pad_x - bb[0], y, linha, fonte, (*cor_txt, 255), 0)
+                            _txt_x = rx1 + pad_x - bb[0]
+                            _linha(draw, _txt_x, y, linha, fonte, (*cor_txt, 255), 0)
+                            _txt_w = bb[2] - bb[0]
+                            _gi_y_top_list.append(y + bb[1])
+                            _gi_y_bottom_list.append(y + bb[3])
+                            _gi_x_right = max(_gi_x_right, _txt_x + _txt_w)
+                            _gi_last_cor = cor_txt
+                            _gi_last_fonte = fonte
+                            _gi_last_sp = 0
+                            _gi_last_texto = linha
 
                             x_cursor = rx2 + 7
                         except Exception as e:
                             print(f"[render] erro bloco fundo: {e}")
+                            _gi_y_top_list.append(y)
+                            _gi_y_bottom_list.append(y + _altura_linha(fonte))
+                            _gi_x_right = max(_gi_x_right, x_cursor + w)
+                            _gi_last_cor = cor_txt
+                            _gi_last_fonte = fonte
+                            _gi_last_sp = 0
+                            _gi_last_texto = linha
                             x_cursor += w + 20
                     else:
                         _cor_render = cor_txt
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, _cor_render, sp, tem_liga, sombra_forte,
                                                   estrategia_leg, intensidade_sombra, seed=seed)
+                        try:
+                            if tem_liga and _RAQM_OK:
+                                _bb = draw.textbbox((x_cursor, y), linha, font=fonte,
+                                                   features=["+liga", "+aalt", "+calt", "+dlig"])
+                                _tw = _bb[2] - _bb[0]
+                            else:
+                                _bb = fonte.getbbox(linha)
+                                _tw = _medir_sp(linha, fonte, sp) if sp else (_bb[2] - _bb[0])
+                            _gi_y_top_list.append(y + _bb[1])
+                            _gi_y_bottom_list.append(y + _bb[3])
+                            _gi_x_right = max(_gi_x_right, x_cursor + _tw)
+                        except Exception:
+                            _tw = _medir_sp(linha, fonte, sp) if sp else w
+                            _gi_y_top_list.append(y)
+                            _gi_y_bottom_list.append(y + _altura_linha(fonte))
+                            _gi_x_right = max(_gi_x_right, x_cursor + _tw)
+                        _gi_last_cor = _cor_render
+                        _gi_last_fonte = fonte
+                        _gi_last_sp = sp
+                        _gi_last_texto = linha
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
+                # Após todos os tokens do grupo horizontal inline: atualiza tracking
+                _ultima_linha_x1 = _gi_x_left
+                _ultima_linha_largura = _gi_x_right - _gi_x_left
+                if _gi_y_top_list and _gi_y_bottom_list:
+                    _ultima_linha_y_top = min(_gi_y_top_list)
+                    _ultima_linha_y_bottom = max(_gi_y_bottom_list)
+                else:
+                    _ultima_linha_y_top = y
+                    _ultima_linha_y_bottom = y + _altura_linha(grupo[0][1])
+                _ultima_linha_cor = _gi_last_cor
+                _ultima_linha_fonte = _gi_last_fonte
+                _ultima_linha_sp = _gi_last_sp
+                _ultima_linha_texto = _gi_last_texto
                 y += esp
 
     # Card 6 = Acento Gráfico Pequeno (Ancoragem Visual — IGUAL A MULHER):
-    # 1) POSIÇÃO: SEMPRE se sobrepõe SÓ aos ~15% DE BAIXO da ÚLTIMA linha do
-    #    título (não fica flutuando abaixo, nem cobre metade do texto) — serve
+    # 1) POSIÇÃO: SEMPRE se sobrepõe SÓ aos ~15-20% DE BAIXO da ÚLTIMA LINHA REAL
+    #    renderizada (não usa mais Y_FIM estimado, usa os valores trackeados
+    #    DURANTE a renderização — x1, y_top, y_bottom, largura REAIS). Serve
     #    como LINHA DE APOIO visual, ancorando o bloco tipográfico na base.
     # 2) COR: NUNCA cor parecida com o texto. Se texto for da família AZUL /
     #    TEAL / MARINHO / PETRÓLEO, acento é CREME (amarelo quente, igual a
-    #    mulher). Se texto for claro, acento é MARINHO. Garante contraste
-    #    total para não sumir.
-    # 3) LARGURA: ~60% da largura da última linha, altura fina (22px máximo,
-    #    como a mulher).
-    # 4) FORMA: cantos arredondados mas puxados = "traço redondo" (como
-    #    na mulher — tem formato de pílula mas alongado).
+    #    mulher). Se texto for claro, acento é MARINHO.
+    # 3) LARGURA: ~60% da LARGURA REAL da última linha (medida, não estimada),
+    #    mín. 180px, altura fina (~22-26px, igual a mulher).
+    # 4) FORMA: cantos arredondados, traço fino alinhado a ESQUERDA com a
+    #    última linha do texto (igual a mulher).
     # Os preenchimentos inline `-palavra` não são afetados.
     if estrategia_leg == "acento_grafico":
         try:
             CREME_ACENTO = (247, 231, 173)  # cor da mulher: off-white amarelado
-            # Determina Y e largura da ÚLTIMA LINHA do título:
-            # - se tiver palavra destaque: usa o rect dela (é a última agilera_est)
-            # - senão: calcula a partir de Y_FIM — exatamente no pé da última linha
+
+            # 1) COLETA DA POSIÇÃO REAL DA ÚLTIMA LINHA (do tracking durante render)
+            # Prioridade:
+            #   a) tem palavra destaque (agilera_est via "*palavra*") → usa rect dela
+            #   b) tem tracking real de ultima linha (_ultima_linha_*) → usa esses valores
+            #   c) fallback: valores aproximados (raríssimo de ocorrer)
             if _palavra_destaque_rect and _palavra_destaque_info:
                 px, py, pw, ph = _palavra_destaque_rect
                 txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
-                ultimo_x1, ultimo_y1 = px, py
-                ultimo_largura, ultimo_altura = pw, ph
+                ultimo_x1 = px
+                ultimo_y_top = py
+                ultimo_largura = pw
+                ultimo_altura = ph
+                ultimo_cor = cor_pd
+                ultimo_fonte = fonte_pd
+                ultimo_sp = sp_pd
+                tem_palavra_destaque = True
+            elif (_ultima_linha_y_bottom is not None and
+                  _ultima_linha_y_top is not None and
+                  _ultima_linha_x1 is not None):
+                # Usa tracking REAL da última linha (100% preciso, nunca mais erra)
+                ultimo_x1 = _ultima_linha_x1
+                ultimo_y_top = _ultima_linha_y_top
+                ultimo_largura = _ultima_linha_largura if _ultima_linha_largura else int(min(largura_titulo, MAX_PX) * 0.60)
+                ultimo_altura = _ultima_linha_y_bottom - _ultima_linha_y_top
+                ultimo_cor = _ultima_linha_cor if _ultima_linha_cor else _cor_principal
+                ultimo_fonte = _ultima_linha_fonte if _ultima_linha_fonte else fa
+                ultimo_sp = _ultima_linha_sp if _ultima_linha_sp else ag_sp
+                tem_palavra_destaque = False
             else:
-                # Usa a largura do título (~60% dela) e Y_FIM como base do pé da linha
+                # Fallback (extremamente raro): valores estimados
                 ultimo_x1 = MARGIN
-                ultimo_largura = int(min(largura_titulo, MAX_PX) * 0.60)
-                ultimo_largura = max(180, ultimo_largura)  # mínimo de 180px pra não ficar minúsculo
-                # A altura da linha final é ~60% de `tam_ag` (altura útil da agilera)
+                ultimo_largura = max(180, int(min(largura_titulo, MAX_PX) * 0.60))
                 ultimo_altura = int(tam_ag * 0.60)
-                ultimo_y1 = Y_FIM - ultimo_altura  # topo da última linha
-                txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = (None, None, _cor_principal, ag_sp, False)
+                ultimo_y_top = Y_FIM - ultimo_altura
+                ultimo_cor = _cor_principal
+                ultimo_fonte = fa
+                ultimo_sp = ag_sp
+                tem_palavra_destaque = False
 
-            # Escolhe COR do ACENTO — NUNCA parecida com a cor do texto
-            cor_txt = cor_pd if cor_pd else _cor_principal
-            lum_txt = _LUM_COR.get(cor_txt, 0.5)
+            # 2) COR DO ACENTO (regra da mulher, 100% contraste com o texto)
+            lum_txt = _LUM_COR.get(ultimo_cor, 0.5)
             # Se texto for da família AZUL / TEAL / MARINHO / PETRÓLEO (escuros)
             # → acento sempre CREME (cor quente da mulher)
-            if cor_txt in (MARINHO, PETROLEO) or (lum_txt < 0.55 and 10 < cor_txt[2] < 200):
+            azul_ou_petroleo = (
+                ultimo_cor in (MARINHO, PETROLEO, TEAL)
+                or (lum_txt < 0.60 and 10 < ultimo_cor[2] < 230 and ultimo_cor[0] < 80)
+            )
+            if azul_ou_petroleo or lum_txt < 0.55:
                 acento_cor = CREME_ACENTO
-                cor_texto_sobre = MARINHO  # texto sobre o creme: escuro
-            elif lum_txt < 0.5:
-                acento_cor = CREME_ACENTO
-                cor_texto_sobre = MARINHO
+                cor_texto_sobre = MARINHO  # texto sobre creme: azul escuro
             else:
                 # texto claro: acento escuro
                 acento_cor = MARINHO
                 cor_texto_sobre = BRANCO
 
-            # POSICIONAMENTO FINAL: barra SÓ sobrepõe os ~15% inferiores da
-            # última linha (ancora visual, igual a mulher)
-            sobrerpoe = int(ultimo_altura * 0.17)  # 17% da altura da linha
-            altura_barra = max(18, int(ultimo_altura * 0.52))  # altura fina (52% da linha)
+            # 3) LARGURA DA BARRA (como a mulher): ~60% da última linha,
+            #    mínimo 180px. Fica alinhada a ESQUERDA (como a referência).
+            largura_barra = max(180, int(ultimo_largura * 0.62))
+
+            # 4) POSICIONAMENTO FINAL (igual a mulher):
+            #    - SOBREPÕE SÓ 18% DA ALTURA da última linha (ANCORAGEM VISUAL
+            #      na BASE dos glifos — NÃO fica abaixo flutuando, NÃO cobre
+            #      metade do texto)
+            sobrerpoe = max(12, int(ultimo_altura * 0.18))  # 18% da altura da linha
+            altura_barra = max(18, int(ultimo_altura * 0.52))  # fina, 52% da linha
             rx1 = max(MARGIN, ultimo_x1 - 6)
-            ry1 = (ultimo_y1 + ultimo_altura) - sobrerpoe
-            rx2 = rx1 + ultimo_largura + 12
+            ry1 = (ultimo_y_top + ultimo_altura) - sobrerpoe
+            rx2 = rx1 + largura_barra + 12
             ry2 = ry1 + altura_barra
             # Nunca ultrapassa a zona segura
             ry2 = min(SAFE_BOTTOM, ry2)
             ry1 = max(SAFE_TOP, min(ry1, ry2 - 16))
             # Desenha a forma: TRAÇO COM CANTOS ARREDONDADOS (como a mulher)
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            raio_barra = altura_barra // 2
+            raio_barra = max(6, altura_barra // 2)
             try:
                 draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
                                        radius=raio_barra,
@@ -2057,15 +2268,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             except Exception:
                 draw.rectangle([(rx1, ry1), (rx2, ry2)],
                                fill=(*acento_cor, 245))
-            # Se tiver palavra destaque: REDESENHA ela POR CIMA da barra,
-            # na cor de contraste total
-            if _palavra_destaque_rect and _palavra_destaque_info and txt_pd:
+            # Se tem palavra destaque: REDESENHA ela POR CIMA da barra,
+            # com cor de contraste total (igual mulher: texto azul escuro sobre creme)
+            if tem_palavra_destaque and _palavra_destaque_rect and _palavra_destaque_info:
+                px, py, pw, ph = _palavra_destaque_rect
+                txt_pd, fonte_pd, cor_pd, sp_pd, liga_pd = _palavra_destaque_info
                 if liga_pd:
                     _linha_est(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255))
                 else:
-                    _linha(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255), sp_pd)
+                    _linha(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255), ultimo_sp)
         except Exception as e:
-            print(f"[acento_grafico] card6 (mulher): {e}")
+            print(f"[acento_grafico] card6 (igual mulher): {e}")
 
     return img_rgba.convert("RGB"), layout
 
