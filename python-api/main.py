@@ -90,6 +90,15 @@ CORREÇÕES v23
   posicionada na base/fundo da palavra como marca-texto, com cantos
   arredondados e palavra redesenhada por cima (ref: imagem da mulher).
 
+CORREÇÕES v25
+=============
+- REDUZIDO de 6 para 5 estrategias: removido posicao_avancada (a busca
+  de zona ja roda em todas as estrategias como parte do pipeline global).
+- peso_fonte harmonizado: MALGUN forçado em bold, SEM aumento de tamanho
+  do AGILERA — contraste de peso sutil sem exagero (ref: imagem da mulher).
+- acento_grafico mais sutil: barra 40% da largura (era 62%), 38% da
+  altura (era 52%), sobreposição 12% (era 18%) — âncora visual discreta.
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -573,32 +582,31 @@ def _proxima_forma_fundo():
     _forma_fundo_idx += 1
     return forma
 
-# ── Estratégias de legibilidade (rotação FIXA: Card1 + 5 estratégias da MULHER) ─
-# ROTAÇÃO 1→2→3→4→5→6→1 (persistida em disco, não é aleatória):
+# ── Estratégias de legibilidade (rotação FIXA: Card1 + 4 estratégias da MULHER) ─
+# ROTAÇÃO 1→2→3→4→5→1 (persistida em disco, não é aleatória):
 #   1) contorno                 → Card 1 (stroke, permanece)
 #   2) glow_glifo               → Card 2 da mulher (Glow Orgânico / Halo de Glifo)
 #   3) sombra_adaptativa        → Card 4 da mulher (Sombra Adaptativa / por Linha)
 #   4) peso_fonte               → Card 5 da mulher (Peso de Fonte Adaptativo)
 #   5) acento_grafico           → Card 6 da mulher (Acento Gráfico Pequeno / Ancoragem Visual)
-#   6) posicao_avancada         → Card 7 da mulher (Posição Criteriosa / ainda mais forte)
 #
 # POSIÇÃO CRITERIOSA (busca de zona ótima) roda SEMPRE em TODAS as estratégias
-# (não é mais estratégia individual).
+# (não é mais estratégia individual — a busca de zona já é global).
 #
 # NÃO MEXEMOS nos preenchimentos (`*`, `-`, `:`) — eles continuam 100% como estão.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_adaptativa",
-    "peso_fonte", "acento_grafico", "posicao_avancada",
+    "peso_fonte", "acento_grafico",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
 def _proxima_estrategia_legibilidade(seed=None):
-    """v24b (confirmado pelo usuário): rotação FIXA de 6 estratégias.
+    """v25: rotação FIXA de 5 estratégias.
     - Card 1 = contorno (permanece)
-    - Cards 2-6 = 5 estratégias da imagem da mulher (glow, sombra adaptativa,
-      peso de fonte, acento gráfico, posição avançada)
+    - Cards 2-5 = 4 estratégias da imagem da mulher (glow, sombra adaptativa,
+      peso de fonte, acento gráfico)
     Sequência determinística, índice persistido em disco para sobreviver a reinícios.
-    POSIÇÃO CRITERIOSA básica roda SEMPRE em TODAS."""
+    POSIÇÃO CRITERIOSA já roda SEMPRE em TODAS (busca de zona global, não é estratégia separada)."""
     indice = 0
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "r") as f:
@@ -606,11 +614,13 @@ def _proxima_estrategia_legibilidade(seed=None):
             indice_salvo = dados.get("indice")
             if isinstance(indice_salvo, int) and 0 <= indice_salvo < len(_ESTRATEGIAS_LEGIBILIDADE):
                 indice = indice_salvo
+            else:
+                indice = 0  # reset se índice antigo (era 0-5, agora 0-4)
     except Exception:
         indice = 0
     estrategia = _ESTRATEGIAS_LEGIBILIDADE[indice]
     proximo = (indice + 1) % len(_ESTRATEGIAS_LEGIBILIDADE)
-    print(f"[estrategia_leg] #{indice+1}/6: {estrategia}  (próxima #{proximo+1})")
+    print(f"[estrategia_leg] #{indice+1}/5: {estrategia}  (próxima #{proximo+1})")
     try:
         with open(_ESTADO_ESTRATEGIA_PATH, "w") as f:
             json.dump({"indice": proximo}, f)
@@ -1394,15 +1404,15 @@ def _texto_para_modo(modo, texto):
 def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
                                tem_liga, sombra_forte, estrategia_leg=None,
                                intensidade_sombra=None, cor_glow=None, seed=0):
-    """Renderiza uma linha AGILERA aplicando a estratégia da vez (rotação de 6,
-    Card1+5 da mulher). Cada estratégia tem sua assinatura visual própria,
+    """Renderiza uma linha AGILERA aplicando a estratégia da vez (rotação de 5,
+    Card1+4 da mulher). Cada estratégia tem sua assinatura visual própria,
     igual à imagem da mulher de referência:
       - contorno (Card1)        → stroke 3px
       - glow_glifo (Card2)      → halo orgânico colorido atrás das letras
       - sombra_adaptativa (Card4) → intensidade contínua por dificuldade da zona
-      - peso_fonte (Card5)      → AGILERA maior, MALGUN em negrito
-      - acento_grafico (Card6)  → pílula na base da palavra destaque (feito depois)
-      - posicao_avancada (Card7)→ posição criteriosa (já aplicada na zona)
+      - peso_fonte (Card5)      → MALGUN em negrito (contraste de peso harmonizado)
+      - acento_grafico (Card6)  → traço sutil na base da última linha (feito depois)
+    POSIÇÃO CRITERIOSA roda em TODAS as estratégias (busca global de zona).
     NENHUM contorno/stroke fora da estratégia "contorno".
     Os preenchimentos `*`, `-`, `:` NÃO são mexidos aqui."""
 
@@ -1623,26 +1633,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     fb = _malgun_vars[(seed // 6) % 3]
 
     if estrategia_leg == "peso_fonte":
-        # Card 5 = Peso de Fonte Adaptativo (igual a mulher):
-        # AGILERA levemente maior, MALGUN em negrito real. NENHUM stroke,
-        # NENHUM tracking apertado — só contraste natural de peso tipográfico.
-        tam_ag = int(tam_ag * 1.05)
-        fa_base, tem_liga_base = _fonte_agilera_para_modo(modo, tam_ag)
-        fa = fa_base
-        fb = f_bold(int(tam_ml * 1.04))
-        print(f"[titulo] peso_fonte (card5): ag aumentado + malgun bold (padrão mulher)")
-    elif estrategia_leg == "posicao_avancada":
-        # Card 7 = Posição Criteriosa (ainda mais forte):
-        # A posição já foi escolhida no loop de busca, aqui só garantimos que
-        # o texto fique colado na BASE (como na mulher do card7), ajustando
-        # o Y_INI para puxar mais para baixo ainda.
-        if not tem_pessoa:
-            # Força a zona ainda mais para baixo sem sair da área segura
-            empurra = int((SAFE_BOTTOM - Y_FIM) * 0.55)
-            if empurra > 0 and Y_INI + empurra < SAFE_BOTTOM - 120:
-                Y_INI += empurra
-                Y_FIM += empurra
-                print(f"[titulo] posicao_avancada (card7): zona empurrada +{empurra}px para a base")
+        # Card 5 = Peso de Fonte Adaptativo (harmonizado):
+        # Contraste de peso entre linhas do título — AGILERA em tamanho normal
+        # (sem alteração), MALGUN forçado em BOLD para criar contraste natural
+        # entre o título e o texto complementar. NENHUM stroke, NENHUM tracking
+        # apertado, NENHUM aumento de tamanho — só a variação de peso tipográfico
+        # faz o trabalho visual (igual à referência da mulher: "Ansiedade"
+        # em peso normal + "Generalizada" em bold, sem exagero).
+        fb = f_bold(tam_ml)  # MALGUN sempre em bold nesta estratégia
+        print(f"[titulo] peso_fonte (card5): malgun forçado em bold (harmonizado)")
     # contorno, glow_glifo, sombra_adaptativa, acento_grafico não precisam de
     # ajuste de tamanho aqui (glow/sombra/contorno são feitos na renderização;
     # acento_grafico é aplicado no final da função).
@@ -2265,16 +2264,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 acento_cor = MARINHO
                 cor_texto_sobre = BRANCO
 
-            # 3) LARGURA DA BARRA (como a mulher): ~60% da última linha,
-            #    mínimo 180px. Fica alinhada a ESQUERDA (como a referência).
-            largura_barra = max(180, int(ultimo_largura * 0.62))
+            # 3) LARGURA DA BARRA (sutil): ~40% da última linha,
+            #    mínimo 120px. Fica alinhada a ESQUERDA (como a referência).
+            #    Mais discreta que antes — funciona como marcação/âncora visual,
+            #    não como bloco de destaque.
+            largura_barra = max(120, int(ultimo_largura * 0.40))
 
-            # 4) POSICIONAMENTO FINAL (igual a mulher):
-            #    - SOBREPÕE SÓ 18% DA ALTURA da última linha (ANCORAGEM VISUAL
-            #      na BASE dos glifos — NÃO fica abaixo flutuando, NÃO cobre
-            #      metade do texto)
-            sobrerpoe = max(12, int(ultimo_altura * 0.18))  # 18% da altura da linha
-            altura_barra = max(18, int(ultimo_altura * 0.52))  # fina, 52% da linha
+            # 4) POSICIONAMENTO FINAL (sutil — âncora visual discreta):
+            #    - SOBREPÕE SÓ 12% DA ALTURA da última linha (ANCORAGEM VISUAL
+            #      na BASE dos glifos — quase imperceptível como elemento isolado)
+            sobrerpoe = max(8, int(ultimo_altura * 0.12))  # 12% da altura da linha
+            altura_barra = max(12, int(ultimo_altura * 0.38))  # mais fina, 38% da linha
             rx1 = max(MARGIN, ultimo_x1 - 6)
             ry1 = (ultimo_y_top + ultimo_altura) - sobrerpoe
             rx2 = rx1 + largura_barra + 12
@@ -2282,9 +2282,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             # Nunca ultrapassa a zona segura
             ry2 = min(SAFE_BOTTOM, ry2)
             ry1 = max(SAFE_TOP, min(ry1, ry2 - 16))
-            # Desenha a forma: TRAÇO COM CANTOS ARREDONDADOS (como a mulher)
+            # Desenha a forma: TRAÇO SUTIL COM CANTOS ARREDONDADOS (pill shape)
+            # Raio = metade da altura para criar cantos totalmente arredondados
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            raio_barra = max(6, altura_barra // 2)
+            raio_barra = altura_barra // 2  # pill: raio = metade da altura
             try:
                 draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
                                        radius=raio_barra,
