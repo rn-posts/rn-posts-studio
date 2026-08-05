@@ -1143,10 +1143,16 @@ def _parse_blocos(tema):
             estilo_atual = estilo_antes   # volta ao estilo anterior
 
         elif tok.startswith("*") and len(tok) > 1:
-            # Cada *palavra vira seu próprio bloco agilera_est
-            # para garantir que blocos distintos possam ter estilos visuais diferentes
-            _fechar()
-            estilo_atual = "agilera_est"
+            # v25: *palavras ADJACENTES (só espaço entre elas, ex. "*Nível *2")
+            # ficam no MESMO bloco agilera_est — juntas formam uma única unidade
+            # de sentido ("Nível 2") e devem poder quebrar linha naturalmente
+            # (_quebrar), nunca ser forçadas cada uma pra sua própria linha.
+            # Só fecha o bloco corrente quando o estilo realmente muda (igual
+            # ao comportamento de ":palavra" abaixo).
+            novo = "agilera_est"
+            if estilo_atual != novo:
+                _fechar()
+                estilo_atual = novo
             palavras.append(tok[1:])
 
         elif tok.startswith(":") and len(tok) > 1:
@@ -1812,12 +1818,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         print(f"[legibilidade] erro: {e}")
 
     # (contador _idx_cor_linha removido — cor_por_linha substituida por posicao_criteriosa)
-    _palavra_destaque_rect = None  # (x,y,largura,altura) da ultima palavra
-                                     # agilera_est ("*palavra", ex. "Generalizada"),
-                                     # usado pelo acento_grafico para ancorar
-                                     # o traco bem na base dela
+    _palavra_destaque_rect = None  # (x,y,largura,altura) da PALAVRA VENCEDORA
+                                     # (ver _candidatos_destaque abaixo), usado
+                                     # pelo acento_grafico para ancorar o traco
+                                     # bem na base dela
     _palavra_destaque_info = None  # (texto, fonte, cor, sp, tem_liga) da mesma
                                      # palavra, para redesenha-la por cima da barra
+    _candidatos_destaque = []      # [(largura_px, rect, info), ...] — todos os
+                                     # blocos agilera_est desta geracao; o mais
+                                     # LARGO vence como ancora do acento_grafico
+                                     # (v25: antes o ULTIMO processado vencia por
+                                     # simples sobrescrita — uma palavra curta como
+                                     # "2" podia vencer sobre "Nivel", deixando a
+                                     # barra do acento quase sem letras por baixo)
     # Variaveis de TRACKING da POSICAO REAL da ultima linha renderizada —
     # usadas pelo acento_grafico para NÃO MAIS errar a posição (que antes
     # usava Y_FIM aproximado e errava feio).
@@ -1926,8 +1939,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                 _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
                         else:
                             _w_est = _medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte)
-                        _palavra_destaque_rect = (MARGIN, y, _w_est, _altura_linha(fonte))
-                        _palavra_destaque_info = (linha, fonte, _cor_render, sp, tem_liga)
+                        _candidatos_destaque.append((
+                            _w_est,
+                            (MARGIN, y, _w_est, _altura_linha(fonte)),
+                            (linha, fonte, _cor_render, sp, tem_liga),
+                        ))
                 y += esp
         else:
             total_w = 0
@@ -2168,6 +2184,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _ultima_linha_sp = _gi_last_sp
                 _ultima_linha_texto = _gi_last_texto
                 y += esp
+
+    # v25: entre todos os blocos agilera_est desta geracao, o acento_grafico
+    # ancora na palavra MAIS LARGA renderizada (nunca na ultima processada) —
+    # corrige o caso de um numero/palavra curta ("2") virar a ancora sozinho.
+    if _candidatos_destaque:
+        _largura_venc, _rect_venc, _info_venc = max(_candidatos_destaque, key=lambda c: c[0])
+        _palavra_destaque_rect = _rect_venc
+        _palavra_destaque_info = _info_venc
 
     # Card 6 = Acento Gráfico Pequeno (Ancoragem Visual — IGUAL A MULHER):
     # 1) POSIÇÃO: SEMPRE se sobrepõe SÓ aos ~15-20% DE BAIXO da ÚLTIMA LINHA REAL
