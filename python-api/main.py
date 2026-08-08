@@ -99,6 +99,15 @@ CORREÇÕES v25
 - acento_grafico mais sutil: barra 40% da largura (era 62%), 38% da
   altura (era 52%), sobreposição 12% (era 18%) — âncora visual discreta.
 
+CORREÇÕES v27
+=============
+- REMOVIDO "acento_grafico" da rotação de estratégias (4 estratégias agora,
+  era 5). Passou por várias correções (largura, formato, ancoragem em 1-2
+  palavras) e mesmo assim continuou saindo quebrado em geração real — texto
+  cruzando o rosto e elemento "vida" flutuando desconectado do resto do
+  título. O código da estratégia continua no arquivo (não é chamado mais),
+  caso um dia valha revisitar do zero.
+
 PIPELINE
 ========
 Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
@@ -596,7 +605,7 @@ def _proxima_forma_fundo():
 # NÃO MEXEMOS nos preenchimentos (`*`, `-`, `:`) — eles continuam 100% como estão.
 _ESTRATEGIAS_LEGIBILIDADE = [
     "contorno", "glow_glifo", "sombra_adaptativa",
-    "peso_fonte", "acento_grafico",
+    "peso_fonte",
 ]
 _ESTADO_ESTRATEGIA_PATH = os.path.join(os.path.dirname(__file__), "_estado_estrategia.json")
 
@@ -1283,23 +1292,26 @@ def _cor_acento(cor_pd, seed):
     return opcoes[seed % len(opcoes)]
 
 def _cor_glow_vivida(cor_texto, seed):
-    """v22: cor de glow SATURADA (nunca so binario branco/marinho) — da ao
-    glow_glifo uma identidade visual propria de "halo neon colorido", bem
-    diferente de um contorno ou sombra comuns. Nunca repete a cor do
-    proprio texto, pra o halo sempre aparecer como uma cor extra visivel."""
-    opcoes = [c for c in (AMARELO, LARANJA, VERDE_CITRICO, TEAL, VERDE_VIVO) if c != cor_texto]
-    if not opcoes:
-        opcoes = [AMARELO, TEAL]
+    """v27: glow SUAVE tipo retroiluminacao (ref. mulher, Card 2) — NUNCA
+    mais um halo neon colorido (v22). A referencia mostra uma luz quase
+    branca/creme por tras da letra, nao uma cor saturada da paleta — uma
+    cor viva ali competia com o texto e o halo praticamente sumia. Sempre
+    um tom claro e quente neutro, funcionando como luz suave atras da
+    letra, nunca uma segunda cor de destaque."""
+    opcoes = [(250, 244, 225), (255, 250, 236), (246, 238, 214)]
     return opcoes[seed % len(opcoes)]
 
-def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=26, alpha=245):
-    """2. Glow com a silhueta EXATA das letras — borra uma máscara no formato
-    do próprio texto (nunca um retângulo) e cola atrás do texto principal,
-    criando uma auréola orgânica que acompanha as curvas da tipografia.
-    Raio/alpha aumentados (v3) para o halo ficar bem marcado, não sutil."""
+def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=40, alpha=235, bulk=7):
+    """2. Glow com a silhueta das letras — desenha o texto ENGROSSADO (stroke
+    de `bulk` px) numa camada separada, borra bem mais forte que antes
+    (raio maior) e cola atras do texto principal. O engrossamento antes de
+    borrar e o raio maior sao o que faz a luz aparecer como uma auréola
+    visivel ao redor das letras (ref. mulher), em vez de ficar quase toda
+    escondida atras do proprio glifo (bug do raio 22px antigo)."""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp)
+    _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp,
+           stroke_width=bulk, stroke_fill=(*cor_glow, alpha))
     layer = layer.filter(ImageFilter.GaussianBlur(raio))
     img_rgba.paste(layer, (0, 0), layer)
 
@@ -1443,9 +1455,10 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 
     # PASSO 1: Efeitos de fundo (glow / sombra) — renderizados ANTES do texto
     if estrategia_leg == "glow_glifo":
-        # Card 2 = Glow Orgânico (Halo de Glifo) — silhueta colorida atrás
-        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp,
-                    raio=22, alpha=210)  # ajustado: nem muito forte nem fraco
+        # Card 2 = Glow Orgânico (Halo de Glifo) — luz suave atras da letra
+        # (ref. mulher) — raio/alpha default da funcao ja calibrados pra
+        # essa referencia, so passa a cor
+        _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
         _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
     elif estrategia_leg == "sombra_adaptativa" and intensidade_sombra is not None:
         # Card 4 = Sombra Adaptativa (por Linha) — intensidade continua
