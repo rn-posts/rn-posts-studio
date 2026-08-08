@@ -965,12 +965,37 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
 
     cabeca_bbox = None
     try:
+        # v26: a faixa fixa de 22% da ALTURA DO CANVAS so funciona em fotos
+        # de CORPO INTEIRO (cabeca e mesmo uma fatia pequena do total). Em
+        # fotos de BUSTO/CLOSE (ombros pra cima, ex. retrato) a cabeca ocupa
+        # uma fatia bem maior do enquadramento e a faixa fixa ficava curta
+        # demais -> o titulo cruzava o rosto (fotos de busto/close).
+        # Nova heuristica: acha o SALTO DE LARGURA onde os OMBROS comecam
+        # (largura da silhueta aumenta bem alem da largura da cabeca) e usa
+        # esse ponto real como fim da faixa da cabeca, em vez de uma % fixa.
         alpha_np = np.array(alpha)
-        topo = alpha_np[:int(H * 0.22), :]
-        cols = np.where(topo.max(axis=0) > 10)[0]
-        if len(cols) > 0:
-            cx0, cx1 = int(cols.min()), int(cols.max())
-            cabeca_bbox = (x + cx0 - 20, 0, x + cx1 + 20, int(H * 0.30))
+        larguras = np.zeros(alpha_np.shape[0], dtype=np.int32)
+        for row in range(alpha_np.shape[0]):
+            cols_row = np.where(alpha_np[row] > 10)[0]
+            if len(cols_row) > 0:
+                larguras[row] = cols_row.max() - cols_row.min()
+        linhas_pessoa = np.where(larguras > 0)[0]
+        if len(linhas_pessoa) > 0:
+            y_topo = int(linhas_pessoa[0])
+            janela = larguras[y_topo: y_topo + max(10, int(H * 0.05))]
+            largura_cabeca_ref = float(np.median(janela[janela > 0])) if np.any(janela > 0) else 0.0
+            y_fim_cabeca = y_topo + int(H * 0.22)  # fallback = comportamento antigo
+            if largura_cabeca_ref > 0:
+                limite_salto = largura_cabeca_ref * 1.6
+                limite_busca = min(alpha_np.shape[0], y_topo + int(H * 0.55))
+                for row in range(y_topo, limite_busca):
+                    if larguras[row] > limite_salto:
+                        y_fim_cabeca = row
+                        break
+            faixa_cols = np.where(alpha_np[y_topo:y_fim_cabeca, :].max(axis=0) > 10)[0]
+            if len(faixa_cols) > 0:
+                cx0, cx1 = int(faixa_cols.min()), int(faixa_cols.max())
+                cabeca_bbox = (x + cx0 - 20, max(0, y_topo - 10), x + cx1 + 20, y_fim_cabeca + 20)
     except Exception as e:
         print(f"[cabeca] erro: {e}")
 
@@ -1489,9 +1514,28 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             # v17: cor MÉDIA real (RGB) da zona — usada pela guarda de
             # contraste, que compara cor de verdade, não só luminosidade
             cor_media = tuple(float(arr_crop[:, :, c].mean()) for c in range(3))
+            # v26: alem da media do RETANGULO INTEIRO, amostra uma GRADE de
+            # sub-regioes (3 linhas x 2 colunas) — fundos mistos (ilustracao
+            # com folhas verdes sobre creme, mesa de cor solida dentro de
+            # uma foto de ambiente) podem ter media geral "segura" mas uma
+            # sub-regiao especifica onde o texto realmente cai pode bater
+            # quase na mesma cor do texto escolhido. cor_zona_grid guarda
+            # essas sub-medias pra guarda de contraste checar TODAS, nao so
+            # a media do retangulo inteiro.
+            cor_zona_grid = []
+            gh, gw = arr_crop.shape[0], arr_crop.shape[1]
+            if gh > 0 and gw > 0:
+                n_lin, n_col = 3, 2
+                for li in range(n_lin):
+                    for ci in range(n_col):
+                        y0c = int(gh * li / n_lin); y1c = int(gh * (li + 1) / n_lin)
+                        x0c = int(gw * ci / n_col); x1c = int(gw * (ci + 1) / n_col)
+                        bloco = arr_crop[y0c:y1c, x0c:x1c]
+                        if bloco.size > 0:
+                            cor_zona_grid.append(tuple(float(bloco[:, :, c].mean()) for c in range(3)))
         except Exception:
-            lum, comp, cor_media = 0.3, 0.5, (90.0, 90.0, 90.0)
-        return y_ini, y_fim, lum, comp, cor_media
+            lum, comp, cor_media, cor_zona_grid = 0.3, 0.5, (90.0, 90.0, 90.0), []
+        return y_ini, y_fim, lum, comp, cor_media, cor_zona_grid
 
     # v23: posição criteriosa SEMPRE ATIVA — leque amplo de zonas candidatas
     # para TODAS as estratégias (não é mais estratégia individual). O texto
@@ -1551,7 +1595,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         if tem_pessoa and em_pe:
             yi -= 35; yf -= 35
         cand = _avaliar_zona(yi, yf)
-        _, _, _lum, _comp, _ = cand
+        _, _, _lum, _comp, _, _ = cand
         # v18: pequeno viés pelo seed — em fundos muito uniformes (estúdio,
         # parede lisa) lum/complexidade quase não variam entre zonas, e sem
         # isso a escolha sempre "empatava" pro mesmo candidato (a variedade
@@ -1569,7 +1613,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             score += 5.0
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
-    Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = melhor
+    Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = melhor
     print(f"[titulo] zona ótima escolhida (busca ativa sempre, v17): "
           f"complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
 
@@ -1586,7 +1630,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         else:
             Y_INI = min(SAFE_BOTTOM - 150, max(Y_INI, cby1 + 10))
             print(f"[titulo] zona empurrada pra baixo da cabeca: Y_INI={Y_INI}")
-        Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real = _avaliar_zona(Y_INI, Y_FIM)
+        Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = _avaliar_zona(Y_INI, Y_FIM)
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -1681,7 +1725,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # só a luminosidade. Evita letra e fundo na mesma cor/tom (ex.: teal
     # sobre foto azulada) mesmo quando o brilho geral parecia suficiente.
     def _contraste_real_ok(cor):
-        return distancia_cor(cor, cor_zona_real) >= 90
+        # v26: alem da media da zona inteira, nenhuma sub-regiao da grade
+        # (cor_zona_grid) pode ficar perto demais da cor escolhida — evita
+        # letra sumindo numa sub-area especifica (folhas de uma ilustracao,
+        # mesa de cor solida) mesmo quando a media geral parecia segura.
+        if distancia_cor(cor, cor_zona_real) < 90:
+            return False
+        for _cg in cor_zona_grid:
+            if distancia_cor(cor, _cg) < 70:
+                return False
+        return True
 
     if not _contraste_real_ok(_cor_principal):
         _pares_fallback = ([(BRANCO, AMARELO), (AMARELO, LARANJA), (BRANCO, LARANJA),
@@ -2191,6 +2244,33 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _largura_venc, _rect_venc, _info_venc = max(_candidatos_destaque, key=lambda c: c[0])
         _palavra_destaque_rect = _rect_venc
         _palavra_destaque_info = _info_venc
+    elif (_ultima_linha_texto and _ultima_linha_fonte is not None and
+          _ultima_linha_x1 is not None and _ultima_linha_y_top is not None):
+        # v26: SEM nenhuma *palavra nesta geracao, o acento NAO pode ancorar
+        # na ULTIMA LINHA INTEIRA (pode ter 4-5 palavras) — precisa das
+        # MESMAS 1-2 palavras de sentido, seja o bloco agilera ou nao. Pega
+        # as ultimas 1-2 palavras da ultima linha realmente renderizada
+        # (malgun ou normal) e mede a posicao exata delas dentro da linha,
+        # pra desenhar a barra e redesenhar so essas palavras por cima —
+        # igual ja acontece com *palavras.
+        _palavras_linha = _ultima_linha_texto.split()
+        if _palavras_linha:
+            _n_alvo   = 2 if len(_palavras_linha) >= 2 else 1
+            _alvo_txt = " ".join(_palavras_linha[-_n_alvo:])
+            _prefixo  = " ".join(_palavras_linha[:-_n_alvo])
+            _sp_l     = _ultima_linha_sp or 0
+            _off_x = 0
+            if _prefixo:
+                _off_x = (_medir_sp(_prefixo + " ", _ultima_linha_fonte, _sp_l)
+                          if _sp_l else _medir(_prefixo + " ", _ultima_linha_fonte))
+            _w_alvo = (_medir_sp(_alvo_txt, _ultima_linha_fonte, _sp_l)
+                       if _sp_l else _medir(_alvo_txt, _ultima_linha_fonte))
+            _altura_alvo = (_ultima_linha_y_bottom - _ultima_linha_y_top
+                            if _ultima_linha_y_bottom else _altura_linha(_ultima_linha_fonte))
+            _palavra_destaque_rect = (_ultima_linha_x1 + _off_x, _ultima_linha_y_top,
+                                       _w_alvo, _altura_alvo)
+            _palavra_destaque_info = (_alvo_txt, _ultima_linha_fonte, _ultima_linha_cor,
+                                       _sp_l, False)
 
     # Card 6 = Acento Gráfico Pequeno (Ancoragem Visual — IGUAL A MULHER):
     # 1) POSIÇÃO: SEMPRE se sobrepõe SÓ aos ~15-20% DE BAIXO da ÚLTIMA LINHA REAL
@@ -2264,28 +2344,31 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 acento_cor = MARINHO
                 cor_texto_sobre = BRANCO
 
-            # 3) LARGURA DA BARRA (sutil): ~40% da última linha,
-            #    mínimo 120px. Fica alinhada a ESQUERDA (como a referência).
-            #    Mais discreta que antes — funciona como marcação/âncora visual,
-            #    não como bloco de destaque.
-            largura_barra = max(120, int(ultimo_largura * 0.40))
+            # 3) LARGURA DA BARRA (ref. "Generalizada"): cobre a
+            #    palavra/frase-alvo INTEIRA — nunca uma fração dela — com
+            #    folga pequena fixa pra cada lado. "1-2 palavras que dão
+            #    sentido" significa a barra abraçar essas palavras por
+            #    completo, não uma porcentagem arbitrária de largura.
+            largura_barra = max(24, ultimo_largura)
 
             # 4) POSICIONAMENTO FINAL (sutil — âncora visual discreta):
             #    - SOBREPÕE SÓ 12% DA ALTURA da última linha (ANCORAGEM VISUAL
             #      na BASE dos glifos — quase imperceptível como elemento isolado)
             sobrerpoe = max(8, int(ultimo_altura * 0.12))  # 12% da altura da linha
             altura_barra = max(12, int(ultimo_altura * 0.38))  # mais fina, 38% da linha
-            rx1 = max(MARGIN, ultimo_x1 - 6)
+            rx1 = max(MARGIN, ultimo_x1 - 8)
             ry1 = (ultimo_y_top + ultimo_altura) - sobrerpoe
-            rx2 = rx1 + largura_barra + 12
+            rx2 = rx1 + largura_barra + 16
             ry2 = ry1 + altura_barra
             # Nunca ultrapassa a zona segura
             ry2 = min(SAFE_BOTTOM, ry2)
             ry1 = max(SAFE_TOP, min(ry1, ry2 - 16))
-            # Desenha a forma: TRAÇO SUTIL COM CANTOS ARREDONDADOS (pill shape)
-            # Raio = metade da altura para criar cantos totalmente arredondados
+            # Desenha a forma: TRAÇO QUASE RETO (ref. "Generalizada") — cantos
+            # só levemente arredondados. NUNCA cápsula/pílula: o raio antigo
+            # (altura_barra // 2) é por definição um semicírculo em cada
+            # ponta, o formato de pílula que a referência não tem.
             draw = ImageDraw.Draw(img_rgba, "RGBA")
-            raio_barra = altura_barra // 2  # pill: raio = metade da altura
+            raio_barra = max(4, int(altura_barra * 0.18))
             try:
                 draw.rounded_rectangle([(rx1, ry1), (rx2, ry2)],
                                        radius=raio_barra,
