@@ -878,6 +878,22 @@ def cor_dominante(img):
 def eh_foto_ronilson(pid):
     return "ronilson" in pid.lower().replace("\\", "/")
 
+def _avaliar_silhueta_pessoa(rgba):
+    """v28: decide se o recorte do rembg encontrou mesmo uma PESSOA (nao uma
+    foto de cenario/paisagem onde nao havia assunto real pra separar do
+    fundo) — silhueta cobrindo uma fatia plausivel do quadro. Cobertura
+    muito baixa (<6%) tende a ser ruido/erro do rembg; cobertura quase
+    total (>92%) tende a indicar que a foto inteira ficou como "objeto"
+    (sem fundo real pra remover), nao uma pessoa recortada."""
+    try:
+        alpha = np.array(rgba.split()[3])
+        cobertura = float((alpha > 10).sum()) / alpha.size
+        print(f"[pessoa] cobertura_silhueta={cobertura:.2f}")
+        return 0.06 <= cobertura <= 0.92
+    except Exception as e:
+        print(f"[pessoa] erro avaliando silhueta: {e}")
+        return False
+
 def remover_fundo_rembg(img):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -1020,15 +1036,17 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     return res.convert("RGB"), cabeca_bbox
 
 def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). tem_pessoa e decidido
-    pelo nome do arquivo/pasta no Cloudinary (precisa conter "ronilson") —
-    o rembg so e chamado nesse caso, evitando o custo (e o risco de timeout
-    na primeira execução do worker) de rodar o recorte em toda foto,
-    inclusive as que nao tem pessoa. em_pe so tem efeito quando tem_pessoa
-    e True. cabeca_bbox (ver compor_pessoa, v19) e None quando nao ha
-    pessoa ou o rembg falhou."""
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). v28: tem_pessoa NAO E
+    MAIS decidido pelo nome do arquivo/pasta ("ronilson" no pid) — esse
+    metodo deixava de proteger o rosto em qualquer foto dele que estivesse
+    fora da pasta especifica "banco de imagens/ronilson" (ex.: fotos
+    organizadas por tema em "Banco de Imagens/Autismo" etc.), fazendo o
+    titulo cruzar o rosto porque a deteccao de cabeca simplesmente nunca
+    rodava pra essas fotos. Agora o rembg roda em TODA foto e tem_pessoa e
+    decidido pela silhueta real encontrada (ver _avaliar_silhueta_pessoa).
+    em_pe so tem efeito quando tem_pessoa e True. cabeca_bbox (ver
+    compor_pessoa) e None quando nao ha pessoa ou o rembg falha."""
     em_pe       = True
-    tem_pessoa  = eh_foto_ronilson(pid)
     cabeca_bbox = None
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
@@ -1039,22 +1057,24 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         l = (nw - W) // 2; t = (nh - H) // 2
         img = img.crop((l, t, l + W, t + H))
 
-        if tem_pessoa:
-            print(f"[foto] Ronilson: {pid}")
-            fundo = gerar_fundo_rico(cor1, cor2, seed)
-            try:
-                rgba  = remover_fundo_rembg(img)
+        tem_pessoa = False
+        fundo = gerar_fundo_rico(cor1, cor2, seed)
+        try:
+            rgba = remover_fundo_rembg(img)
+            if _avaliar_silhueta_pessoa(rgba):
+                tem_pessoa = True
+                print(f"[foto] pessoa detectada via rembg: {pid}")
                 em_pe = _detectar_pose_em_pe(rgba)
                 img, cabeca_bbox = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
-            except Exception as e:
-                print(f"[foto] rembg falhou ({e})")
-                img = Image.blend(fundo, img, alpha=0.60)
-                img = aplicar_split_toning(img)
-        else:
-            print(f"[foto] editorial: {pid}")
-            img = tratar_foto_editorial(img, cor1, seed)
+            else:
+                print(f"[foto] sem pessoa detectavel (silhueta fora da faixa), editorial: {pid}")
+                img = tratar_foto_editorial(img, cor1, seed)
+        except Exception as e:
+            print(f"[foto] rembg falhou ({e})")
+            img = Image.blend(fundo, img, alpha=0.60)
+            img = aplicar_split_toning(img)
 
         return img, em_pe, tem_pessoa, cabeca_bbox
     except Exception as e:
@@ -1535,10 +1555,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             # quase na mesma cor do texto escolhido. cor_zona_grid guarda
             # essas sub-medias pra guarda de contraste checar TODAS, nao so
             # a media do retangulo inteiro.
+            # v29: grade mais densa (5 linhas x 3 colunas = 15 celulas, era
+            # 3x2=6) — grade rala deixava passar bolsoes de cor (camisa
+            # branca, parede verde, blazer azul) que ficavam entre as poucas
+            # celulas amostradas. Mais celulas = mais dificil um objeto de
+            # cor solida escapar de todas elas.
             cor_zona_grid = []
             gh, gw = arr_crop.shape[0], arr_crop.shape[1]
             if gh > 0 and gw > 0:
-                n_lin, n_col = 3, 2
+                n_lin, n_col = 5, 3
                 for li in range(n_lin):
                     for ci in range(n_col):
                         y0c = int(gh * li / n_lin); y1c = int(gh * (li + 1) / n_lin)
@@ -1738,14 +1763,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # só a luminosidade. Evita letra e fundo na mesma cor/tom (ex.: teal
     # sobre foto azulada) mesmo quando o brilho geral parecia suficiente.
     def _contraste_real_ok(cor):
-        # v26: alem da media da zona inteira, nenhuma sub-regiao da grade
-        # (cor_zona_grid) pode ficar perto demais da cor escolhida — evita
-        # letra sumindo numa sub-area especifica (folhas de uma ilustracao,
-        # mesa de cor solida) mesmo quando a media geral parecia segura.
-        if distancia_cor(cor, cor_zona_real) < 90:
+        # v29: limiar da grade IGUALADO ao da media geral (era mais
+        # PERMISSIVO, 70 contra 90 — inconsistente, ja que a grade existe
+        # justamente pra pegar os casos que a media mascara, nao pra ser
+        # mais tolerante que ela). Ambos em 110 agora (subiu de 90), pra
+        # exigir contraste real mais forte e reduzir bordas onde a cor
+        # ainda "quase" bate (branco-no-branco, verde-no-verde, azul-no-azul).
+        if distancia_cor(cor, cor_zona_real) < 110:
             return False
         for _cg in cor_zona_grid:
-            if distancia_cor(cor, _cg) < 70:
+            if distancia_cor(cor, _cg) < 110:
                 return False
         return True
 
@@ -1760,7 +1787,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _cor_principal, _cor_sec = _cp, _cs
                 break
         else:
-            _cor_principal, _cor_sec = (BRANCO, AMARELO) if lum_zona_real < 0.5 else (MARINHO, BRANCO)
+            _cor_principal, _cor_sec = (
+                (BRANCO, AMARELO)
+                if distancia_cor(BRANCO, cor_zona_real) >= distancia_cor(MARINHO, cor_zona_real)
+                else (MARINHO, BRANCO)
+            )
         print(f"[titulo] cor ajustada por baixo contraste real com o fundo: {_cor_principal}")
 
     # v18: valida a SECUNDÁRIA separadamente da principal — antes só a
@@ -1801,6 +1832,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         elif est == "malgun":
             lum_b  = _LUM_COR.get(cor_b, 0.5)
             cor_ml = cor_b if lum_b > 0.42 else BRANCO
+            # v29: valida a cor do MALGUN individualmente contra o fundo real
+            # — antes so o par principal (_cor_principal/_cor_sec) passava
+            # pela guarda de contraste; um bloco malgun especifico (ex.
+            # "pouco se fala") herdava a cor sem checagem propria e podia
+            # cair em branco-no-branco/verde-no-verde quando aquele bloco
+            # caia sobre uma parte da foto (camisa, parede) diferente da
+            # zona amostrada pro par principal.
+            if not _contraste_real_ok(cor_ml):
+                for _cand in (BRANCO, MARINHO, AMARELO, TEAL, PETROLEO):
+                    if _contraste_real_ok(_cand):
+                        cor_ml = _cand
+                        break
             blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None, False))
 
         elif est == "fundo":
