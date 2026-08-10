@@ -1036,17 +1036,18 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     return res.convert("RGB"), cabeca_bbox
 
 def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). v28: tem_pessoa NAO E
-    MAIS decidido pelo nome do arquivo/pasta ("ronilson" no pid) — esse
-    metodo deixava de proteger o rosto em qualquer foto dele que estivesse
-    fora da pasta especifica "banco de imagens/ronilson" (ex.: fotos
-    organizadas por tema em "Banco de Imagens/Autismo" etc.), fazendo o
-    titulo cruzar o rosto porque a deteccao de cabeca simplesmente nunca
-    rodava pra essas fotos. Agora o rembg roda em TODA foto e tem_pessoa e
-    decidido pela silhueta real encontrada (ver _avaliar_silhueta_pessoa).
-    em_pe so tem efeito quando tem_pessoa e True. cabeca_bbox (ver
-    compor_pessoa) e None quando nao ha pessoa ou o rembg falha."""
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). v30: REVERTIDO pra v28
+    (rembg em toda foto) — ficou lento demais em produção porque roda o
+    recorte de fundo em toda geracao, inclusive fotos sem pessoa. Volta a
+    decidir tem_pessoa pelo nome do arquivo/pasta (precisa conter
+    "ronilson"), como era antes da v28 — so chama rembg quando esse nome
+    bate, evitando o custo na maioria das geracoes. Ciente do trade-off:
+    fotos dele fora da pasta "banco de imagens/ronilson" voltam a nao ter
+    protecao de rosto (ver v28 se precisar reativar). em_pe so tem efeito
+    quando tem_pessoa e True. cabeca_bbox (ver compor_pessoa) e None quando
+    nao ha pessoa ou o rembg falha."""
     em_pe       = True
+    tem_pessoa  = eh_foto_ronilson(pid)
     cabeca_bbox = None
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
@@ -1057,24 +1058,22 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         l = (nw - W) // 2; t = (nh - H) // 2
         img = img.crop((l, t, l + W, t + H))
 
-        tem_pessoa = False
-        fundo = gerar_fundo_rico(cor1, cor2, seed)
-        try:
-            rgba = remover_fundo_rembg(img)
-            if _avaliar_silhueta_pessoa(rgba):
-                tem_pessoa = True
-                print(f"[foto] pessoa detectada via rembg: {pid}")
+        if tem_pessoa:
+            print(f"[foto] Ronilson: {pid}")
+            fundo = gerar_fundo_rico(cor1, cor2, seed)
+            try:
+                rgba  = remover_fundo_rembg(img)
                 em_pe = _detectar_pose_em_pe(rgba)
                 img, cabeca_bbox = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
-            else:
-                print(f"[foto] sem pessoa detectavel (silhueta fora da faixa), editorial: {pid}")
-                img = tratar_foto_editorial(img, cor1, seed)
-        except Exception as e:
-            print(f"[foto] rembg falhou ({e})")
-            img = Image.blend(fundo, img, alpha=0.60)
-            img = aplicar_split_toning(img)
+            except Exception as e:
+                print(f"[foto] rembg falhou ({e})")
+                img = Image.blend(fundo, img, alpha=0.60)
+                img = aplicar_split_toning(img)
+        else:
+            print(f"[foto] editorial: {pid}")
+            img = tratar_foto_editorial(img, cor1, seed)
 
         return img, em_pe, tem_pessoa, cabeca_bbox
     except Exception as e:
