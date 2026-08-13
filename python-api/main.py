@@ -1242,12 +1242,29 @@ def _parse_blocos(tema):
     return blocos or [{"texto": linha, "estilo": "normal"}]
 
 # ── Texto ─────────────────────────────────────────────────────────────────────
-def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intensidade=None):
+def _cor_sombra_adaptativa(cor_fundo, escuro=0.24):
+    """v31: sombra_adaptativa agora deriva a cor da propria cor REAL do
+    fundo (cor_zona_real, amostrada de verdade na foto) em vez de uma cor
+    fixa (8,12,45) que nunca combinava com fundos claros/coloridos (ficava
+    'mancha' sobre parede verde, por ex). Escurece a cor real do fundo —
+    imita como uma sombra natural se comporta (tom mais escuro do que ja
+    esta ali), sempre combinando com a cena em vez de introduzir uma cor
+    estranha a ela."""
+    if not cor_fundo:
+        return (8, 12, 45)
+    return tuple(max(0, min(255, int(c * escuro))) for c in cor_fundo)
+
+def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False,
+            intensidade=None, leve=False, cor_base=None):
     """Sombra do texto — usada pelas estratégias da mulher:
-      - padrão (forte=True/False)  → usado por glow, peso_fonte e fallback
+      - padrão (forte=True/False)  → usado por peso_fonte e fallback
+      - leve=True                  → contato bem sutil, usado por glow_glifo
+                                     pra nao apagar o halo
       - intensidade=0..1           → Card 4 (Sombra Adaptativa / por Linha):
                                      blur e opacidade ESCALAM CONTINUAMENTE
-                                     de acordo com a dificuldade da zona
+                                     de acordo com a dificuldade da zona;
+                                     cor_base (cor real do fundo) define o
+                                     tom da sombra (ver _cor_sombra_adaptativa)
       - dupla=True                 → reservado (não está na mulher, não usado)
     Ajustado para a referência visual: SEMPRE suave, sem ser pesado."""
     NEUTRA = (2, 18, 28)
@@ -1255,9 +1272,13 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False, intens
         # Card 4 = Sombra Adaptativa (por Linha) — intensidade continua
         blur   = 6 + 22 * intensidade
         opac   = 0.20 + 0.42 * intensidade
-        params = [((4, 5), blur, opac, (8, 12, 45))]
+        params = [((4, 5), blur, opac, _cor_sombra_adaptativa(cor_base))]
     elif dupla:
         params = [((3, 4), 7, 0.48, NEUTRA), ((18, 24), 46, 0.44, (6, 80, 100))]
+    elif leve:
+        # Contato bem leve — só ancora a letra no fundo sem competir com
+        # o glow (ver glow_glifo em _renderizar_linha_agilera)
+        params = [((3, 4), 5, 0.16, NEUTRA)]
     elif forte:
         params = [((5, 6), 13, 0.36, NEUTRA)]
     else:
@@ -1459,7 +1480,8 @@ def _texto_para_modo(modo, texto):
 
 def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
                                tem_liga, sombra_forte, estrategia_leg=None,
-                               intensidade_sombra=None, cor_glow=None, seed=0):
+                               intensidade_sombra=None, cor_glow=None, seed=0,
+                               cor_fundo_zona=None):
     """Renderiza uma linha AGILERA aplicando a estratégia da vez (rotação de 5,
     Card1+4 da mulher). Cada estratégia tem sua assinatura visual própria,
     igual à imagem da mulher de referência:
@@ -1476,12 +1498,17 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
     if estrategia_leg == "glow_glifo":
         # Card 2 = Glow Orgânico (Halo de Glifo) — luz suave atras da letra
         # (ref. mulher) — raio/alpha default da funcao ja calibrados pra
-        # essa referencia, so passa a cor
+        # essa referencia, so passa a cor. v31: sombra por cima trocada pra
+        # "leve" (contato bem sutil) — a sombra padrao (forte) quase apagava
+        # o halo, que devia ser o efeito principal desta estrategia.
         _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow or _cor_glow_vivida(cor, seed), sp)
-        _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
+        _sombra(img_rgba, texto, fonte, x, y, sp, leve=True)
     elif estrategia_leg == "sombra_adaptativa" and intensidade_sombra is not None:
-        # Card 4 = Sombra Adaptativa (por Linha) — intensidade continua
-        _sombra(img_rgba, texto, fonte, x, y, sp, intensidade=intensidade_sombra)
+        # Card 4 = Sombra Adaptativa (por Linha) — intensidade continua;
+        # v31: cor da sombra agora deriva da cor REAL do fundo (cor_fundo_zona)
+        # em vez de um azul-escuro fixo que nao combinava com fundos claros
+        _sombra(img_rgba, texto, fonte, x, y, sp, intensidade=intensidade_sombra,
+                cor_base=cor_fundo_zona)
     else:
         # Restante: sombra padrão suave (igual a mulher)
         _sombra(img_rgba, texto, fonte, x, y, sp, forte=sombra_forte)
@@ -1639,10 +1666,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # ficava só na teoria). O viés é pequeno o bastante pra não vencer
         # uma zona genuinamente melhor.
         vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.08
-        # VIÉS DE POSIÇÃO: priorizar zonas na BASE/BAIXO (como a mulher) —
-        # as últimas candidatas são as de baixo, ganham bônus de preferência.
-        # Isso evita que o texto fique pulando para o topo e pareça livro.
-        vies_posicao = (1.0 - (_i_c / max(1, total_zonas - 1))) * 0.45
+        # VIÉS DE POSIÇÃO (v31 — CORRIGIDO): a formula anterior dizia
+        # priorizar zonas de BASE/BAIXO, mas o calculo dava o bonus MAIOR
+        # (0.45) justamente ao indice 0 (TOPO) — direcao invertida. Alem
+        # disso 0.45 e maior que os proprios termos de conteudo real
+        # (_comp*0.55 e _lum*0.30, ambos 0..1), entao esse vies sozinho
+        # decidia a zona vencedora quase sempre, ignorando o conteudo real
+        # de cada foto — por isso a posicao nao variava entre cards. Agora:
+        # direcao corrigida (bonus cresce em direcao a base) e peso reduzido
+        # pra ser so um desempate leve, deixando luminosidade/complexidade
+        # reais decidirem a zona na maioria dos casos.
+        vies_posicao = (_i_c / max(1, total_zonas - 1)) * 0.10
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
         # essa zona a menos que TODAS as outras também cruzem
@@ -2005,7 +2039,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _cor_render = cor_txt
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
                                               fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                              estrategia_leg, intensidade_sombra, seed=seed)
+                                              estrategia_leg, intensidade_sombra, seed=seed,
+                                              cor_fundo_zona=cor_zona_real)
                     # Tracking: atualiza para a linha renderizada
                     try:
                         if tem_liga and _RAQM_OK:
@@ -2155,7 +2190,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _cor_render = cor_txt
                             _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, ln,
                                                       fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                                      estrategia_leg, intensidade_sombra, seed=seed)
+                                                      estrategia_leg, intensidade_sombra, seed=seed,
+                                                      cor_fundo_zona=cor_zona_real)
                             # Tracking para este token dentro da sublinha
                             try:
                                 if tem_liga and _RAQM_OK:
@@ -2255,7 +2291,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _cor_render = cor_txt
                         _renderizar_linha_agilera(draw, img_rgba, x_cursor, y, linha,
                                                   fonte, _cor_render, sp, tem_liga, sombra_forte,
-                                                  estrategia_leg, intensidade_sombra, seed=seed)
+                                                  estrategia_leg, intensidade_sombra, seed=seed,
+                                                  cor_fundo_zona=cor_zona_real)
                         try:
                             if tem_liga and _RAQM_OK:
                                 _bb = draw.textbbox((x_cursor, y), linha, font=fonte,
@@ -2442,6 +2479,40 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _linha(draw, px, py, txt_pd, fonte_pd, (*cor_texto_sobre, 255), ultimo_sp)
         except Exception as e:
             print(f"[acento_grafico] card6 (igual mulher): {e}")
+
+    # Card 5 = Peso de Fonte — v31: quando o tema NAO tem nenhum bloco
+    # MALGUN (titulo 100% AGILERA, ex. "Autismo e Ansiedade"), a estrategia
+    # nao tinha efeito nenhum (so forcava bold no MALGUN, que nem existia
+    # nesse tema). Pedido explicito: nao e so sobre engrossar a fonte
+    # (AGILERA nao tem variacao de peso via OpenType) — e sobre DESTACAR.
+    # Redesenha a ULTIMA PALAVRA do titulo por cima do que ja foi
+    # renderizado, usando a cor de destaque da geracao (cor_dest) — um
+    # "hero word" real, reconhecivel como estrategia propria mesmo sem
+    # nenhum MALGUN no tema. Passa pela mesma guarda de contraste real do
+    # resto da funcao antes de usar cor_dest.
+    if estrategia_leg == "peso_fonte":
+        _tem_malgun_no_tema = any(b["estilo"] == "malgun" for b in blocos)
+        if (not _tem_malgun_no_tema and _ultima_linha_texto
+                and _ultima_linha_fonte is not None
+                and _ultima_linha_x1 is not None
+                and _ultima_linha_y_top is not None):
+            try:
+                _palavras_pf = _ultima_linha_texto.split()
+                _alvo_pf     = _palavras_pf[-1] if _palavras_pf else _ultima_linha_texto
+                _prefixo_pf  = " ".join(_palavras_pf[:-1])
+                _sp_pf       = _ultima_linha_sp or 0
+                _off_x_pf = 0
+                if _prefixo_pf:
+                    _off_x_pf = (_medir_sp(_prefixo_pf + " ", _ultima_linha_fonte, _sp_pf)
+                                 if _sp_pf else _medir(_prefixo_pf + " ", _ultima_linha_fonte))
+                _cor_hero = cor_dest if _contraste_real_ok(cor_dest) else (
+                    BRANCO if lum_zona_real < 0.5 else MARINHO)
+                draw = ImageDraw.Draw(img_rgba, "RGBA")
+                _linha(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
+                       _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255), _sp_pf)
+                print(f"[peso_fonte] destaque hero-word aplicado: '{_alvo_pf}' cor={_cor_hero}")
+            except Exception as e:
+                print(f"[peso_fonte] destaque hero-word falhou: {e}")
 
     return img_rgba.convert("RGB"), layout
 
