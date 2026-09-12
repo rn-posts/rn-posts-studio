@@ -1555,11 +1555,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # essa amostra usava uma faixa fixa que não acompanhava a zona real
     # (calculada só depois) — causava cor de texto e scrim desalinhados com
     # o lugar de fato usado.
-    # v18: para fotos SEM pessoa (fundo/textura/ambiente) não existe risco de
-    # cobrir rosto — libera o mínimo bem mais alto, permitindo o título subir
-    # de verdade quando a zona de cima for a mais legível. Para fotos COM
-    # pessoa mantém o mínimo mais baixo (evita cobrir cabeça/rosto).
-    Y_MIN_GLOBAL = int(H * 0.44) if tem_pessoa else int(H * 0.30)
+    # v18/v33: para fotos SEM pessoa (fundo/textura/ambiente) não existe risco
+    # de cobrir rosto. O título deve ficar na metade superior, com uma margem
+    # inferior ampla para o feed do Instagram e seus elementos de interface.
+    # Para fotos COM pessoa, a proteção da cabeça continua sendo aplicada pelas
+    # zonas candidatas e pela checagem de cabeca_bbox abaixo.
+    Y_MIN_GLOBAL = int(H * 0.34) if tem_pessoa else int(H * 0.18)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -1605,16 +1606,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # para TODAS as estratégias (não é mais estratégia individual). O texto
     # sempre busca a melhor posição na foto inteira.
     if not tem_pessoa:
-        _zona_default     = (int(H * 0.44), int(H * 0.82))
+        _zona_default     = (int(H * 0.30), int(H * 0.68))
         _candidatas_zona  = [
-            (int(H * 0.08), int(H * 0.38)),   # topo
-            (int(H * 0.15), int(H * 0.45)),   # topo-meio
-            (int(H * 0.25), int(H * 0.55)),   # meio-alto
-            (int(H * 0.35), int(H * 0.65)),   # meio
-            _zona_default,                      # meio-baixo (padrao)
-            (int(H * 0.50), int(H * 0.80)),   # baixo
-            (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
-            (int(H * 0.60), int(H * 0.90)),   # base
+            (int(H * 0.08), int(H * 0.36)),   # topo
+            (int(H * 0.14), int(H * 0.44)),   # topo-meio
+            (int(H * 0.22), int(H * 0.52)),   # meio-alto
+            (int(H * 0.30), int(H * 0.60)),   # meio
+            _zona_default,                      # meio-alto (padrao)
+            (int(H * 0.38), int(H * 0.70)),   # meio-baixo, limite seguro
         ]
     else:
         _zonas_pessoa = [
@@ -1666,17 +1665,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # ficava só na teoria). O viés é pequeno o bastante pra não vencer
         # uma zona genuinamente melhor.
         vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.08
-        # VIÉS DE POSIÇÃO (v31 — CORRIGIDO): a formula anterior dizia
-        # priorizar zonas de BASE/BAIXO, mas o calculo dava o bonus MAIOR
-        # (0.45) justamente ao indice 0 (TOPO) — direcao invertida. Alem
-        # disso 0.45 e maior que os proprios termos de conteudo real
-        # (_comp*0.55 e _lum*0.30, ambos 0..1), entao esse vies sozinho
-        # decidia a zona vencedora quase sempre, ignorando o conteudo real
-        # de cada foto — por isso a posicao nao variava entre cards. Agora:
-        # direcao corrigida (bonus cresce em direcao a base) e peso reduzido
-        # pra ser so um desempate leve, deixando luminosidade/complexidade
-        # reais decidirem a zona na maioria dos casos.
-        vies_posicao = (_i_c / max(1, total_zonas - 1)) * 0.10
+        # VIÉS DE POSIÇÃO (v33): desempate leve em favor da metade superior.
+        # A regra anterior favorecia a base e deixava o texto baixo demais no
+        # feed. O conteúdo real da foto ainda decide a maior parte do score.
+        vies_posicao = ((total_zonas - 1 - _i_c) / max(1, total_zonas - 1)) * 0.10
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
         # essa zona a menos que TODAS as outras também cruzem
@@ -1728,6 +1720,13 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
     tam_ml = max(36, int(tam_ag * 0.52))
+    # v32: texto do bloco "fundo" (-palavra, badges/highlights como "HONRA")
+    # nao pode ficar menor que o texto do titulo -- antes usava o mesmo
+    # tamanho do MALGUN complementar (52% do AGILERA), o que deixava o
+    # badge bem menor que o resto do card. Agora usa o MESMO tamanho do
+    # AGILERA do titulo.
+    tam_fundo = tam_ag
+    f_fundo = f_bold(tam_fundo)
     modo = _modo_tipografico(seed)
     print(f"[titulo] modo_tipo={modo}")
 
@@ -1883,8 +1882,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             # Retângulo justo — padding reduzido para ficar colado à palavra
             cor_rect_f = _cor_principal
             cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
-            lns = _quebrar(txt, fb, MAX_PX - 20)
-            blocos_render.append((lns, fb, cor_txt_f, 0, est, cor_rect_f, False))
+            lns = _quebrar(txt, f_fundo, MAX_PX - 20)
+            blocos_render.append((lns, f_fundo, cor_txt_f, 0, est, cor_rect_f, False))
 
         else:  # normal — modo tipográfico aplicado
             txt_out = _texto_para_modo(modo, txt)
@@ -2044,17 +2043,23 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     # Tracking: atualiza para a linha renderizada
                     try:
                         if tem_liga and _RAQM_OK:
+                            # v32: draw.textbbox com xy=(MARGIN, y) ja retorna
+                            # coordenadas ABSOLUTAS do canvas -- somar "y" de novo
+                            # dobrava o deslocamento vertical e jogava o rastreamento
+                            # (usado depois pelo redesenho da hero-word do peso_fonte)
+                            # pra fora da posicao real da linha, criando uma copia
+                            # fantasma do texto em outro ponto do card.
                             _bb = draw.textbbox((MARGIN, y), linha, font=fonte,
                                                features=["+liga", "+aalt", "+calt", "+dlig"])
-                        else:
-                            _bb = fonte.getbbox(linha)
-                        _ultima_linha_x1 = MARGIN
-                        _ultima_linha_y_top = y + _bb[1]
-                        _ultima_linha_y_bottom = y + _bb[3]
-                        if tem_liga and _RAQM_OK:
+                            _ultima_linha_y_top = _bb[1]
+                            _ultima_linha_y_bottom = _bb[3]
                             _ultima_linha_largura = _bb[2] - _bb[0]
                         else:
+                            _bb = fonte.getbbox(linha)
+                            _ultima_linha_y_top = y + _bb[1]
+                            _ultima_linha_y_bottom = y + _bb[3]
                             _ultima_linha_largura = (_medir_sp(linha, fonte, sp) if sp else _medir(linha, fonte))
+                        _ultima_linha_x1 = MARGIN
                     except Exception:
                         _ultima_linha_x1 = MARGIN
                         _ultima_linha_y_top = y
@@ -2195,14 +2200,18 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             # Tracking para este token dentro da sublinha
                             try:
                                 if tem_liga and _RAQM_OK:
+                                    # v32: mesmo ajuste do bug de duplicacao/posicao
+                                    # errada -- textbbox aqui ja e absoluto, nao soma "y"
                                     _bb = draw.textbbox((x_cursor, y), ln, font=fonte,
                                                        features=["+liga", "+aalt", "+calt", "+dlig"])
                                     _tw = _bb[2] - _bb[0]
+                                    _sl_y_top_list.append(_bb[1])
+                                    _sl_y_bottom_list.append(_bb[3])
                                 else:
                                     _bb = fonte.getbbox(ln)
                                     _tw = _medir_sp(ln, fonte, sp) if sp else (_bb[2] - _bb[0])
-                                _sl_y_top_list.append(y + _bb[1])
-                                _sl_y_bottom_list.append(y + _bb[3])
+                                    _sl_y_top_list.append(y + _bb[1])
+                                    _sl_y_bottom_list.append(y + _bb[3])
                                 _sl_x_right = max(_sl_x_right, x_cursor + _tw)
                             except Exception:
                                 _tw = _medir_sp(ln, fonte, sp) if sp else w
@@ -2295,14 +2304,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                                   cor_fundo_zona=cor_zona_real)
                         try:
                             if tem_liga and _RAQM_OK:
+                                # v32: idem -- textbbox ja absoluto aqui
                                 _bb = draw.textbbox((x_cursor, y), linha, font=fonte,
                                                    features=["+liga", "+aalt", "+calt", "+dlig"])
                                 _tw = _bb[2] - _bb[0]
+                                _gi_y_top_list.append(_bb[1])
+                                _gi_y_bottom_list.append(_bb[3])
                             else:
                                 _bb = fonte.getbbox(linha)
                                 _tw = _medir_sp(linha, fonte, sp) if sp else (_bb[2] - _bb[0])
-                            _gi_y_top_list.append(y + _bb[1])
-                            _gi_y_bottom_list.append(y + _bb[3])
+                                _gi_y_top_list.append(y + _bb[1])
+                                _gi_y_bottom_list.append(y + _bb[3])
                             _gi_x_right = max(_gi_x_right, x_cursor + _tw)
                         except Exception:
                             _tw = _medir_sp(linha, fonte, sp) if sp else w
