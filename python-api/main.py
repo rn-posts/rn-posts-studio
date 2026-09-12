@@ -1982,6 +1982,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     _ultima_linha_fonte = None     # Fonte usada na ultima linha
     _ultima_linha_sp = 0           # Tracking (sp) da ultima linha
     _ultima_linha_texto = ""       # Texto da ultima linha (para fallback)
+    _ultima_linha_tem_liga = False # v33: se a ultima linha usou RAQM+ligaduras (agilera_est) —
+                                    # peso_fonte precisa saber pra redesenhar a hero-word com a
+                                    # MESMA funcao/features, senao o glifo sai diferente (bug
+                                    # "palavra fantasma": vida normal vs Vida com glifo default)
 
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
@@ -2016,6 +2020,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _ultima_linha_fonte = fonte
                         _ultima_linha_sp = 0
                         _ultima_linha_texto = linha
+                        _ultima_linha_tem_liga = False
                     except Exception:
                         _linha(draw, MARGIN, y, linha, fonte, (*cor_txt, 255), 0)
                         # Tracking (fallback)
@@ -2034,6 +2039,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _ultima_linha_fonte = fonte
                         _ultima_linha_sp = 0
                         _ultima_linha_texto = linha
+                        _ultima_linha_tem_liga = False
                 else:
                     _cor_render = cor_txt
                     _renderizar_linha_agilera(draw, img_rgba, MARGIN, y, linha,
@@ -2069,6 +2075,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _ultima_linha_fonte = fonte
                     _ultima_linha_sp = sp
                     _ultima_linha_texto = linha
+                    _ultima_linha_tem_liga = tem_liga
                     if est == "agilera_est":
                         # v22b: CORRIGIDO — a largura estimada manualmente
                         # (soma de cada caractere) nao sabia que a palavra
@@ -2144,6 +2151,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _sl_last_fonte = None
                     _sl_last_sp = 0
                     _sl_last_texto = ""
+                    _sl_last_tem_liga = False
                     for idx_sl, (ln, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(sublinha):
                         if idx_sl > 0: x_cursor += esp_entre
                         w = _medir(ln, fonte)
@@ -2169,6 +2177,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                 _sl_last_fonte = fonte
                                 _sl_last_sp = 0
                                 _sl_last_texto = ln
+                                _sl_last_tem_liga = False
                             except Exception:
                                 rx1=x_cursor; ry1=y-pad_y_top
                                 rx2=x_cursor+w+(pad_x*2); ry2=y+_altura_linha(fonte)+pad_y_bottom
@@ -2185,6 +2194,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                                 _sl_last_fonte = fonte
                                 _sl_last_sp = 0
                                 _sl_last_texto = ln
+                                _sl_last_tem_liga = False
                             _desenhar_forma_fundo(img_rgba, [(rx1,ry1),(rx2,ry2)],
                                                   fill=(*(cor_rect or cor_dest),235),
                                                   forma=forma_fundo, pad_x=pad_x, pad_y=pad_y_top)
@@ -2222,6 +2232,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _sl_last_fonte = fonte
                             _sl_last_sp = sp
                             _sl_last_texto = ln
+                            _sl_last_tem_liga = tem_liga
                             x_cursor += (_medir_sp(ln, fonte, sp) if sp else w)
                     # Apos todos os tokens da sublinha: atualiza tracking
                     _ultima_linha_x1 = _sl_x_left
@@ -2236,6 +2247,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _ultima_linha_fonte = _sl_last_fonte
                     _ultima_linha_sp = _sl_last_sp
                     _ultima_linha_texto = _sl_last_texto
+                    _ultima_linha_tem_liga = _sl_last_tem_liga
                     y += int(_altura_linha(sublinha[0][1]) * 1.10)
             else:
                 x_cursor = MARGIN
@@ -2247,6 +2259,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _gi_last_fonte = None
                 _gi_last_sp = 0
                 _gi_last_texto = ""
+                _gi_last_tem_liga = False
                 for idx_g, (lns, fonte, cor_txt, sp, est, cor_rect, tem_liga) in enumerate(grupo):
                     linha = lns[0] if lns else ""
                     if not linha: continue
@@ -2284,6 +2297,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _gi_last_fonte = fonte
                             _gi_last_sp = 0
                             _gi_last_texto = linha
+                            _gi_last_tem_liga = False
 
                             x_cursor = rx2 + 7
                         except Exception as e:
@@ -2295,6 +2309,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                             _gi_last_fonte = fonte
                             _gi_last_sp = 0
                             _gi_last_texto = linha
+                            _gi_last_tem_liga = False
                             x_cursor += w + 20
                     else:
                         _cor_render = cor_txt
@@ -2325,6 +2340,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                         _gi_last_fonte = fonte
                         _gi_last_sp = sp
                         _gi_last_texto = linha
+                        _gi_last_tem_liga = tem_liga
                         x_cursor += (_medir_sp(linha, fonte, sp) if sp else w)
                 # Após todos os tokens do grupo horizontal inline: atualiza tracking
                 _ultima_linha_x1 = _gi_x_left
@@ -2339,6 +2355,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _ultima_linha_fonte = _gi_last_fonte
                 _ultima_linha_sp = _gi_last_sp
                 _ultima_linha_texto = _gi_last_texto
+                _ultima_linha_tem_liga = _gi_last_tem_liga
                 y += esp
 
     # v25: entre todos os blocos agilera_est desta geracao, o acento_grafico
@@ -2515,13 +2532,36 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _sp_pf       = _ultima_linha_sp or 0
                 _off_x_pf = 0
                 if _prefixo_pf:
-                    _off_x_pf = (_medir_sp(_prefixo_pf + " ", _ultima_linha_fonte, _sp_pf)
-                                 if _sp_pf else _medir(_prefixo_pf + " ", _ultima_linha_fonte))
+                    if _ultima_linha_tem_liga and _RAQM_OK:
+                        # v33: mede o prefixo com as MESMAS features RAQM da
+                        # linha original -- _medir/_medir_sp somam largura
+                        # caractere a caractere e ignoram ligaduras/kerning,
+                        # o que desalinhava a hero-word horizontalmente
+                        try:
+                            _bb_pref = ImageDraw.Draw(img_rgba, "RGBA").textbbox(
+                                (0, 0), _prefixo_pf + " ", font=_ultima_linha_fonte,
+                                features=["+liga", "+aalt", "+calt", "+dlig"])
+                            _off_x_pf = _bb_pref[2] - _bb_pref[0]
+                        except Exception:
+                            _off_x_pf = _medir(_prefixo_pf + " ", _ultima_linha_fonte)
+                    else:
+                        _off_x_pf = (_medir_sp(_prefixo_pf + " ", _ultima_linha_fonte, _sp_pf)
+                                     if _sp_pf else _medir(_prefixo_pf + " ", _ultima_linha_fonte))
                 _cor_hero = cor_dest if _contraste_real_ok(cor_dest) else (
                     BRANCO if lum_zona_real < 0.5 else MARINHO)
                 draw = ImageDraw.Draw(img_rgba, "RGBA")
-                _linha(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
-                       _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255), _sp_pf)
+                if _ultima_linha_tem_liga:
+                    # v33: a linha original foi desenhada com _linha_est (RAQM +
+                    # features "+liga+aalt+calt+dlig", glifos ESTILIZADOS da
+                    # agilera_est). Redesenhar com _linha() simples usava os
+                    # glifos DEFAULT (sem alternates) -- letras diferentes das
+                    # da linha original, parecendo uma segunda palavra "fantasma"
+                    # em vez de so recolorir a mesma palavra por cima.
+                    _linha_est(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
+                               _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255))
+                else:
+                    _linha(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
+                           _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255), _sp_pf)
                 print(f"[peso_fonte] destaque hero-word aplicado: '{_alvo_pf}' cor={_cor_hero}")
             except Exception as e:
                 print(f"[peso_fonte] destaque hero-word falhou: {e}")
