@@ -227,6 +227,21 @@ def _escolher_cor_destaque(seed):
 def distancia_cor(c1, c2):
     return math.sqrt(sum((a - b)**2 for a, b in zip(c1, c2)))
 
+def _cores_borda_seguras(cor_fill):
+    """v34: as 4 cores fixas da borda quadricolor (retangulo_arredondado)
+    eram sempre TEAL/VERDE_CITRICO/LARANJA/MARINHO, fixas -- se a cor de
+    preenchimento (cor_rect_f, escolhida em outro lugar) calhar de ser uma
+    dessas (ou bem parecida), aquele lado da borda quase some dentro do
+    preenchimento (ex.: badge 'tdah' com fundo TEAL e borda de cima TEAL).
+    Filtra a cor de preenchimento (e cores parecidas, distancia < 70) da
+    lista de candidatas antes de montar as 4 cores da borda."""
+    prioridade = [TEAL, VERDE_CITRICO, LARANJA, MARINHO, PETROLEO, VERDE_VIVO, AMARELO, BRANCO]
+    candidatas = [c for c in prioridade if distancia_cor(c, cor_fill) >= 70]
+    reserva = MARINHO if distancia_cor(MARINHO, cor_fill) >= 40 else BRANCO
+    while len(candidatas) < 4:
+        candidatas.append(reserva)
+    return candidatas[:4]
+
 def _extrair_cores_dominantes(img):
     """Amostra os pixels da foto (reduzida) e conta quantos caem mais perto
     de cada uma das 9 cores da paleta — usado para escolher overlay que
@@ -746,11 +761,14 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
             # ── Borda quadricolor: cada lado recebe uma cor da paleta ──
             bw = max(3 * SS, int(min(lh, lw) * 0.085))  # espessura da borda
             fill_a = fill[3] if len(fill) == 4 else 255
+            # v34: cores da borda filtradas pra nunca coincidir (nem chegar
+            # perto) da cor do preenchimento -- ver _cores_borda_seguras
+            _cb = _cores_borda_seguras(fill[:3])
             border_colors = [
-                (*TEAL,          fill_a),  # topo     — Azul Claro #049DBF
-                (*VERDE_CITRICO, fill_a),  # direita  — Verde Cítrico #92CC1D
-                (*LARANJA,       fill_a),  # baixo    — Laranja Solar #F9AB0B
-                (*MARINHO,       fill_a),  # esquerda — Azul Marinho #024059
+                (*_cb[0], fill_a),  # topo
+                (*_cb[1], fill_a),  # direita
+                (*_cb[2], fill_a),  # baixo
+                (*_cb[3], fill_a),  # esquerda
             ]
             cx, cy = lw // 2, lh // 2
 
@@ -1665,10 +1683,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         # ficava só na teoria). O viés é pequeno o bastante pra não vencer
         # uma zona genuinamente melhor.
         vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.08
-        # VIÉS DE POSIÇÃO (v33): desempate leve em favor da metade superior.
-        # A regra anterior favorecia a base e deixava o texto baixo demais no
-        # feed. O conteúdo real da foto ainda decide a maior parte do score.
-        vies_posicao = ((total_zonas - 1 - _i_c) / max(1, total_zonas - 1)) * 0.10
+        # VIÉS DE POSIÇÃO: v33 favorecia a metade superior pra fotos SEM
+        # pessoa (texto ficava baixo demais no feed). v34: pra fotos COM
+        # pessoa esse mesmo vies jogava o texto colado no topo/rosto -- em
+        # vez disso, favorece as zonas mais CENTRAIS da lista de candidatas
+        # (nem topo grudado na cabeca, nem base), deixando a composicao mais
+        # equilibrada quando ha rosto.
+        if tem_pessoa:
+            _meio = (total_zonas - 1) / 2.0
+            vies_posicao = (1 - abs(_i_c - _meio) / max(1.0, _meio)) * 0.10
+        else:
+            vies_posicao = ((total_zonas - 1 - _i_c) / max(1, total_zonas - 1)) * 0.10
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
         # essa zona a menos que TODAS as outras também cruzem
