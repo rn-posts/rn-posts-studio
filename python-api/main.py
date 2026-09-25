@@ -1079,16 +1079,43 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         if tem_pessoa:
             print(f"[foto] Ronilson: {pid}")
             fundo = gerar_fundo_rico(cor1, cor2, seed)
-            try:
-                rgba  = remover_fundo_rembg(img)
-                em_pe = _detectar_pose_em_pe(rgba)
-                img, cabeca_bbox = compor_pessoa(rgba, fundo)
-                img   = aplicar_split_toning(img)
-                img   = ImageEnhance.Contrast(img).enhance(1.08)
-            except Exception as e:
-                print(f"[foto] rembg falhou ({e})")
+            # v35: rembg podia falhar (timeout/erro transiente no Render) e o
+            # codigo desistia na primeira tentativa, caindo direto no fallback
+            # sem cabeca_bbox nenhum (ver abaixo). Adiciona uma segunda
+            # tentativa antes de desistir -- reduz quantas fotos caem no
+            # fallback por falha transiente em vez de falha real do modelo.
+            rgba = None
+            _ultimo_erro_rembg = None
+            for _tentativa_rembg in range(2):
+                try:
+                    rgba = remover_fundo_rembg(img)
+                    break
+                except Exception as e:
+                    _ultimo_erro_rembg = e
+                    print(f"[foto] rembg tentativa {_tentativa_rembg+1}/2 falhou ({e})")
+            if rgba is not None:
+                try:
+                    em_pe = _detectar_pose_em_pe(rgba)
+                    img, cabeca_bbox = compor_pessoa(rgba, fundo)
+                    img   = aplicar_split_toning(img)
+                    img   = ImageEnhance.Contrast(img).enhance(1.08)
+                except Exception as e:
+                    _ultimo_erro_rembg = e
+                    rgba = None
+            if rgba is None:
+                print(f"[foto] rembg falhou apos retry ({_ultimo_erro_rembg}) — "
+                      f"aplicando zona de cabeca conservadora (protecao minima)")
                 img = Image.blend(fundo, img, alpha=0.60)
                 img = aplicar_split_toning(img)
+                # v35: CORRIGIDO — antes cabeca_bbox ficava None aqui, ou seja,
+                # ZERO protecao de rosto mesmo com tem_pessoa=True (o rosto
+                # real continua na foto original por baixo do blend, so nao
+                # tinhamos onde ele estava). Sem deteccao disponivel, reserva
+                # uma faixa conservadora (topo ate 55% da altura, largura
+                # toda do canvas) como "cabeca" — pior caso perde zonas boas
+                # no topo, mas o titulo nunca mais cruza um rosto sem nenhuma
+                # protecao.
+                cabeca_bbox = (0, int(H * 0.05), W, int(H * 0.55))
         else:
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
@@ -1366,6 +1393,11 @@ def _glow_glifo(img_rgba, texto, fonte, x, y, cor_glow, sp=0, raio=40, alpha=235
     borrar e o raio maior sao o que faz a luz aparecer como uma auréola
     visivel ao redor das letras (ref. mulher), em vez de ficar quase toda
     escondida atras do proprio glifo (bug do raio 22px antigo)."""
+    # Luz de contato discreta; valores altos viravam uma mancha atrás de
+    # frases longas, sobretudo nos cards editoriais.
+    raio = min(24, raio)
+    alpha = min(105, alpha)
+    bulk = min(3, bulk)
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     _linha(d, x, y, texto, fonte, (*cor_glow, alpha), sp,
@@ -1390,6 +1422,27 @@ def _scrim_suave(img_rgba, x0, y0, x1, y1, cor, alpha=150, raio=60):
         d.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad], fill=(*cor, alpha))
     layer = layer.filter(ImageFilter.GaussianBlur(raio))
     img_rgba.paste(layer, (0, 0), layer)
+
+def _scrim_editorial_limpo(img_rgba, y0, y1, alpha=92, blur=16, feather=110):
+    """Desfoca a faixa do título com transição vertical contínua e limpa."""
+    try:
+        y0 = max(0, int(y0)); y1 = min(H, int(y1))
+        if y1 <= y0:
+            return
+        yy = np.arange(H, dtype=np.float32)
+        a = np.zeros(H, dtype=np.float32)
+        a[(yy >= y0) & (yy <= y1)] = 1.0
+        antes = (yy >= y0 - feather) & (yy < y0)
+        depois = (yy > y1) & (yy <= y1 + feather)
+        a[antes] = (yy[antes] - (y0 - feather)) / feather
+        a[depois] = ((y1 + feather) - yy[depois]) / feather
+        mask = Image.fromarray(np.repeat((a[:, None] * 255).astype(np.uint8), W, axis=1), mode="L")
+        blurred = img_rgba.filter(ImageFilter.GaussianBlur(blur))
+        mixed = Image.composite(blurred, img_rgba, mask)
+        veil = ImageChops.multiply(Image.new("L", (W, H), int(alpha)), mask)
+        img_rgba.paste(mixed, (0, 0), veil)
+    except Exception as e:
+        print(f"[scrim_editorial] erro: {e}")
 
 def _cor_linha_por_fundo(img_rgba, x, y, w, h, idx_linha=0, evitar=()):
     """8. Reavalia a cor do texto POR LINHA, amostrando a luminosidade real
@@ -1720,6 +1773,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             print(f"[titulo] zona empurrada pra baixo da cabeca: Y_INI={Y_INI}")
         Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = _avaliar_zona(Y_INI, Y_FIM)
 
+    # Editorial: desfoca suavemente a faixa de leitura, sem retângulo colorido
+    # e sem aplicar o efeito sobre o recorte de pessoa/rosto.
+    if not tem_pessoa:
+        _scrim_editorial_limpo(img_rgba, Y_INI - 60, Y_FIM + 60)
+
     blocos = _parse_blocos(tema)
     if not blocos:
         return img_rgba.convert("RGB"), layout
@@ -1745,13 +1803,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
     tam_ml = max(36, int(tam_ag * 0.52))
-    # v32: texto do bloco "fundo" (-palavra, badges/highlights como "HONRA")
-    # nao pode ficar menor que o texto do titulo -- antes usava o mesmo
-    # tamanho do MALGUN complementar (52% do AGILERA), o que deixava o
-    # badge bem menor que o resto do card. Agora usa o MESMO tamanho do
-    # AGILERA do titulo.
+    # O bloco "fundo" (-palavra) usa o mesmo tamanho-base do título. A fonte
+    # concreta é atribuída abaixo, depois do modo tipográfico, para que o
+    # destaque não fique maior por trocar AGILERA por MALGUN bold.
     tam_fundo = tam_ag
-    f_fundo = f_bold(tam_fundo)
     modo = _modo_tipografico(seed)
     print(f"[titulo] modo_tipo={modo}")
 
@@ -1765,6 +1820,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     fa_base, tem_liga_base = _fonte_agilera_para_modo(modo, tam_ag)
     ag_sp = _sp_para_modo(modo, tam_ag)
     fa    = fa_base  # usado para blocos 'normal'
+    # '-' é apenas tratamento de fundo, não uma mudança de fonte.
+    f_fundo = fa
     fb    = f_bold(tam_ml)
 
     # MALGUN: 3 variações por seed — regular, bold, light
