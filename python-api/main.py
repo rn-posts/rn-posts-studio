@@ -935,6 +935,46 @@ def _detectar_pose_em_pe(pessoa_rgba):
         print(f"[pose] erro: {e}")
         return True
 
+# ── Detecção de rosto (Haar Cascade, OpenCV) ──
+# v37: estratégia NOVA, independente do rembg. O retry (v35) foi removido
+# porque não resolvia nada -- o problema nao e falha transiente, e o rembg
+# realmente errando/falhando em producao. Em vez de insistir no rembg pra
+# saber onde esta o rosto, detecta o rosto DE VERDADE (Haar Cascade, leve,
+# nativo do OpenCV, sem modelo pra baixar) direto na imagem FINAL ja
+# composta -- funciona tanto quando o rembg funcionou quanto quando caiu
+# no fallback, porque roda depois de qualquer um dos dois caminhos.
+_face_cascade = None
+def _get_face_cascade():
+    global _face_cascade
+    if _face_cascade is None:
+        import cv2
+        _face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    return _face_cascade
+
+def _detectar_rosto(img):
+    """Roda Haar Cascade na imagem final (ja no canvas W×H). Retorna
+    (x0,y0,x1,y1) com folga generosa ao redor do rosto detectado (o maior,
+    se houver mais de um), ou None se nenhum rosto for encontrado."""
+    try:
+        import cv2
+        arr = np.array(img.convert("L"))
+        faces = _get_face_cascade().detectMultiScale(
+            arr, scaleFactor=1.1, minNeighbors=5,
+            minSize=(int(W * 0.08), int(W * 0.08)))
+        if len(faces) == 0:
+            print("[rosto] Haar: nenhum rosto detectado")
+            return None
+        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        pad_x, pad_top, pad_bottom = int(fw * 0.35), int(fh * 0.55), int(fh * 0.35)
+        bbox = (max(0, fx - pad_x), max(0, fy - pad_top),
+                min(W, fx + fw + pad_x), min(H, fy + fh + pad_bottom))
+        print(f"[rosto] Haar detectou rosto: {bbox}")
+        return bbox
+    except Exception as e:
+        print(f"[rosto] Haar falhou: {e}")
+        return None
+
 # ── Fundo rico ────────────────────────────────────────────────────────────────
 def gerar_fundo_rico(cor1, cor2, seed):
     rng = random.Random(seed)
@@ -1079,43 +1119,33 @@ def preparar_foto(url, pid, cor1, cor2, seed):
         if tem_pessoa:
             print(f"[foto] Ronilson: {pid}")
             fundo = gerar_fundo_rico(cor1, cor2, seed)
-            # v35: rembg podia falhar (timeout/erro transiente no Render) e o
-            # codigo desistia na primeira tentativa, caindo direto no fallback
-            # sem cabeca_bbox nenhum (ver abaixo). Adiciona uma segunda
-            # tentativa antes de desistir -- reduz quantas fotos caem no
-            # fallback por falha transiente em vez de falha real do modelo.
-            rgba = None
-            _ultimo_erro_rembg = None
-            for _tentativa_rembg in range(2):
-                try:
-                    rgba = remover_fundo_rembg(img)
-                    break
-                except Exception as e:
-                    _ultimo_erro_rembg = e
-                    print(f"[foto] rembg tentativa {_tentativa_rembg+1}/2 falhou ({e})")
-            if rgba is not None:
-                try:
-                    em_pe = _detectar_pose_em_pe(rgba)
-                    img, cabeca_bbox = compor_pessoa(rgba, fundo)
-                    img   = aplicar_split_toning(img)
-                    img   = ImageEnhance.Contrast(img).enhance(1.08)
-                except Exception as e:
-                    _ultimo_erro_rembg = e
-                    rgba = None
-            if rgba is None:
-                print(f"[foto] rembg falhou apos retry ({_ultimo_erro_rembg}) — "
-                      f"aplicando zona de cabeca conservadora (protecao minima)")
+            # v37: retry (v35) removido -- nao resolvia nada, so deixava a
+            # geracao mais lenta sem mudar o resultado (o problema nao era
+            # falha transiente). A protecao de rosto real agora vem de
+            # _detectar_rosto (Haar, definida acima), independente do rembg
+            # funcionar ou nao.
+            try:
+                rgba  = remover_fundo_rembg(img)
+                em_pe = _detectar_pose_em_pe(rgba)
+                img, cabeca_bbox = compor_pessoa(rgba, fundo)
+                img   = aplicar_split_toning(img)
+                img   = ImageEnhance.Contrast(img).enhance(1.08)
+            except Exception as e:
+                print(f"[foto] rembg falhou ({e}) — seguindo sem recorte")
                 img = Image.blend(fundo, img, alpha=0.60)
                 img = aplicar_split_toning(img)
-                # v35: CORRIGIDO — antes cabeca_bbox ficava None aqui, ou seja,
-                # ZERO protecao de rosto mesmo com tem_pessoa=True (o rosto
-                # real continua na foto original por baixo do blend, so nao
-                # tinhamos onde ele estava). Sem deteccao disponivel, reserva
-                # uma faixa conservadora (topo ate 55% da altura, largura
-                # toda do canvas) como "cabeca" — pior caso perde zonas boas
-                # no topo, mas o titulo nunca mais cruza um rosto sem nenhuma
-                # protecao.
+                # fallback conservador -- usado so se o Haar abaixo tambem
+                # nao achar nenhum rosto
                 cabeca_bbox = (0, int(H * 0.05), W, int(H * 0.55))
+
+            # v37: deteccao de rosto REAL sobre a imagem final -- roda
+            # sempre, sucesso ou falha do rembg acima, e SUBRESCREVE
+            # cabeca_bbox quando encontra um rosto de verdade (mais
+            # confiavel que a heuristica de silhueta ou a faixa
+            # conservadora, que so chutam onde o rosto pode estar).
+            bbox_haar = _detectar_rosto(img)
+            if bbox_haar:
+                cabeca_bbox = bbox_haar
         else:
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
@@ -1127,20 +1157,26 @@ def preparar_foto(url, pid, cor1, cor2, seed):
 # ── Overlay ───────────────────────────────────────────────────────────────────
 def aplicar_overlay(img, lum_media, layout, seed=0,
                     hist_cores=None, cor_destaque_texto=None,
-                    tem_pessoa=False):
+                    tem_pessoa=False, forca=1.0):
     """
     Direções: base(0), topo(1), esquerda(2), direita(3).
     Para fotos com pessoa (rembg): pessoa está à direita → overlay à esquerda (direcao=2).
     Para fotos editoriais: só base ou topo (nunca lateral).
+    Retorna (imagem_com_overlay, cor_overlay_usada).
+    v37: reativado no pipeline principal (gerar_card_imagem) — a função
+    existia mas nunca era chamada, cor_overlay ficava sempre None. `forca`
+    (0-1) escala a intensidade final; o pipeline principal usa um valor
+    reduzido pra um acabamento discreto, não o overlay forte original.
     """
     if lum_media > 160:   alpha_max = 218
     elif lum_media > 120: alpha_max = 192
     elif lum_media > 80:  alpha_max = 168
     else:                 alpha_max = 148
+    alpha_max = int(alpha_max * forca)
 
     cor_ov = (_escolher_cor_overlay(hist_cores, cor_destaque_texto or LARANJA, seed)
               if hist_cores else MARINHO)
-    print(f"[overlay] cor={cor_ov} lum={lum_media:.0f} alpha={alpha_max}")
+    print(f"[overlay] cor={cor_ov} lum={lum_media:.0f} alpha={alpha_max} forca={forca}")
 
     lum_ov = _LUM_COR.get(cor_ov, 0.5)
     if lum_ov > 0.5:
@@ -1191,7 +1227,7 @@ def aplicar_overlay(img, lum_media, layout, seed=0,
             draw.line([(0, H - altura + y), (W, H - altura + y)],
                       fill=(*cor_ov, alpha))
 
-    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB"), cor_ov
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 def _parse_blocos(tema):
@@ -1775,8 +1811,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
     # Editorial: desfoca suavemente a faixa de leitura, sem retângulo colorido
     # e sem aplicar o efeito sobre o recorte de pessoa/rosto.
+    # v36: CORRIGIDO — alpha do véu era FIXO (92, ~36%) independente de quao
+    # complexo o fundo real fosse. Contra fundo simples/uniforme, 36% basta;
+    # contra fundo cheio de textura/objetos (ex.: sala com plantas penduradas,
+    # persiana listrada) o texto ficava "apagado", sem destaque nenhum, porque
+    # o veu nao escurecia/suavizava o suficiente. Agora escala com a MESMA
+    # complexidade_zona ja calculada na busca de zona (nenhum sample novo) —
+    # fundo liso continua leve (~92), fundo bagunçado sobe ate 190.
     if not tem_pessoa:
-        _scrim_editorial_limpo(img_rgba, Y_INI - 60, Y_FIM + 60)
+        _alpha_scrim = min(190, int(92 + min(1.0, complexidade_zona) * 110))
+        _scrim_editorial_limpo(img_rgba, Y_INI - 60, Y_FIM + 60, alpha=_alpha_scrim)
 
     blocos = _parse_blocos(tema)
     if not blocos:
@@ -2701,7 +2745,16 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     layout = seed % 5
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
 
+    # v37: overlay estava implementado mas nunca era chamado aqui --
+    # cor_ov_usada ficava sempre None e nenhuma foto recebia acabamento
+    # nenhum. Reativado com forca reduzida (0.5) para um resultado
+    # discreto/elegante, nao o overlay forte original.
     cor_ov_usada = None
+    if base is not None:
+        base, cor_ov_usada = aplicar_overlay(base, lum_media, layout, seed=seed,
+                                             hist_cores=hist_cores,
+                                             cor_destaque_texto=cor_dest,
+                                             tem_pessoa=tem_pessoa, forca=0.50)
 
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
