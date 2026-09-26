@@ -2745,16 +2745,13 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     layout = seed % 5
     cor_dest, cor_fundo_txt = _escolher_cor_destaque(seed)
 
-    # v37: overlay estava implementado mas nunca era chamado aqui --
-    # cor_ov_usada ficava sempre None e nenhuma foto recebia acabamento
-    # nenhum. Reativado com forca reduzida (0.5) para um resultado
-    # discreto/elegante, nao o overlay forte original.
+    # v38: REVERTIDO — o overlay (v37) piorou o resultado (desfoque/halo em
+    # volta da pessoa, pele amarelada, aspecto embacado), provavelmente por
+    # somar com a sombra ja existente em compor_pessoa e/ou com o blend do
+    # fallback (Image.blend alpha=0.60). Volta a NAO aplicar overlay ate
+    # investigar a interacao direito, em vez de empilhar mais uma correcao
+    # especulativa em cima de algo que ja se mostrou pior.
     cor_ov_usada = None
-    if base is not None:
-        base, cor_ov_usada = aplicar_overlay(base, lum_media, layout, seed=seed,
-                                             hist_cores=hist_cores,
-                                             cor_destaque_texto=cor_dest,
-                                             tem_pessoa=tem_pessoa, forca=0.50)
 
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
