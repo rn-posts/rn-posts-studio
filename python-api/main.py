@@ -110,13 +110,14 @@ CORREÇÕES v27
 
 PIPELINE
 ========
-Imagem: Cloudinary → rembg (Ronilson) ou color grade (editorial) → fallback gradiente
+Imagem: Cloudinary → rembg (Ronilson) sobre fundo Gemini (tema + paleta AlvoreSer); editorial = color grade; fallback = gradiente
 Overlay: cor da paleta por contraste com foto, nunca igual ao texto, direção detectada
 Tipografia: (sem símbolo) AGILERA | * AGILERA estilizada | : MALGUN | - fundo preenchido
 Layout: cada linha do tema = um bloco visual independente
 """
 
 import os, io, uuid, random, json, math, base64, hashlib
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import requests, cloudinary, cloudinary.uploader, cloudinary.api
 from datetime import datetime
@@ -126,13 +127,20 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageCho
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-_rembg_remove = None
-def get_rembg():
-    global _rembg_remove
-    if _rembg_remove is None:
-        from rembg import remove as _r
-        _rembg_remove = _r
-    return _rembg_remove
+os.environ.setdefault("U2NET_HOME", os.path.join(os.path.dirname(__file__), ".u2net"))
+
+_rembg_sessions = {}
+_REMBG_MODELOS = ("u2net_human_seg", "u2netp")
+_REMBG_MAX_LADO = 768
+
+def _sessao_rembg(modelo):
+    sess = _rembg_sessions.get(modelo)
+    if sess is None:
+        from rembg import new_session
+        print(f"[rembg] carregando modelo {modelo}")
+        sess = new_session(modelo)
+        _rembg_sessions[modelo] = sess
+    return sess
 
 app = Flask(__name__, static_folder="../dist", static_url_path="/")
 
@@ -912,10 +920,53 @@ def _avaliar_silhueta_pessoa(rgba):
         print(f"[pessoa] erro avaliando silhueta: {e}")
         return False
 
+def _afinar_mascara(rgba):
+    """Endurece o alpha do rembg: borda mole vira recorte nítido, pixels
+    quase opacos viram 255. Cabelo/pelo fino (alpha médio) permanece."""
+    r, g, b, a = rgba.split()
+    arr = np.array(a, dtype=np.float32)
+    arr = np.where(arr < 28, 0, arr)
+    arr = np.clip((arr - 28) * (255.0 / 200.0), 0, 255)
+    arr = np.where(arr > 210, 255, arr)
+    a = Image.fromarray(arr.astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.6))
+    return Image.merge("RGBA", (r, g, b, a))
+
 def remover_fundo_rembg(img):
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return Image.open(io.BytesIO(get_rembg()(buf.getvalue()))).convert("RGBA")
+    """Recorta a pessoa. Roda o modelo numa cópia menor (evita OOM no
+    Render) e aplica a máscara na foto original, para o recorte não
+    perder nitidez. Tenta u2net_human_seg (feito para pessoas) e, se a
+    silhueta vier ruim, cai no u2netp."""
+    from rembg import remove as rembg_remove
+    original = img.convert("RGB")
+    ow, oh = original.size
+    escala = min(1.0, _REMBG_MAX_LADO / max(ow, oh))
+    trabalho = original if escala >= 1.0 else original.resize(
+        (max(1, int(ow * escala)), max(1, int(oh * escala))),
+        Image.Resampling.LANCZOS)
+
+    ultimo = None
+    for modelo in _REMBG_MODELOS:
+        try:
+            buf = io.BytesIO()
+            trabalho.save(buf, format="PNG")
+            out = rembg_remove(buf.getvalue(), session=_sessao_rembg(modelo))
+            rgba_p = Image.open(io.BytesIO(out)).convert("RGBA")
+            alpha = rgba_p.split()[3]
+            if alpha.size != (ow, oh):
+                alpha = alpha.resize((ow, oh), Image.Resampling.LANCZOS)
+            r, g, b = original.split()
+            rgba = _afinar_mascara(Image.merge("RGBA", (r, g, b, alpha)))
+            if _avaliar_silhueta_pessoa(rgba):
+                print(f"[rembg] ok modelo={modelo}")
+                return rgba
+            print(f"[rembg] silhueta ruim modelo={modelo} — tentando outro")
+            ultimo = rgba
+        except Exception as e:
+            print(f"[rembg] falhou modelo={modelo}: {e}")
+            _rembg_sessions.pop(modelo, None)
+    if ultimo is not None:
+        return ultimo
+    raise RuntimeError("rembg nao conseguiu recortar a pessoa")
 
 def _detectar_pose_em_pe(pessoa_rgba):
     """Heurística (não é um classificador de pose real): usa a máscara alpha
@@ -976,7 +1027,129 @@ def _detectar_rosto(img):
         return None
 
 # ── Fundo rico ────────────────────────────────────────────────────────────────
-def gerar_fundo_rico(cor1, cor2, seed):
+GEMINI_IMAGE_MODELOS = (
+    "gemini-3.1-flash-image",
+    "gemini-3.1-flash-image-preview",
+    "gemini-2.5-flash-image",
+)
+
+_CENA_POR_TEMA = (
+    ("autismo", "gentle sensory-friendly interior with soft daylight, muted textiles, calm plants, quiet order"),
+    ("ansiedade", "still dawn landscape, open sky, slow water, breathing space, cool air"),
+    ("estresse", "quiet room with a window, linen curtains, morning light, uncluttered surfaces"),
+    ("burnout", "empty wooden bench facing a sunrise, rest, horizon, warm-cool contrast"),
+    ("depressao", "soft overcast light through trees, mist, hope at the edge of the frame, not gloomy"),
+    ("luto", "gentle empty chair by a window, warm lamp, respectful stillness"),
+    ("trauma", "grounded natural textures, stone, earth, roots, safe enclosed garden"),
+    ("borderline", "balanced dual light: cool teal shadow and warm amber sunrise, harmony"),
+    ("tdah", "focused calm workspace with a single plant and a beam of morning light"),
+    ("terapia", "welcoming therapy-adjacent interior, armchair out of frame, books, warm wood, plants"),
+    ("acolhimento", "open doorway with golden morning light, plants, invitation, shelter"),
+    ("familia", "sunlit living space, two empty mugs on a table, plants, belonging without people"),
+    ("relacionamento", "two empty chairs facing a window at dawn, conversation implied, no people"),
+    ("recomeco", "horizon at first light, new path through grass, orange sky meeting navy"),
+    ("transformacao", "chrysalis of light: leaves, water reflection, dawn, growth"),
+)
+
+def _texto_tema_limpo(tema):
+    t = (tema or "").replace("*", " ").replace(":", " ").replace("-", " ")
+    return " ".join(t.split())[:280]
+
+def _cena_do_tema(tema):
+    t = (tema or "").lower()
+    for chave, cena in _CENA_POR_TEMA:
+        if chave in t:
+            return cena
+    return "dawn over still water and vegetation, cinematic natural light, hope and calm"
+
+def _prompt_fundo_ia(tema, seed, para_pessoa):
+    rng = random.Random(seed)
+    variantes = (
+        "golden hour side light",
+        "cool blue hour with a warm lamp",
+        "soft overcast morning",
+        "sunbeam through leaves",
+        "reflections on water at dawn",
+    )
+    luz = variantes[seed % len(variantes)]
+    tema_limpo = _texto_tema_limpo(tema) or "cuidado emocional e recomeço"
+    composicao = (
+        "Vertical 4:5 Instagram portrait. The RIGHT third is a clean, softly lit "
+        "empty area (plain wall, open air or gentle bokeh) reserved for compositing "
+        "a real person later. The LEFT half has richer atmosphere and stays darker/"
+        "muted so typography can sit there."
+        if para_pessoa else
+        "Vertical 4:5 Instagram portrait. Keep a quiet, slightly darker region in "
+        "the upper-left third for large typography. No busy pattern behind that zone."
+    )
+    return (
+        f"Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology "
+        f"clinic whose identity is dawn, hope and emotional care. Theme of this post: "
+        f"\"{tema_limpo}\". Scene: {_cena_do_tema(tema)}. Lighting: {luz}. "
+        f"Color palette strictly: deep navy #024059, petroleum teal #1B797D, "
+        f"soft sage #779993, solar orange #F9AB0B as accent light only, snow white "
+        f"haze #F4F6F8. Mood: professional, welcoming, intimate, never clinical-cold, "
+        f"never hospital. {composicao} "
+        f"Absolutely no people, no faces, no hands, no text, no letters, no logos, "
+        f"no watermarks, no UI. Shot on 35mm, shallow depth, high detail. "
+        f"Variation {rng.randint(1, 99)}."
+    )
+
+def _bytes_imagem_gemini(data):
+    for cand in data.get("candidates") or []:
+        parts = (cand.get("content") or {}).get("parts") or []
+        for part in parts:
+            blob = part.get("inlineData") or part.get("inline_data") or {}
+            raw = blob.get("data")
+            if raw:
+                return base64.b64decode(raw)
+    return None
+
+def _fit_canvas(img):
+    img = img.convert("RGB")
+    ratio = max(W / img.width, H / img.height)
+    nw, nh = int(img.width * ratio), int(img.height * ratio)
+    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    l = (nw - W) // 2
+    t = (nh - H) // 2
+    return img.crop((l, t, l + W, t + H))
+
+def _gerar_fundo_gemini(tema, seed, para_pessoa):
+    if not GEMINI_API_KEY:
+        return None
+    prompt = _prompt_fundo_ia(tema, seed, para_pessoa)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": "4:5"},
+        },
+    }
+    ultimo = None
+    for modelo in GEMINI_IMAGE_MODELOS:
+        try:
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{modelo}:generateContent?key={GEMINI_API_KEY}")
+            r = requests.post(url, json=payload, timeout=50)
+            if r.status_code >= 400:
+                print(f"[fundo-ia] {modelo} HTTP {r.status_code}: {r.text[:240]}")
+                ultimo = f"{modelo} HTTP {r.status_code}"
+                continue
+            raw = _bytes_imagem_gemini(r.json())
+            if not raw:
+                print(f"[fundo-ia] {modelo} respondeu sem imagem")
+                ultimo = f"{modelo} sem imagem"
+                continue
+            img = _fit_canvas(Image.open(io.BytesIO(raw)))
+            print(f"[fundo-ia] ok modelo={modelo}")
+            return img
+        except Exception as e:
+            print(f"[fundo-ia] {modelo} falhou: {e}")
+            ultimo = e
+    print(f"[fundo-ia] caindo no gradiente ({ultimo})")
+    return None
+
+def _gerar_fundo_gradiente(cor1, cor2, seed):
     rng = random.Random(seed)
     arr = np.zeros((H, W, 3), dtype=np.float32)
     for y in range(H):
@@ -993,6 +1166,12 @@ def gerar_fundo_rico(cor1, cor2, seed):
     ruido = np.random.RandomState(seed).normal(0, 4, (H, W, 3))
     arr   = np.clip(arr + ruido, 0, 255).astype(np.uint8)
     return Image.fromarray(arr).filter(ImageFilter.GaussianBlur(1))
+
+def gerar_fundo_rico(cor1, cor2, seed, tema="", para_pessoa=False):
+    ia = _gerar_fundo_gemini(tema, seed, para_pessoa)
+    if ia is not None:
+        return ia
+    return _gerar_fundo_gradiente(cor1, cor2, seed)
 
 # ── Color grade ───────────────────────────────────────────────────────────────
 def color_grade_editorial(img, seed):
@@ -1093,17 +1272,10 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB"), cabeca_bbox
 
-def preparar_foto(url, pid, cor1, cor2, seed):
-    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). v30: REVERTIDO pra v28
-    (rembg em toda foto) — ficou lento demais em produção porque roda o
-    recorte de fundo em toda geracao, inclusive fotos sem pessoa. Volta a
-    decidir tem_pessoa pelo nome do arquivo/pasta (precisa conter
-    "ronilson"), como era antes da v28 — so chama rembg quando esse nome
-    bate, evitando o custo na maioria das geracoes. Ciente do trade-off:
-    fotos dele fora da pasta "banco de imagens/ronilson" voltam a nao ter
-    protecao de rosto (ver v28 se precisar reativar). em_pe so tem efeito
-    quando tem_pessoa e True. cabeca_bbox (ver compor_pessoa) e None quando
-    nao ha pessoa ou o rembg falha."""
+def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). rembg só nas fotos
+    cujo public_id contém "ronilson". Fundo atrás do recorte vem da IA
+    (Gemini) alinhada ao tema; se a IA falhar, usa o gradiente antigo."""
     em_pe       = True
     tem_pessoa  = eh_foto_ronilson(pid)
     cabeca_bbox = None
@@ -1118,24 +1290,32 @@ def preparar_foto(url, pid, cor1, cor2, seed):
 
         if tem_pessoa:
             print(f"[foto] Ronilson: {pid}")
-            fundo = gerar_fundo_rico(cor1, cor2, seed)
-            # v37: retry (v35) removido -- nao resolvia nada, so deixava a
-            # geracao mais lenta sem mudar o resultado (o problema nao era
-            # falha transiente). A protecao de rosto real agora vem de
-            # _detectar_rosto (Haar, definida acima), independente do rembg
-            # funcionar ou nao.
+            fundo, rgba = None, None
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_fundo = pool.submit(
+                    gerar_fundo_rico, cor1, cor2, seed, tema, True)
+                fut_rgba  = pool.submit(remover_fundo_rembg, img)
+                try:
+                    fundo = fut_fundo.result()
+                except Exception as e:
+                    print(f"[foto] fundo falhou ({e})")
+                try:
+                    rgba = fut_rgba.result()
+                except Exception as e:
+                    print(f"[foto] rembg falhou ({e})")
+            if fundo is None:
+                fundo = _gerar_fundo_gradiente(cor1, cor2, seed)
             try:
-                rgba  = remover_fundo_rembg(img)
+                if rgba is None:
+                    raise RuntimeError("sem recorte")
                 em_pe = _detectar_pose_em_pe(rgba)
                 img, cabeca_bbox = compor_pessoa(rgba, fundo)
                 img   = aplicar_split_toning(img)
                 img   = ImageEnhance.Contrast(img).enhance(1.08)
             except Exception as e:
-                print(f"[foto] rembg falhou ({e}) — seguindo sem recorte")
+                print(f"[foto] compose falhou ({e}) — seguindo sem recorte")
                 img = Image.blend(fundo, img, alpha=0.60)
                 img = aplicar_split_toning(img)
-                # fallback conservador -- usado so se o Haar abaixo tambem
-                # nao achar nenhum rosto
                 cabeca_bbox = (0, int(H * 0.05), W, int(H * 0.55))
 
             # v37: deteccao de rosto REAL sobre a imagem final -- roda
@@ -2730,14 +2910,15 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
         except Exception as e: print(f"[cor] {e}")
 
     if imagem_url:
-        base, em_pe, tem_pessoa, cabeca_bbox = preparar_foto(imagem_url, pid, cor1, cor2, seed)
+        base, em_pe, tem_pessoa, cabeca_bbox = preparar_foto(
+            imagem_url, pid, cor1, cor2, seed, tema=tema)
         if base is None:
-            base = gerar_fundo_rico(cor1, cor2, seed)
+            base = gerar_fundo_rico(cor1, cor2, seed, tema=tema, para_pessoa=False)
             lum_media  = luminosidade_media(base)
             hist_cores = _extrair_cores_dominantes(base)
             tem_pessoa = False
     else:
-        base = gerar_fundo_rico(cor1, cor2, seed)
+        base = gerar_fundo_rico(cor1, cor2, seed, tema=tema, para_pessoa=False)
         lum_media  = luminosidade_media(base)
         hist_cores = _extrair_cores_dominantes(base)
         tem_pessoa = False
