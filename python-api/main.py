@@ -127,10 +127,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageCho
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-os.environ.setdefault("U2NET_HOME", os.path.join(os.path.dirname(__file__), ".u2net"))
+_u2net_dir = os.path.join(os.path.dirname(__file__), ".u2net")
+try:
+    os.makedirs(_u2net_dir, exist_ok=True)
+except Exception:
+    pass
+os.environ.setdefault("U2NET_HOME", _u2net_dir)
 
 _rembg_sessions = {}
-_REMBG_MODELOS = ("u2net_human_seg", "u2netp")
+_REMBG_MODELOS = ("u2netp", "u2net_human_seg")
 _REMBG_MAX_LADO = 768
 
 def _sessao_rembg(modelo):
@@ -215,21 +220,18 @@ SAFE_MAX_PX = SAFE_W - 92      # 920px
 # a cor usada combine com aquela imagem específica.
 CORES_OVERLAY_PERMITIDAS = PALETA_9
 
-# Destaque de texto: todas as 9 cores
+# Destaque de texto: cores refinadas e elegantes da identidade visual
 CORES_DESTAQUE = [
     LARANJA, AMARELO, TEAL, BRANCO, VERDE_NEUTRO,
-    PETROLEO, VERDE_VIVO, VERDE_CITRICO, MARINHO,
+    PETROLEO, MARINHO,
 ]
-# v17: as 9 posições agora cobrem as 9 cores da paleta sem repetição — antes
-# MARINHO, VERDE_VIVO e VERDE_CITRICO nunca eram sorteados como destaque
 CORES_FUNDO_TEXTO = {
     LARANJA: MARINHO, AMARELO: MARINHO, TEAL: BRANCO,
-    VERDE_VIVO: MARINHO, VERDE_CITRICO: MARINHO, BRANCO: MARINHO,
-    VERDE_NEUTRO: BRANCO, PETROLEO: BRANCO, MARINHO: BRANCO,
+    BRANCO: MARINHO, VERDE_NEUTRO: BRANCO, PETROLEO: BRANCO, MARINHO: BRANCO,
 }
 
 def _escolher_cor_destaque(seed):
-    cor = CORES_DESTAQUE[seed % 9]
+    cor = CORES_DESTAQUE[seed % len(CORES_DESTAQUE)]
     return cor, CORES_FUNDO_TEXTO.get(cor, MARINHO)
 
 def distancia_cor(c1, c2):
@@ -1173,51 +1175,26 @@ def gerar_fundo_rico(cor1, cor2, seed, tema="", para_pessoa=False):
         return ia
     return _gerar_fundo_gradiente(cor1, cor2, seed)
 
-# ── Color grade ───────────────────────────────────────────────────────────────
+# ── Color grade & Tratamento de Imagem ─────────────────────────────────────────
 def color_grade_editorial(img, seed):
-    rng = random.Random(seed)
-    arr = np.array(img.convert("RGB")).astype(np.float32)
-    lum = arr.mean(axis=2, keepdims=True) / 255.0
-    mask_s = np.clip(1.0 - lum * 2.5, 0, 1)
-    arr[:, :, 0] *= 1 + (0.92 - 1) * mask_s[:, :, 0]
-    arr[:, :, 1] *= 1 + (0.96 - 1) * mask_s[:, :, 0]
-    arr[:, :, 2] *= 1 + (1.06 - 1) * mask_s[:, :, 0]
-    mask_m = np.clip(1.0 - abs(lum - 0.45) * 4, 0, 1)
-    arr[:, :, 0] = np.clip(arr[:, :, 0] + 6 * mask_m[:, :, 0], 0, 255)
-    arr[:, :, 1] = np.clip(arr[:, :, 1] + 3 * mask_m[:, :, 0], 0, 255)
-    arr[:, :, 2] = np.clip(arr[:, :, 2] - 4 * mask_m[:, :, 0], 0, 255)
-    grain = np.random.RandomState(seed + 1).normal(0, rng.uniform(2.5, 4.5), arr.shape)
-    arr   = np.clip(arr + grain, 0, 255)
-    out   = Image.fromarray(arr.astype(np.uint8))
-    blur  = out.filter(ImageFilter.GaussianBlur(1.8))
-    ao    = np.array(out).astype(np.float32)
-    ab    = np.array(blur).astype(np.float32)
-    return Image.fromarray(np.clip(ao + (ao - ab) * 0.45, 0, 255).astype(np.uint8))
+    """Aprimoramento de claridade editorial limpo, sem desfoque, sem granulação
+    excessiva e preservando a fidelidade real dos tons de pele e do ambiente."""
+    out = ImageEnhance.Sharpness(img).enhance(1.10)
+    out = ImageEnhance.Contrast(out).enhance(1.04)
+    return out
 
-def aplicar_split_toning(img, intensidade=0.045):
-    arr = np.array(img.convert("RGB")).astype(np.float32)
-    lum = arr.mean(axis=2, keepdims=True) / 255.0
-    arr += (np.array(MARINHO, dtype=np.float32) - arr) * ((1 - lum)**2) * intensidade
-    arr += (np.array(LARANJA, dtype=np.float32) - arr) * (lum**2)       * intensidade
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+def aplicar_split_toning(img, intensidade=0.0):
+    """Split toning desativado/neutro para não alterar o tom de pele natural."""
+    return img
 
 def tratar_foto_editorial(img, cor_paleta, seed):
+    """Tratamento de foto editorial: mantém nitidez natural e cores autênticas."""
     img = color_grade_editorial(img, seed)
-    img = ImageEnhance.Contrast(img).enhance(1.15)
-    img = ImageEnhance.Color(img).enhance(1.10)
-    img = ImageEnhance.Sharpness(img).enhance(1.18)
-    img = ImageEnhance.Brightness(img).enhance(1.02)
-    img = aplicar_split_toning(img)
     return img
 
 def compor_pessoa(pessoa_rgba, fundo_rgb):
-    """Retorna (imagem_composta, cabeca_bbox). cabeca_bbox e a faixa
-    (x0,y0,x1,y1) em coordenadas do CANVAS final ocupada pela CABEÇA da
-    pessoa (topo ~22% da altura do recorte) — usada depois por
-    desenhar_titulo pra garantir que o titulo nunca seja desenhado por cima
-    do rosto, mesmo quando a pessoa nao fica coladinha na borda direita
-    (fotos de gesto/corpo mais largo empurram a faixa da cabeca pra dentro
-    da zona onde o texto normalmente vai). v19."""
+    """Composição limpa e profissional da pessoa sobre o fundo.
+    Usa sombra sutil e realista (sem halo difuso de 45px)."""
     pw, ph = pessoa_rgba.size
     nw     = int(pw * H / ph)
     pessoa_rgba = pessoa_rgba.resize((nw, H), Image.Resampling.LANCZOS)
@@ -1227,14 +1204,6 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
 
     cabeca_bbox = None
     try:
-        # v26: a faixa fixa de 22% da ALTURA DO CANVAS so funciona em fotos
-        # de CORPO INTEIRO (cabeca e mesmo uma fatia pequena do total). Em
-        # fotos de BUSTO/CLOSE (ombros pra cima, ex. retrato) a cabeca ocupa
-        # uma fatia bem maior do enquadramento e a faixa fixa ficava curta
-        # demais -> o titulo cruzava o rosto (fotos de busto/close).
-        # Nova heuristica: acha o SALTO DE LARGURA onde os OMBROS comecam
-        # (largura da silhueta aumenta bem alem da largura da cabeca) e usa
-        # esse ponto real como fim da faixa da cabeca, em vez de uma % fixa.
         alpha_np = np.array(alpha)
         larguras = np.zeros(alpha_np.shape[0], dtype=np.int32)
         for row in range(alpha_np.shape[0]):
@@ -1246,36 +1215,36 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
             y_topo = int(linhas_pessoa[0])
             janela = larguras[y_topo: y_topo + max(10, int(H * 0.05))]
             largura_cabeca_ref = float(np.median(janela[janela > 0])) if np.any(janela > 0) else 0.0
-            y_fim_cabeca = y_topo + int(H * 0.22)  # fallback = comportamento antigo
+            y_fim_cabeca = y_topo + int(H * 0.35)
             if largura_cabeca_ref > 0:
-                limite_salto = largura_cabeca_ref * 1.6
+                limite_salto = largura_cabeca_ref * 1.5
                 limite_busca = min(alpha_np.shape[0], y_topo + int(H * 0.55))
                 for row in range(y_topo, limite_busca):
                     if larguras[row] > limite_salto:
-                        y_fim_cabeca = row
+                        y_fim_cabeca = row + int(H * 0.10)
                         break
             faixa_cols = np.where(alpha_np[y_topo:y_fim_cabeca, :].max(axis=0) > 10)[0]
             if len(faixa_cols) > 0:
                 cx0, cx1 = int(faixa_cols.min()), int(faixa_cols.max())
-                cabeca_bbox = (x + cx0 - 20, max(0, y_topo - 10), x + cx1 + 20, y_fim_cabeca + 20)
+                cabeca_bbox = (x + cx0 - 25, max(0, y_topo - 15), x + cx1 + 25, y_fim_cabeca + 25)
     except Exception as e:
         print(f"[cabeca] erro: {e}")
 
+    # Sombra sutil e elegante
     sombra = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sil    = Image.new("RGBA", (nw, H), (0, 0, 0, 0))
-    sil.paste(Image.new("RGB", (nw, H), MARINHO),
-              mask=alpha.point(lambda v: int(v * 0.22)))
-    sombra.paste(sil, (x - 24, 22), sil)
-    sombra = sombra.filter(ImageFilter.GaussianBlur(45))
+    sil.paste(Image.new("RGB", (nw, H), (10, 20, 35)),
+              mask=alpha.point(lambda v: int(v * 0.15)))
+    sombra.paste(sil, (x - 12, 10), sil)
+    sombra = sombra.filter(ImageFilter.GaussianBlur(14))
     res = fundo_rgb.convert("RGBA")
     res = Image.alpha_composite(res, sombra)
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB"), cabeca_bbox
 
 def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
-    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox). rembg só nas fotos
-    cujo public_id contém "ronilson". Fundo atrás do recorte vem da IA
-    (Gemini) alinhada ao tema; se a IA falhar, usa o gradiente antigo."""
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox).
+    Identifica se há pessoa na imagem, aplica recorte e preserva cores 100% naturais."""
     em_pe       = True
     tem_pessoa  = eh_foto_ronilson(pid)
     cabeca_bbox = None
@@ -1288,44 +1257,47 @@ def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
         l = (nw - W) // 2; t = (nh - H) // 2
         img = img.crop((l, t, l + W, t + H))
 
+        # Detecta rosto para checar se a foto contém pessoa
+        bbox_haar = _detectar_rosto(img)
+        if bbox_haar is not None:
+            tem_pessoa = True
+            cabeca_bbox = bbox_haar
+
         if tem_pessoa:
-            print(f"[foto] Ronilson: {pid}")
-            fundo, rgba = None, None
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_fundo = pool.submit(
-                    gerar_fundo_rico, cor1, cor2, seed, tema, True)
-                fut_rgba  = pool.submit(remover_fundo_rembg, img)
+            print(f"[foto] Ronilson / Pessoa identificada: {pid}")
+            rgba = None
+            try:
+                rgba = remover_fundo_rembg(img)
+            except Exception as e:
+                print(f"[foto] rembg falhou ({e})")
+
+            if rgba is not None:
+                fundo = None
                 try:
-                    fundo = fut_fundo.result()
+                    fundo = gerar_fundo_rico(cor1, cor2, seed, tema, True)
                 except Exception as e:
                     print(f"[foto] fundo falhou ({e})")
-                try:
-                    rgba = fut_rgba.result()
-                except Exception as e:
-                    print(f"[foto] rembg falhou ({e})")
-            if fundo is None:
-                fundo = _gerar_fundo_gradiente(cor1, cor2, seed)
-            try:
-                if rgba is None:
-                    raise RuntimeError("sem recorte")
-                em_pe = _detectar_pose_em_pe(rgba)
-                img, cabeca_bbox = compor_pessoa(rgba, fundo)
-                img   = aplicar_split_toning(img)
-                img   = ImageEnhance.Contrast(img).enhance(1.08)
-            except Exception as e:
-                print(f"[foto] compose falhou ({e}) — seguindo sem recorte")
-                img = Image.blend(fundo, img, alpha=0.60)
-                img = aplicar_split_toning(img)
-                cabeca_bbox = (0, int(H * 0.05), W, int(H * 0.55))
+                if fundo is None:
+                    fundo = _gerar_fundo_gradiente(cor1, cor2, seed)
 
-            # v37: deteccao de rosto REAL sobre a imagem final -- roda
-            # sempre, sucesso ou falha do rembg acima, e SUBRESCREVE
-            # cabeca_bbox quando encontra um rosto de verdade (mais
-            # confiavel que a heuristica de silhueta ou a faixa
-            # conservadora, que so chutam onde o rosto pode estar).
-            bbox_haar = _detectar_rosto(img)
-            if bbox_haar:
-                cabeca_bbox = bbox_haar
+                em_pe = _detectar_pose_em_pe(rgba)
+                img, bbox_compor = compor_pessoa(rgba, fundo)
+                if bbox_compor:
+                    cabeca_bbox = bbox_compor
+                img = ImageEnhance.Sharpness(img).enhance(1.08)
+                img = ImageEnhance.Contrast(img).enhance(1.03)
+            else:
+                # Se o recorte falhar, mantemos a foto ORIGINAL nítida e com cores puras (SEM véu/blend)
+                print(f"[foto] recorte indisponível — mantendo foto original limpa")
+                img = ImageEnhance.Sharpness(img).enhance(1.08)
+                img = ImageEnhance.Contrast(img).enhance(1.03)
+                if cabeca_bbox is None:
+                    cabeca_bbox = (int(W * 0.35), int(H * 0.05), W, int(H * 0.55))
+
+            # Re-confirma bbox facial
+            bbox_haar_final = _detectar_rosto(img)
+            if bbox_haar_final:
+                cabeca_bbox = bbox_haar_final
         else:
             print(f"[foto] editorial: {pid}")
             img = tratar_foto_editorial(img, cor1, seed)
@@ -1817,15 +1789,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cabeca_bbox=None):
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
-    # Para fotos com pessoa à direita: texto na terça parte esquerda
-    # Para editoriais: texto na zona segura completa, mas posicionado na base
-    MAX_PX   = (int(W * 0.44) - MARGIN) if tem_pessoa else SAFE_MAX_PX
+    # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
+    MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     layout   = seed % 5
 
-    # Estratégia de legibilidade da vez (rotação persistida de 8, ver
-    # _proxima_estrategia_legibilidade) — decidida uma vez por card e usada
-    # em vários pontos abaixo (posição, fonte, sombra/contorno/glow, cor,
-    # acento gráfico).
+    # Estratégia de legibilidade da vez
     estrategia_leg = _proxima_estrategia_legibilidade(seed)
     print(f"[titulo] estrategia_legibilidade={estrategia_leg}")
 
@@ -1836,18 +1804,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     sombra_forte = lum_overlay > 0.45
     print(f"[titulo] layout={layout} lum_overlay={lum_overlay:.2f} MAX_PX={MAX_PX}")
 
-    # Zona vertical do título — calculada CEDO (só depende de tem_pessoa/em_pe/
-    # layout) para servir de base tanto na escolha da cor do texto quanto no
-    # scrim, usando a luminosidade REAL da área onde o texto vai cair. Antes,
-    # essa amostra usava uma faixa fixa que não acompanhava a zona real
-    # (calculada só depois) — causava cor de texto e scrim desalinhados com
-    # o lugar de fato usado.
-    # v18/v33: para fotos SEM pessoa (fundo/textura/ambiente) não existe risco
-    # de cobrir rosto. O título deve ficar na metade superior, com uma margem
-    # inferior ampla para o feed do Instagram e seus elementos de interface.
-    # Para fotos COM pessoa, a proteção da cabeça continua sendo aplicada pelas
-    # zonas candidatas e pela checagem de cabeca_bbox abaixo.
-    Y_MIN_GLOBAL = int(H * 0.34) if tem_pessoa else int(H * 0.18)
+    # Para pessoa em pé, o título deve ficar na metade inferior esquerda para não cruzar peito/pescoço
+    Y_MIN_GLOBAL = int(H * 0.38) if (tem_pessoa and em_pe) else int(H * 0.10)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -1858,22 +1816,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             arr_crop  = np.array(crop).astype(np.float32)
             lum       = float(arr_crop.mean()) / 255.0
             comp      = float(np.array(crop.convert("L")).astype(np.float32).std()) / 90.0
-            # v17: cor MÉDIA real (RGB) da zona — usada pela guarda de
-            # contraste, que compara cor de verdade, não só luminosidade
             cor_media = tuple(float(arr_crop[:, :, c].mean()) for c in range(3))
-            # v26: alem da media do RETANGULO INTEIRO, amostra uma GRADE de
-            # sub-regioes (3 linhas x 2 colunas) — fundos mistos (ilustracao
-            # com folhas verdes sobre creme, mesa de cor solida dentro de
-            # uma foto de ambiente) podem ter media geral "segura" mas uma
-            # sub-regiao especifica onde o texto realmente cai pode bater
-            # quase na mesma cor do texto escolhido. cor_zona_grid guarda
-            # essas sub-medias pra guarda de contraste checar TODAS, nao so
-            # a media do retangulo inteiro.
-            # v29: grade mais densa (5 linhas x 3 colunas = 15 celulas, era
-            # 3x2=6) — grade rala deixava passar bolsoes de cor (camisa
-            # branca, parede verde, blazer azul) que ficavam entre as poucas
-            # celulas amostradas. Mais celulas = mais dificil um objeto de
-            # cor solida escapar de todas elas.
             cor_zona_grid = []
             gh, gw = arr_crop.shape[0], arr_crop.shape[1]
             if gh > 0 and gw > 0:
@@ -1889,9 +1832,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             lum, comp, cor_media, cor_zona_grid = 0.3, 0.5, (90.0, 90.0, 90.0), []
         return y_ini, y_fim, lum, comp, cor_media, cor_zona_grid
 
-    # v23: posição criteriosa SEMPRE ATIVA — leque amplo de zonas candidatas
-    # para TODAS as estratégias (não é mais estratégia individual). O texto
-    # sempre busca a melhor posição na foto inteira.
     if not tem_pessoa:
         _zona_default     = (int(H * 0.30), int(H * 0.68))
         _candidatas_zona  = [
@@ -1903,71 +1843,51 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             (int(H * 0.38), int(H * 0.70)),   # meio-baixo, limite seguro
         ]
     else:
-        _zonas_pessoa = [
-            (int(H * 0.46), int(H * 0.76)),
-            (int(H * 0.44), int(H * 0.74)),
-            (int(H * 0.48), int(H * 0.78)),
-            (int(H * 0.46), int(H * 0.76)),
-            (int(H * 0.47), int(H * 0.77)),
-        ]
-        _zona_default    = _zonas_pessoa[layout % len(_zonas_pessoa)]
-        _candidatas_zona = [
-            (int(H * 0.12), int(H * 0.40)),   # topo
-            (int(H * 0.22), int(H * 0.50)),   # topo-meio
-            (int(H * 0.35), int(H * 0.65)),   # meio
-            _zona_default,                      # padrao do layout
-            (int(H * 0.50), int(H * 0.80)),   # baixo
-            (int(H * 0.55), int(H * 0.85)),   # baixo-fundo
-            (int(H * 0.60), int(H * 0.92)),   # base
-        ]
+        if em_pe:
+            _zona_default = (int(H * 0.48), int(H * 0.78))
+            _candidatas_zona = [
+                (int(H * 0.44), int(H * 0.74)),
+                (int(H * 0.48), int(H * 0.78)),
+                (int(H * 0.52), int(H * 0.82)),
+                (int(H * 0.56), int(H * 0.86)),
+                (int(H * 0.40), int(H * 0.70)),
+            ]
+        else:
+            _zona_default = (int(H * 0.15), int(H * 0.45))
+            _candidatas_zona = [
+                (int(H * 0.10), int(H * 0.38)),
+                (int(H * 0.15), int(H * 0.45)),
+                (int(H * 0.20), int(H * 0.48)),
+                (int(H * 0.48), int(H * 0.78)),
+            ]
 
-    # v17: a busca pela zona ótima (antes exclusiva da estratégia
-    # "posicao_otima", 1 a cada 8 gerações) agora roda em TODA geração — a
-    # posição vertical do texto varia por imagem, nunca fica travada no
-    # mesmo lugar. Testa as zonas candidatas e escolhe a que combina MENOR
-    # complexidade visual com uma zona mais ESCURA (mais "ancorada", como se
-    # tivesse mais sombra natural ali) — evita a zona ruim em vez de tentar
-    # compensar depois.
     def _intersecta_cabeca(rx0, ry0, rx1, ry1):
-        """v19: True se o retângulo do texto cruza a faixa da cabeça
-        (cabeca_bbox, ver compor_pessoa) — usado pra NUNCA escolher uma
-        zona que passe por cima do rosto, mesmo em fotos onde a pessoa
-        ocupa mais espaço horizontal que o normal (gestos, braços abertos)."""
+        """True se o retângulo do texto cruza a área da cabeça/corpo"""
         if not cabeca_bbox:
             return False
         bx0, by0, bx1, by1 = cabeca_bbox
+        # Folga de proteção expandida para cabeça + pescoço + ombro
+        bx0 = max(0, bx0 - 35)
+        by0 = max(0, by0 - 20)
+        bx1 = min(W, bx1 + 35)
+        by1 = min(H, by1 + 50)
         return not (rx1 <= bx0 or rx0 >= bx1 or ry1 <= by0 or ry0 >= by1)
 
     melhor = None; melhor_score = None
     total_zonas = len(_candidatas_zona)
     for _i_c, (yi_raw, yf_raw) in enumerate(_candidatas_zona):
         yi, yf = yi_raw, yf_raw
-        if tem_pessoa and em_pe:
-            yi -= 35; yf -= 35
         cand = _avaliar_zona(yi, yf)
         _, _, _lum, _comp, _, _ = cand
-        # v18: pequeno viés pelo seed — em fundos muito uniformes (estúdio,
-        # parede lisa) lum/complexidade quase não variam entre zonas, e sem
-        # isso a escolha sempre "empatava" pro mesmo candidato (a variedade
-        # ficava só na teoria). O viés é pequeno o bastante pra não vencer
-        # uma zona genuinamente melhor.
         vies  = ((seed + _i_c * 37) % 100) / 100.0 * 0.08
-        # VIÉS DE POSIÇÃO: v33 favorecia a metade superior pra fotos SEM
-        # pessoa (texto ficava baixo demais no feed). v34: pra fotos COM
-        # pessoa esse mesmo vies jogava o texto colado no topo/rosto -- em
-        # vez disso, favorece as zonas mais CENTRAIS da lista de candidatas
-        # (nem topo grudado na cabeca, nem base), deixando a composicao mais
-        # equilibrada quando ha rosto.
         if tem_pessoa:
             _meio = (total_zonas - 1) / 2.0
             vies_posicao = (1 - abs(_i_c - _meio) / max(1.0, _meio)) * 0.10
         else:
             vies_posicao = ((total_zonas - 1 - _i_c) / max(1, total_zonas - 1)) * 0.10
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
-        # v19: penalidade forte se a zona cruzar a cabeça — nunca escolhe
-        # essa zona a menos que TODAS as outras também cruzem
         if _intersecta_cabeca(MARGIN, yi, MARGIN + MAX_PX, yf):
-            score += 5.0
+            score += 10.0
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
     Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = melhor
@@ -2082,15 +2002,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         VERDE_VIVO e VERDE_CITRICO nunca apareciam aqui)
         """
         if lum_overlay < 0.25:  # fundo muito escuro
-            pares = [(BRANCO, AMARELO), (AMARELO, LARANJA),
+            pares = [(BRANCO, AMARELO), (AMARELO, BRANCO),
                      (BRANCO, LARANJA), (TEAL, BRANCO),
-                     (VERDE_CITRICO, BRANCO), (AMARELO, VERDE_CITRICO)]
+                     (BRANCO, TEAL), (AMARELO, LARANJA)]
         elif lum_overlay < 0.45:  # fundo escuro-medio
-            pares = [(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, TEAL),
-                     (VERDE_CITRICO, BRANCO), (LARANJA, VERDE_VIVO)]
-        else:  # fundo claro — só cores realmente escuras (nunca BRANCO/AMARELO aqui)
-            pares = [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL),
-                     (MARINHO, VERDE_CITRICO), (PETROLEO, VERDE_VIVO)]
+            pares = [(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, BRANCO),
+                     (TEAL, BRANCO), (BRANCO, TEAL)]
+        else:  # fundo claro — só cores escuras e contrastantes
+            pares = [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, MARINHO),
+                     (MARINHO, LARANJA), (PETROLEO, TEAL)]
 
         return pares[seed % len(pares)]
 
@@ -2101,12 +2021,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # só a luminosidade. Evita letra e fundo na mesma cor/tom (ex.: teal
     # sobre foto azulada) mesmo quando o brilho geral parecia suficiente.
     def _contraste_real_ok(cor):
-        # v29: limiar da grade IGUALADO ao da media geral (era mais
-        # PERMISSIVO, 70 contra 90 — inconsistente, ja que a grade existe
-        # justamente pra pegar os casos que a media mascara, nao pra ser
-        # mais tolerante que ela). Ambos em 110 agora (subiu de 90), pra
-        # exigir contraste real mais forte e reduzir bordas onde a cor
-        # ainda "quase" bate (branco-no-branco, verde-no-verde, azul-no-azul).
         if distancia_cor(cor, cor_zona_real) < 110:
             return False
         for _cg in cor_zona_grid:
@@ -2115,11 +2029,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         return True
 
     if not _contraste_real_ok(_cor_principal):
-        _pares_fallback = ([(BRANCO, AMARELO), (AMARELO, LARANJA), (BRANCO, LARANJA),
-                            (TEAL, BRANCO), (VERDE_CITRICO, BRANCO)]
+        _pares_fallback = ([(BRANCO, AMARELO), (BRANCO, LARANJA), (AMARELO, BRANCO),
+                            (TEAL, BRANCO), (BRANCO, TEAL)]
                            if lum_zona_real < 0.5 else
-                           [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, TEAL),
-                            (MARINHO, VERDE_CITRICO)])
+                           [(MARINHO, PETROLEO), (MARINHO, TEAL), (PETROLEO, MARINHO),
+                            (MARINHO, LARANJA)])
         for _cp, _cs in _pares_fallback:
             if _contraste_real_ok(_cp) and _contraste_real_ok(_cs):
                 _cor_principal, _cor_sec = _cp, _cs
@@ -2155,6 +2069,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         if not txt: continue
 
         cor_b = _cor_b(idx_b, est)
+        if (estrategia_leg == "peso_fonte" and idx_b == len(blocos) - 1
+                and not any(b["estilo"] == "malgun" for b in blocos)):
+            if _contraste_real_ok(cor_dest):
+                cor_b = cor_dest
 
         if est == "agilera_est":
             # agilera_est (*palavra): sempre maior que normal (1.30x)
@@ -2819,59 +2737,6 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # MALGUN (titulo 100% AGILERA, ex. "Autismo e Ansiedade"), a estrategia
     # nao tinha efeito nenhum (so forcava bold no MALGUN, que nem existia
     # nesse tema). Pedido explicito: nao e so sobre engrossar a fonte
-    # (AGILERA nao tem variacao de peso via OpenType) — e sobre DESTACAR.
-    # Redesenha a ULTIMA PALAVRA do titulo por cima do que ja foi
-    # renderizado, usando a cor de destaque da geracao (cor_dest) — um
-    # "hero word" real, reconhecivel como estrategia propria mesmo sem
-    # nenhum MALGUN no tema. Passa pela mesma guarda de contraste real do
-    # resto da funcao antes de usar cor_dest.
-    if estrategia_leg == "peso_fonte":
-        _tem_malgun_no_tema = any(b["estilo"] == "malgun" for b in blocos)
-        if (not _tem_malgun_no_tema and _ultima_linha_texto
-                and _ultima_linha_fonte is not None
-                and _ultima_linha_x1 is not None
-                and _ultima_linha_y_top is not None):
-            try:
-                _palavras_pf = _ultima_linha_texto.split()
-                _alvo_pf     = _palavras_pf[-1] if _palavras_pf else _ultima_linha_texto
-                _prefixo_pf  = " ".join(_palavras_pf[:-1])
-                _sp_pf       = _ultima_linha_sp or 0
-                _off_x_pf = 0
-                if _prefixo_pf:
-                    if _ultima_linha_tem_liga and _RAQM_OK:
-                        # v33: mede o prefixo com as MESMAS features RAQM da
-                        # linha original -- _medir/_medir_sp somam largura
-                        # caractere a caractere e ignoram ligaduras/kerning,
-                        # o que desalinhava a hero-word horizontalmente
-                        try:
-                            _bb_pref = ImageDraw.Draw(img_rgba, "RGBA").textbbox(
-                                (0, 0), _prefixo_pf + " ", font=_ultima_linha_fonte,
-                                features=["+liga", "+aalt", "+calt", "+dlig"])
-                            _off_x_pf = _bb_pref[2] - _bb_pref[0]
-                        except Exception:
-                            _off_x_pf = _medir(_prefixo_pf + " ", _ultima_linha_fonte)
-                    else:
-                        _off_x_pf = (_medir_sp(_prefixo_pf + " ", _ultima_linha_fonte, _sp_pf)
-                                     if _sp_pf else _medir(_prefixo_pf + " ", _ultima_linha_fonte))
-                _cor_hero = cor_dest if _contraste_real_ok(cor_dest) else (
-                    BRANCO if lum_zona_real < 0.5 else MARINHO)
-                draw = ImageDraw.Draw(img_rgba, "RGBA")
-                if _ultima_linha_tem_liga:
-                    # v33: a linha original foi desenhada com _linha_est (RAQM +
-                    # features "+liga+aalt+calt+dlig", glifos ESTILIZADOS da
-                    # agilera_est). Redesenhar com _linha() simples usava os
-                    # glifos DEFAULT (sem alternates) -- letras diferentes das
-                    # da linha original, parecendo uma segunda palavra "fantasma"
-                    # em vez de so recolorir a mesma palavra por cima.
-                    _linha_est(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
-                               _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255))
-                else:
-                    _linha(draw, _ultima_linha_x1 + _off_x_pf, _ultima_linha_y_top,
-                           _alvo_pf, _ultima_linha_fonte, (*_cor_hero, 255), _sp_pf)
-                print(f"[peso_fonte] destaque hero-word aplicado: '{_alvo_pf}' cor={_cor_hero}")
-            except Exception as e:
-                print(f"[peso_fonte] destaque hero-word falhou: {e}")
-
     return img_rgba.convert("RGB"), layout
 
 # ── Seed variável ─────────────────────────────────────────────────────────────
