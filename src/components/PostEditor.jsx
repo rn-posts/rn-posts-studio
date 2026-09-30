@@ -148,10 +148,14 @@ export default function PostEditor({ post, onClose, onNotify }) {
     setDadosCard(null);
     setPreviewUrl("");
     try {
-      const res = await fetch(`${RENDER_URL}/preview-card`, {
+      // v45: estilo escolhido -> rota propria (/preview-card-estilo); "Automático" segue
+      // na rota de sempre (/preview-card), que nao conhece os estilos.
+      const rota = estilo ? "/preview-card-estilo" : "/preview-card";
+      const res = await fetch(`${RENDER_URL}${rota}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tema, legenda: legenda || "", estilo }),
+        body: JSON.stringify(estilo ? { tema, legenda: legenda || "", estilo }
+                                    : { tema, legenda: legenda || "" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
