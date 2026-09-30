@@ -6,6 +6,26 @@ const RENDER_URL = import.meta.env.DEV
   ? (import.meta.env.VITE_RENDER_URL || "http://localhost:5000")
   : "";
 
+// v41: estilos visuais selecionáveis antes de gerar o card (enviados como `estilo`).
+// grupo "cena" = imagem-metáfora criada com a paleta; "pessoa" = foto do Ronilson com fundo novo.
+const ESTILOS = [
+  { id: "",          grupo: "base",   label: "Automático",   desc: "Padrão: foto do banco de imagens, como sempre." },
+  { id: "gold",      grupo: "cena",   label: "✦ Kintsugi",   desc: "/gold — peça cerâmica consertada com fio dourado. Trauma, luto e recomeço." },
+  { id: "smoke",     grupo: "cena",   label: "🌫 Fumaça",     desc: "/smoke — fumaça se dissipando com luz atrás. Ansiedade e pensamentos acelerados." },
+  { id: "portal",    grupo: "cena",   label: "🚪 Portal",    desc: "/portal — porta ou passagem com luz do amanhecer. Acolhimento e primeira consulta." },
+  { id: "ice",       grupo: "cena",   label: "🧊 Gelo",      desc: "/ice — gelo derretendo em água clara. Emoções congeladas, luto e depressão." },
+  { id: "floating",  grupo: "cena",   label: "🍃 Flutuante", desc: "/floating — poucos objetos simbólicos suspensos, com muito respiro." },
+  { id: "macro",     grupo: "cena",   label: "🔍 Macro",     desc: "/macro — detalhe em close (gota, folha) com aspecto premium." },
+  { id: "museum",    grupo: "cena",   label: "🖼 Museu",     desc: "/museum — objeto simbólico exposto como obra de arte." },
+  { id: "showcase",  grupo: "pessoa", label: "📸 Showcase",  desc: "/showcase — foto do Ronilson com luz de estúdio e fundo editorial de revista." },
+  { id: "cinematic", grupo: "pessoa", label: "🎬 Cinematic", desc: "/cinematic — foto do Ronilson em cena cinematográfica." },
+];
+const GRUPOS_ESTILO = [
+  { grupo: "base",   titulo: "" },
+  { grupo: "cena",   titulo: "Imagem criada (metáforas com a paleta da clínica)" },
+  { grupo: "pessoa", titulo: "Com foto do Ronilson" },
+];
+
 function abrirTamanhoReal(previewUrl) {
   try {
     if (previewUrl.startsWith("data:")) {
@@ -92,6 +112,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [previewUrl,    setPreviewUrl]    = useState(post?.cloudinaryUrl || "");
   const [modo,          setModo]          = useState(post?.modo || "manual");
   const [dadosCard,     setDadosCard]     = useState(null);
+  const [estilo,         setEstilo]        = useState("");
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
@@ -130,14 +151,15 @@ export default function PostEditor({ post, onClose, onNotify }) {
       const res = await fetch(`${RENDER_URL}/preview-card`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tema, legenda: legenda || "" }),
+        body: JSON.stringify({ tema, legenda: legenda || "", estilo }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
       setDadosCard(data);
       setPreviewUrl(data.preview_url);
       setLegenda(data.legenda);
-      onNotify("Card gerado — revise e aprove ✓");
+      if (data.aviso_estilo) onNotify(data.aviso_estilo, "error");
+      else onNotify("Card gerado — revise e aprove ✓");
     } catch (e) {
       onNotify(e.message, "error");
     } finally {
@@ -256,6 +278,52 @@ export default function PostEditor({ post, onClose, onNotify }) {
 
           <p className="field__hint" style={{ marginTop: "0.5rem" }}>
             Cada linha = um bloco de texto no card. Sem símbolo = Agilera (título). Use <code>:</code> <code>*</code> <code>-</code> no início da linha para mudar o estilo.
+          </p>
+        </div>
+
+        {/* ── Estilo visual (opcional) ── */}
+        <div className="field">
+          <label>
+            Estilo visual
+            <span style={{ fontSize: "0.72rem", color: "var(--texto-suave)", marginLeft: "0.5rem", fontWeight: 400 }}>
+              — opcional, vale para o próximo card gerado
+            </span>
+          </label>
+          {GRUPOS_ESTILO.map(({ grupo, titulo }) => (
+            <div key={grupo} style={{ marginBottom: "0.4rem" }}>
+              {titulo && (
+                <div style={{ fontSize: "0.68rem", color: "var(--texto-suave)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", margin: "0.35rem 0 0.25rem" }}>
+                  {titulo}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                {ESTILOS.filter(e => e.grupo === grupo).map(e => {
+                  const ativo = estilo === e.id;
+                  return (
+                    <button
+                      key={e.id || "auto"}
+                      type="button"
+                      title={e.desc}
+                      onClick={() => setEstilo(e.id)}
+                      disabled={loadingCard}
+                      style={{
+                        fontSize: "0.76rem", padding: "4px 11px", borderRadius: 999, cursor: "pointer",
+                        border: ativo ? "1.5px solid var(--laranja, #F9AB0B)" : "1px solid var(--creme-escuro, #ddd)",
+                        background: ativo ? "var(--marinho, #024059)" : "var(--creme, #faf6f0)",
+                        color: ativo ? "#fff" : "var(--marinho, #024059)",
+                        fontWeight: ativo ? 700 : 500,
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {e.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          <p className="field__hint" style={{ marginTop: "0.4rem" }}>
+            {(ESTILOS.find(e => e.id === estilo) || ESTILOS[0]).desc}
           </p>
         </div>
 

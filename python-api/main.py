@@ -571,6 +571,30 @@ def buscar_imagem(tema=""):
     return None, ""
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
+def buscar_imagem_ronilson():
+    """v41: foto do Ronilson (public_id contendo 'ronilson') para os estilos de
+    pessoa (showcase/cinematic). Baralho proprio, sem repeticao ate esgotar.
+    Retorna (url, pid) ou (None, "") se nao houver nenhuma."""
+    try:
+        rec, cursor = [], None
+        for _ in range(4):
+            kw = dict(type="upload", max_results=500)
+            if cursor: kw["next_cursor"] = cursor
+            res = cloudinary.api.resources(**kw)
+            rec += [r for r in res.get("resources", [])
+                    if eh_foto_ronilson(r.get("public_id", ""))
+                    and CLOUDINARY_POSTS not in r.get("public_id", "")
+                    and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
+            cursor = res.get("next_cursor")
+            if not cursor: break
+        if rec:
+            c = _proxima_foto_baralho("_ronilson", rec)
+            print(f"[busca-ronilson] {c.get('public_id')}")
+            return c.get("secure_url"), c.get("public_id", "")
+    except Exception as e:
+        print(f"[busca-ronilson] {e}")
+    return None, ""
+
 def _medir(texto, fonte):
     if not texto: return 0
     try:
@@ -1095,7 +1119,55 @@ def _cena_do_tema(tema):
             return cena
     return "dawn over still water and vegetation, cinematic natural light, hope and calm"
 
-def _prompt_fundo_ia(tema, seed, para_pessoa):
+# v41: estilos visuais escolhidos nos botoes da plataforma (campo `estilo`).
+#  - tipo "cena": imagem metafora criada pelo Gemini com a paleta do projeto
+#    (substitui a foto do banco; sem pessoas/rostos/maos/texto).
+#  - tipo "pessoa": usa foto do Ronilson (rembg) e troca so o FUNDO gerado.
+# Sem estilo selecionado (None) nada muda no comportamento anterior.
+ESTILOS_CARD = {
+    "gold": {"tipo": "cena", "rotulo": "Kintsugi",
+        "luz_en": "soft dawn side-light with warm solar-orange glints on the gold",
+        "cena_en": "a single handmade ceramic bowl in matte deep navy and petroleum teal glaze, "
+                   "broken and beautifully mended with luminous gold seams (kintsugi), resting "
+                   "on dark stone, shallow depth of field, the gold veins catching light"},
+    "smoke": {"tipo": "cena", "rotulo": "Fumaca",
+        "luz_en": "low warm solar-orange dawn glow backlighting the mist",
+        "cena_en": "slow ribbons of soft mist and smoke dissolving upward into clear air, "
+                   "deep navy and petroleum teal atmosphere, weightless, calm, tension dissipating"},
+    "portal": {"tipo": "cena", "rotulo": "Portal",
+        "luz_en": "golden-orange sunrise light flooding in from outside the doorway",
+        "cena_en": "an open wooden doorway seen from a quiet dark interior, bright dawn light "
+                   "and soft sage plants at the threshold, an invitation to take the first step, "
+                   "no one in frame"},
+    "ice": {"tipo": "cena", "rotulo": "Gelo",
+        "luz_en": "first warm solar-orange light refracting through the ice",
+        "cena_en": "clear ice slowly melting into still transparent water, teal and petroleum "
+                   "reflections, fine droplets, the thaw of frozen feelings, hope"},
+    "floating": {"tipo": "cena", "rotulo": "Flutuante",
+        "luz_en": "soft diffused dawn light, gentle shadows",
+        "cena_en": "three or four simple symbolic objects gently suspended in mid-air with lots of "
+                   "empty space: a ceramic cup, a few leaves, a thin golden thread, on a smooth "
+                   "petroleum teal to navy gradient backdrop, minimal and airy"},
+    "macro": {"tipo": "cena", "rotulo": "Macro",
+        "luz_en": "a single point of solar-orange light in creamy bokeh",
+        "cena_en": "extreme macro close-up of a dewdrop resting on a sage-green leaf vein, razor-thin "
+                   "depth of field, creamy teal bokeh, jewel-like premium detail"},
+    "museum": {"tipo": "cena", "rotulo": "Museu",
+        "luz_en": "a single soft museum spotlight from above",
+        "cena_en": "one small symbolic object displayed like a work of art in a minimal elegant "
+                   "gallery: a mended ceramic piece on a low plinth, deep navy wall with a subtle "
+                   "petroleum gradient, silent, refined, premium"},
+    "showcase": {"tipo": "pessoa", "rotulo": "Showcase",
+        "luz_en": "soft magazine-cover studio lighting with a gentle rim light",
+        "cena_en": "premium editorial studio backdrop: seamless smooth gradient in deep navy and "
+                   "petroleum teal, subtle floor reflection, refined and clean, no objects"},
+    "cinematic": {"tipo": "pessoa", "rotulo": "Cinematic",
+        "luz_en": "volumetric dawn haze with warm solar-orange highlights",
+        "cena_en": "cinematic atmosphere, anamorphic bokeh lights, teal shadows and warm highlights, "
+                   "film-still depth, wide atmospheric background, no objects"},
+}
+
+def _prompt_fundo_ia(tema, seed, para_pessoa, estilo=None):
     rng = random.Random(seed)
     variantes = (
         "golden hour side light",
@@ -1115,10 +1187,20 @@ def _prompt_fundo_ia(tema, seed, para_pessoa):
         "Vertical 4:5 Instagram portrait. Keep a quiet, slightly darker region in "
         "the upper-left third for large typography. No busy pattern behind that zone."
     )
+    cena = _cena_do_tema(tema)
+    if estilo in ESTILOS_CARD:
+        cena = ESTILOS_CARD[estilo]["cena_en"]
+        luz  = ESTILOS_CARD[estilo]["luz_en"]
+        if not para_pessoa:
+            composicao = (
+                "Vertical 4:5 Instagram portrait. Keep the UPPER-LEFT third calm, darker and "
+                "free of detail for large typography; place the main subject in the lower "
+                "two thirds, slightly right of center, with generous negative space."
+            )
     return (
         f"Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology "
         f"clinic whose identity is dawn, hope and emotional care. Theme of this post: "
-        f"\"{tema_limpo}\". Scene: {_cena_do_tema(tema)}. Lighting: {luz}. "
+        f"\"{tema_limpo}\". Scene: {cena}. Lighting: {luz}. "
         f"Color palette strictly: deep navy #024059, petroleum teal #1B797D, "
         f"soft sage #779993, solar orange #F9AB0B as accent light only, snow white "
         f"haze #F4F6F8. Mood: professional, welcoming, intimate, never clinical-cold, "
@@ -1147,10 +1229,10 @@ def _fit_canvas(img):
     t = (nh - H) // 2
     return img.crop((l, t, l + W, t + H))
 
-def _gerar_fundo_gemini(tema, seed, para_pessoa):
+def _gerar_fundo_gemini(tema, seed, para_pessoa, estilo=None):
     if not GEMINI_API_KEY:
         return None
-    prompt = _prompt_fundo_ia(tema, seed, para_pessoa)
+    prompt = _prompt_fundo_ia(tema, seed, para_pessoa, estilo)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -1200,8 +1282,8 @@ def _gerar_fundo_gradiente(cor1, cor2, seed):
     arr   = np.clip(arr + ruido, 0, 255).astype(np.uint8)
     return Image.fromarray(arr).filter(ImageFilter.GaussianBlur(1))
 
-def gerar_fundo_rico(cor1, cor2, seed, tema="", para_pessoa=False):
-    ia = _gerar_fundo_gemini(tema, seed, para_pessoa)
+def gerar_fundo_rico(cor1, cor2, seed, tema="", para_pessoa=False, estilo=None):
+    ia = _gerar_fundo_gemini(tema, seed, para_pessoa, estilo)
     if ia is not None:
         return ia
     return _gerar_fundo_gradiente(cor1, cor2, seed)
@@ -1273,7 +1355,7 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB"), cabeca_bbox
 
-def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
+def preparar_foto(url, pid, cor1, cor2, seed, tema="", estilo=None):
     """Retorna (img, em_pe, tem_pessoa, cabeca_bbox).
     Identifica se há pessoa na imagem, aplica recorte e preserva cores 100% naturais."""
     em_pe       = True
@@ -1309,7 +1391,7 @@ def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
             if rgba is not None:
                 fundo = None
                 try:
-                    fundo = gerar_fundo_rico(cor1, cor2, seed, tema, True)
+                    fundo = gerar_fundo_rico(cor1, cor2, seed, tema, True, estilo=estilo)
                 except Exception as e:
                     print(f"[foto] fundo falhou ({e})")
                 if fundo is None:
@@ -2794,7 +2876,7 @@ def _seed_variavel(tema, seed_externo=None):
     return (h + ms) % 999983  # primo grande para boa distribuição
 
 # ── Geração principal ─────────────────────────────────────────────────────────
-def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
+def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None, estilo=None, info=None):
     seed = _seed_variavel(tema, seed)
     print(f"[card] seed={seed} layout={seed % 5}")
 
@@ -2805,7 +2887,17 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     em_pe      = True
     cabeca_bbox = None
 
-    if imagem_url:
+    # v41: estilo "cena" — imagem-metafora criada pelo Gemini (paleta do projeto)
+    # no lugar da foto do banco. Se o Gemini falhar, cai no fluxo normal com foto.
+    base_estilo = None
+    if estilo in ESTILOS_CARD and ESTILOS_CARD[estilo]["tipo"] == "cena":
+        base_estilo = _gerar_fundo_gemini(tema, seed, False, estilo)
+        if base_estilo is None and info is not None:
+            info.setdefault("aviso",
+                f"Estilo {ESTILOS_CARD[estilo]['rotulo']}: a IA de imagem nao respondeu "
+                f"— card gerado com foto do banco. Tente gerar de novo.")
+
+    if imagem_url and base_estilo is None:
         try:
             r = requests.get(imagem_url, timeout=15); r.raise_for_status()
             tmp        = Image.open(io.BytesIO(r.content)).convert("RGB")\
@@ -2815,9 +2907,19 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
             hist_cores = _extrair_cores_dominantes(tmp)
         except Exception as e: print(f"[cor] {e}")
 
-    if imagem_url:
+    if base_estilo is not None:
+        base = base_estilo
+        lum_media  = luminosidade_media(base)
+        hist_cores = _extrair_cores_dominantes(base)
+        tem_pessoa = False
+    elif imagem_url:
         base, em_pe, tem_pessoa, cabeca_bbox = preparar_foto(
-            imagem_url, pid, cor1, cor2, seed, tema=tema)
+            imagem_url, pid, cor1, cor2, seed, tema=tema, estilo=estilo)
+        if (estilo in ESTILOS_CARD and ESTILOS_CARD[estilo]["tipo"] == "pessoa"
+                and not tem_pessoa and info is not None):
+            info.setdefault("aviso",
+                f"Estilo {ESTILOS_CARD[estilo]['rotulo']} e para fotos do Ronilson; "
+                f"esta foto nao passou pelo recorte — card gerado no modo padrao.")
         if base is None:
             base = gerar_fundo_rico(cor1, cor2, seed, tema=tema, para_pessoa=False)
             lum_media  = luminosidade_media(base)
@@ -3036,12 +3138,23 @@ def rota_preview_card():
     if legenda and "CRP 04/57327" not in legenda:
         legenda = legenda.rstrip() + ASSINATURA
 
-    url_img, pid = buscar_imagem(tema)
-    print(f"[preview] tema='{tema}' pid='{pid}'")
+    estilo = (data.get("estilo") or "").strip().lower()
+    if estilo not in ESTILOS_CARD: estilo = ""
+    info_estilo = {}
+    url_img, pid = None, ""
+    if estilo and ESTILOS_CARD[estilo]["tipo"] == "pessoa":
+        url_img, pid = buscar_imagem_ronilson()
+        if not url_img:
+            info_estilo["aviso"] = (f"Estilo {ESTILOS_CARD[estilo]['rotulo']}: nenhuma foto do "
+                                    f"Ronilson encontrada no banco — card gerado no modo padrao.")
+    if not url_img:
+        url_img, pid = buscar_imagem(tema)
+    print(f"[preview] tema='{tema}' pid='{pid}' estilo='{estilo or '-'}'")
 
     try:
         seed    = data.get("seed")
-        card    = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed)
+        card    = gerar_card_imagem(tema, legenda, url_img, pid, seed=seed,
+                                    estilo=estilo or None, info=info_estilo)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         buf     = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
@@ -3058,6 +3171,7 @@ def rota_preview_card():
     resp = {"card_id": card_id, "preview_url": preview_url,
             "legenda": legenda, "imagem_fundo": url_img}
     if erros_leg: resp["aviso_legenda"] = erros_leg
+    if info_estilo.get("aviso"): resp["aviso_estilo"] = info_estilo["aviso"]
     return jsonify(resp)
 
 @app.route("/aprovar-card", methods=["POST"])
