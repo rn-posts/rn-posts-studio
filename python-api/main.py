@@ -1029,6 +1029,37 @@ def _detectar_rosto(img):
         return None
 
 # ── Fundo rico ────────────────────────────────────────────────────────────────
+# v39: deteccao PERMISSIVA de rosto, usada SO para proteger a foto do veu
+# editorial (_scrim_editorial_limpo borra a faixa do titulo). Diferente de
+# _detectar_rosto (que decide tem_pessoa/rembg e e restrita de proposito),
+# esta cobre rosto pequeno e de perfil, e nao altera o pipeline de recorte.
+_perfil_cascade = None
+def _get_perfil_cascade():
+    global _perfil_cascade
+    if _perfil_cascade is None:
+        import cv2
+        _perfil_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_profileface.xml")
+    return _perfil_cascade
+
+def _tem_rosto_na_foto(img):
+    """True se ha algum rosto (frontal, perfil ou perfil espelhado) na imagem."""
+    try:
+        arr = np.array(img.convert("L"))
+        lado = int(W * 0.05)
+        kw = dict(scaleFactor=1.05, minNeighbors=4, minSize=(lado, lado))
+        if len(_get_face_cascade().detectMultiScale(arr, **kw)) > 0:
+            return True
+        perfil = _get_perfil_cascade()
+        if len(perfil.detectMultiScale(arr, **kw)) > 0:
+            return True
+        if len(perfil.detectMultiScale(arr[:, ::-1].copy(), **kw)) > 0:
+            return True
+        return False
+    except Exception as e:
+        print(f"[rosto-protecao] falhou: {e}")
+        return False
+
 GEMINI_IMAGE_MODELOS = (
     "gemini-3.1-flash-image",
     "gemini-3.1-flash-image-preview",
@@ -1919,8 +1950,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # complexidade_zona ja calculada na busca de zona (nenhum sample novo) —
     # fundo liso continua leve (~92), fundo bagunçado sobe ate 190.
     if not tem_pessoa:
-        _alpha_scrim = min(190, int(92 + min(1.0, complexidade_zona) * 110))
-        _scrim_editorial_limpo(img_rgba, Y_INI - 60, Y_FIM + 60, alpha=_alpha_scrim)
+        if _tem_rosto_na_foto(img_rgba):
+            # v39: foto com rosto que escapou do caminho de pessoa (fora da
+            # pasta ronilson / Haar restrito nao pegou). O veu borra a faixa
+            # inteira do titulo e enevoava rosto, torso e bracos — nao borra.
+            print("[scrim_editorial] rosto detectado — veu de desfoque ignorado")
+        else:
+            _alpha_scrim = min(190, int(92 + min(1.0, complexidade_zona) * 110))
+            _scrim_editorial_limpo(img_rgba, Y_INI - 60, Y_FIM + 60, alpha=_alpha_scrim)
 
     blocos = _parse_blocos(tema)
     if not blocos:
