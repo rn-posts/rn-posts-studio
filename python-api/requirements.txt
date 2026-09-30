@@ -10,4 +10,4 @@ google-auth-httplib2==0.2.0
 rembg[cpu]
 numpy
 fonttools
-opencv-python-headless
+opencv-python-headless<5
