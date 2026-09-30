@@ -1291,7 +1291,11 @@ def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
         # Detecta rosto para checar se a foto contém pessoa
         bbox_haar = _detectar_rosto(img)
         if bbox_haar is not None:
-            tem_pessoa = True
+            # v40: o Haar so PROTEGE o rosto (cabeca_bbox) — nao liga mais o
+            # caminho rembg. Antes (v37) qualquer rosto detectado virava
+            # tem_pessoa=True e disparava rembg+Gemini; no plano free do
+            # Render (512MB, 1 worker) isso estourou memoria (SIGKILL/500).
+            # rembg segue restrito a pasta ronilson (eh_foto_ronilson).
             cabeca_bbox = bbox_haar
 
         if tem_pessoa:
