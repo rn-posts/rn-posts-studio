@@ -27,6 +27,7 @@ import io
 import os
 import random
 import sys
+import time
 import traceback
 import uuid
 
@@ -44,6 +45,10 @@ def _m():
 
 class ErroEstilo(Exception):
     """Falha esperada ao montar o card de um estilo (mensagem vai para a tela)."""
+
+
+_ETAPA = {"v": "inicio"}                 # etapa em andamento (vai na mensagem de erro)
+_CACHE_RONILSON = {"rec": None, "t": 0.0}  # lista de fotos do Ronilson (10 min)
 
 
 # ── Catalogo de estilos ───────────────────────────────────────────────────────
@@ -198,6 +203,9 @@ def _buscar_foto_ronilson():
         return "ronilson" in alvo.lower().replace("\\", "/")
 
     rec, pastas, total = [], set(), 0
+    if _CACHE_RONILSON["rec"] and time.time() - _CACHE_RONILSON["t"] < 600:
+        c = M._proxima_foto_baralho("_ronilson", _CACHE_RONILSON["rec"])
+        return c.get("secure_url"), c.get("public_id", "")
     try:
         for pasta in ("Banco de Imagens/Ronilson", "Banco de Imagens/ronilson", "Ronilson"):
             try:
@@ -231,6 +239,7 @@ def _buscar_foto_ronilson():
     if not rec:
         return None, (f"{total} imagens verificadas; pastas encontradas: "
                       f"{sorted(pastas)[:10] or 'nenhuma informada'}")
+    _CACHE_RONILSON["rec"], _CACHE_RONILSON["t"] = rec, time.time()
     c = M._proxima_foto_baralho("_ronilson", rec)
     print(f"[estilo] foto do Ronilson: {c.get('public_id')} ({c.get('asset_folder')})")
     return c.get("secure_url"), c.get("public_id", "")
@@ -246,27 +255,41 @@ def _base_cena(estilo):
 
 def _base_pessoa(estilo, seed):
     M = _m()
-    url, info = _buscar_foto_ronilson()
-    if not url:
-        raise ErroEstilo(f"Nenhuma foto do Ronilson encontrada no Cloudinary ({info}).")
-
-    r = requests.get(url, timeout=25)
-    r.raise_for_status()
-    img = Image.open(io.BytesIO(r.content)).convert("RGB")
-    ratio = max(M.W / img.width, M.H / img.height)
-    nw, nh = int(img.width * ratio), int(img.height * ratio)
-    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-    esq, topo = (nw - M.W) // 2, (nh - M.H) // 2
-    img = img.crop((esq, topo, esq + M.W, topo + M.H))
-
-    try:
-        rgba = M.remover_fundo_rembg(img)
-    except Exception as e:
-        raise ErroEstilo(f"O recorte da foto falhou ({e}). Se o Render estiver sem memoria, "
-                         f"tente de novo em instantes.")
+    rgba, ultimo_erro, tentativas = None, None, 3
+    for n in range(1, tentativas + 1):
+        _ETAPA["v"] = f"buscar foto do Ronilson (tentativa {n}/{tentativas})"
+        url, info = _buscar_foto_ronilson()
+        if not url:
+            raise ErroEstilo(f"Nenhuma foto do Ronilson encontrada no Cloudinary ({info}).")
+        try:
+            r = requests.get(url, timeout=25)
+            r.raise_for_status()
+            img = Image.open(io.BytesIO(r.content)).convert("RGB")
+            ratio = max(M.W / img.width, M.H / img.height)
+            nw, nh = int(img.width * ratio), int(img.height * ratio)
+            img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+            esq, topo = (nw - M.W) // 2, (nh - M.H) // 2
+            img = img.crop((esq, topo, esq + M.W, topo + M.H))
+        except Exception as e:
+            ultimo_erro = f"download da foto: {e}"
+            print(f"[estilo] tentativa {n}: {ultimo_erro}")
+            continue
+        _ETAPA["v"] = f"recortar a pessoa (tentativa {n}/{tentativas})"
+        try:
+            rgba = M.remover_fundo_rembg(img)
+        except Exception as e:
+            ultimo_erro = f"recorte: {type(e).__name__}: {e}"
+            print(f"[estilo] tentativa {n}: {ultimo_erro}")
+            continue
+        if rgba is None:
+            ultimo_erro = "o recorte nao achou uma pessoa nessa foto"
+            print(f"[estilo] tentativa {n}: {ultimo_erro}")
+            continue
+        break
     if rgba is None:
-        raise ErroEstilo("O recorte nao encontrou uma pessoa nesta foto. Tente gerar de novo.")
-
+        raise ErroEstilo(f"nao consegui recortar nenhuma das {tentativas} fotos sorteadas "
+                         f"({ultimo_erro}).")
+    _ETAPA["v"] = "gerar fundo por IA"
     aviso = None
     fundo, motivo = _gerar_imagem_ia(_prompt(estilo, True))
     if fundo is None:
@@ -309,6 +332,7 @@ def rota_preview_card_estilo():
     print(f"[estilo] tema='{tema}' estilo='{estilo}' seed={seed}")
 
     tmp_pid = ""
+    _ETAPA["v"] = "gerar imagem-base"
     try:
         if ESTILOS[estilo]["tipo"] == "cena":
             base, aviso = _base_cena(estilo)
@@ -316,6 +340,7 @@ def rota_preview_card_estilo():
             base, aviso = _base_pessoa(estilo, seed)
 
         # O motor do card recebe URL: envia a base como arquivo temporario.
+        _ETAPA["v"] = "upload temporario no Cloudinary"
         buf = io.BytesIO()
         base.convert("RGB").save(buf, format="JPEG", quality=95)
         buf.seek(0)
@@ -327,6 +352,7 @@ def rota_preview_card_estilo():
         if not url_tmp:
             raise ErroEstilo("Falha ao preparar a imagem do estilo (upload temporario).")
 
+        _ETAPA["v"] = "montar o card (titulo/layout)"
         card = M.gerar_card_imagem(tema, legenda, url_tmp, tmp_pid, seed=seed)
 
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
@@ -342,7 +368,8 @@ def rota_preview_card_estilo():
         return jsonify({"erro": f"Estilo {ESTILOS[estilo]['rotulo']}: {e}"}), 502
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"erro": f"Erro ao gerar card de estilo: {e}"}), 500
+        return jsonify({"erro": f"Erro no estilo {ESTILOS[estilo]['rotulo']} "
+                                f"(etapa: {_ETAPA['v']}): {type(e).__name__}: {str(e)[:200]}"}), 500
     finally:
         if tmp_pid:
             try:
