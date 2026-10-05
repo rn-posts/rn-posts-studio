@@ -492,7 +492,9 @@ PROMPT_LEGENDA = (
     "TAMANHO: 80-150 palavras.\n"
     "RETORNE APENAS A LEGENDA, SEM NADA MAIS."
 )
-GROQ_MODELOS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-4-scout"]
+# v47: Groq desligou llama-3.3-70b-versatile e llama-3.1-8b-instant em 16/08/2026;
+# os modelos atuais vem primeiro, os antigos ficam so como ultima reserva.
+GROQ_MODELOS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-4-scout"]
 
 def _groq_legenda(tema):
     if not GROQ_API_KEY: raise Exception("GROQ_API_KEY nao configurada")
@@ -501,12 +503,19 @@ def _groq_legenda(tema):
     seed = random.randint(0, 1000000)
     for m in GROQ_MODELOS:
         try:
+            corpo = {"model": m, "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}], "max_tokens": 400, "temperature": 1.0, "top_p": 0.95, "seed": seed}
+            if m.startswith("openai/gpt-oss"):
+                # v47: modelos de raciocinio gastam tokens "pensando" — mais folga e raciocinio curto
+                corpo["max_tokens"] = 1500
+                corpo["reasoning_effort"] = "low"
             r = requests.post(GROQ_URL,
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": m, "messages": [{"role": "user", "content": PROMPT_LEGENDA.format(tema=tema)}], "max_tokens": 400, "temperature": 1.0, "top_p": 0.95, "seed": seed},
-                timeout=20)
+                json=corpo,
+                timeout=30)
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
+            texto = (r.json()["choices"][0]["message"].get("content") or "").strip()
+            if not texto: raise Exception(f"{m} devolveu texto vazio")
+            return texto
         except Exception as e: ultimo = e
     raise Exception(f"Groq falhou: {ultimo}")
 
@@ -514,11 +523,20 @@ def _gemini_legenda(tema):
     if not GEMINI_API_KEY: raise Exception("GEMINI_API_KEY nao configurada")
     import random
     seed = random.randint(0, 1000000)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    r = requests.post(url, json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}], "generationConfig": {"temperature": 1.0, "topP": 0.95, "seed": seed}}, timeout=25)
-    if r.status_code == 429: raise Exception("Gemini 429")
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    ultimo = None
+    # v47: gemini-2.0-flash foi desligado em 01/06/2026; usa os modelos atuais.
+    for modelo in ("gemini-3.5-flash", "gemini-2.5-flash"):
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={GEMINI_API_KEY}"
+            r = requests.post(url, json={"contents": [{"parts": [{"text": PROMPT_LEGENDA.format(tema=tema)}]}], "generationConfig": {"temperature": 1.0, "topP": 0.95, "seed": seed}}, timeout=25)
+            if r.status_code == 429: raise Exception(f"{modelo} 429")
+            r.raise_for_status()
+            partes = r.json()["candidates"][0]["content"]["parts"]
+            texto = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip()
+            if not texto: raise Exception(f"{modelo} sem texto")
+            return texto
+        except Exception as e: ultimo = e
+    raise Exception(f"Gemini falhou: {ultimo}")
 
 def gerar_legenda_ia(tema):
     erros = []

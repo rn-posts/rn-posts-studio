@@ -163,6 +163,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
       setPreviewUrl(data.preview_url);
       setLegenda(data.legenda);
       if (data.aviso_estilo) onNotify(data.aviso_estilo, "error");
+      else if (data.aviso_legenda) onNotify("Card gerado, mas a legenda automática falhou: " + String(data.aviso_legenda).slice(0, 220), "error");
       else onNotify("Card gerado — revise e aprove ✓");
     } catch (e) {
       onNotify(e.message, "error");
