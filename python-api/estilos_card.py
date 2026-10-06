@@ -123,6 +123,13 @@ def _prompt(estilo, para_pessoa):
 
 
 # ── IA de imagem: Gemini -> Cloudflare (opcional) ─────────────────────────────
+_GEMINI_IMAGE_EXTRA = (
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-preview",
+    "gemini-3.0-flash",
+    "gemini-2.5-flash",
+)
+
 def _gerar_imagem_ia(prompt):
     """Retorna (imagem_PIL, None) ou (None, motivo legivel)."""
     M = _m()
@@ -139,11 +146,15 @@ def _gerar_imagem_ia(prompt):
                 "imageConfig": {"aspectRatio": "4:5"},
             },
         }
-        for modelo in getattr(M, "GEMINI_IMAGE_MODELOS", ()):
+        modelos_usados = list(getattr(M, "GEMINI_IMAGE_MODELOS", ()))
+        for extra in _GEMINI_IMAGE_EXTRA:
+            if extra not in modelos_usados:
+                modelos_usados.append(extra)
+        for modelo in modelos_usados:
             try:
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{modelo}:generateContent?key={chave}")
-                r = requests.post(url, json=payload, timeout=50)
+                r = requests.post(url, json=payload, timeout=60)
                 if r.status_code >= 400:
                     print(f"[estilo] {modelo} HTTP {r.status_code}: {r.text[:200]}")
                     dica = {429: "sem cota — confira plano/faturamento da chave Gemini",
@@ -168,7 +179,7 @@ def _gerar_imagem_ia(prompt):
             url = (f"https://api.cloudflare.com/client/v4/accounts/{conta}"
                    "/ai/run/@cf/black-forest-labs/flux-1-schnell")
             r = requests.post(url, headers={"Authorization": f"Bearer {token}"},
-                              json={"prompt": prompt[:2000], "steps": 6}, timeout=60)
+                              json={"prompt": prompt[:2000], "steps": 6}, timeout=70)
             if r.status_code >= 400:
                 print(f"[estilo] cloudflare HTTP {r.status_code}: {r.text[:200]}")
                 erros.append(f"Cloudflare: HTTP {r.status_code}")
@@ -207,19 +218,21 @@ def _buscar_foto_ronilson():
         c = M._proxima_foto_baralho("_ronilson", _CACHE_RONILSON["rec"])
         return c.get("secure_url"), c.get("public_id", "")
     try:
-        for pasta in ("Banco de Imagens/Ronilson", "Banco de Imagens/ronilson", "Ronilson"):
+        for pasta in ("Banco de Imagens/Ronilson", "banco de imagens/ronilson",
+                      "Banco de imagens/Ronilson", "Ronilson", "ronilson",
+                      "banco de imagens/Ronilson", M.PASTA_RONILSON):
             try:
-                res = cloudinary.api.resources_by_asset_folder(pasta, max_results=500)
+                res = cloudinary.api.resources(type="upload", prefix=pasta + "/", max_results=500)
                 achados = [r for r in res.get("resources", []) if valido(r)]
                 if achados:
                     rec = achados
                     break
             except Exception as e:
-                print(f"[estilo] pasta '{pasta}': {e}")
+                print(f"[estilo] prefixo '{pasta}': {e}")
 
         if not rec:
             cursor = None
-            for _ in range(4):
+            for _ in range(6):
                 kw = dict(type="upload", max_results=500)
                 if cursor:
                     kw["next_cursor"] = cursor
@@ -227,8 +240,9 @@ def _buscar_foto_ronilson():
                 lote = res.get("resources", [])
                 total += len(lote)
                 for r in lote:
-                    if r.get("asset_folder"):
-                        pastas.add(r["asset_folder"])
+                    for k in ("asset_folder", "folder"):
+                        if r.get(k):
+                            pastas.add(r[k])
                 rec += [r for r in lote if eh_ronilson(r) and valido(r)]
                 cursor = res.get("next_cursor")
                 if not cursor:
@@ -238,31 +252,34 @@ def _buscar_foto_ronilson():
 
     if not rec:
         return None, (f"{total} imagens verificadas; pastas encontradas: "
-                      f"{sorted(pastas)[:10] or 'nenhuma informada'}")
+                      f"{sorted(pastas)[:15] or 'nenhuma informada'}")
     _CACHE_RONILSON["rec"], _CACHE_RONILSON["t"] = rec, time.time()
     c = M._proxima_foto_baralho("_ronilson", rec)
-    print(f"[estilo] foto do Ronilson: {c.get('public_id')} ({c.get('asset_folder')})")
+    print(f"[estilo] foto do Ronilson: {c.get('public_id')} ({c.get('asset_folder') or c.get('folder')})")
     return c.get("secure_url"), c.get("public_id", "")
 
 
 # ── Montagem da imagem-base de cada tipo de estilo ────────────────────────────
-def _base_cena(estilo):
+def _base_cena(estilo, seed):
+    M = _m()
     img, motivo = _gerar_imagem_ia(_prompt(estilo, False))
+    aviso = None
     if img is None:
-        raise ErroEstilo(f"A IA de imagem nao respondeu ({motivo}).")
-    return img, None
+        img = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
+        aviso = f"A imagem por IA falhou ({motivo}); usei o gradiente da paleta."
+    return img, aviso
 
 
 def _base_pessoa(estilo, seed):
     M = _m()
-    rgba, ultimo_erro, tentativas = None, None, 3
+    rgba, img_original, ultimo_erro, tentativas = None, None, None, 3
     for n in range(1, tentativas + 1):
         _ETAPA["v"] = f"buscar foto do Ronilson (tentativa {n}/{tentativas})"
         url, info = _buscar_foto_ronilson()
         if not url:
             raise ErroEstilo(f"Nenhuma foto do Ronilson encontrada no Cloudinary ({info}).")
         try:
-            r = requests.get(url, timeout=25)
+            r = requests.get(url, timeout=30)
             r.raise_for_status()
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
             ratio = max(M.W / img.width, M.H / img.height)
@@ -270,6 +287,7 @@ def _base_pessoa(estilo, seed):
             img = img.resize((nw, nh), Image.Resampling.LANCZOS)
             esq, topo = (nw - M.W) // 2, (nh - M.H) // 2
             img = img.crop((esq, topo, esq + M.W, topo + M.H))
+            img_original = img
         except Exception as e:
             ultimo_erro = f"download da foto: {e}"
             print(f"[estilo] tentativa {n}: {ultimo_erro}")
@@ -280,13 +298,27 @@ def _base_pessoa(estilo, seed):
         except Exception as e:
             ultimo_erro = f"recorte: {type(e).__name__}: {e}"
             print(f"[estilo] tentativa {n}: {ultimo_erro}")
-            continue
+            rgba = None
         if rgba is None:
-            ultimo_erro = "o recorte nao achou uma pessoa nessa foto"
+            ultimo_erro = ultimo_erro or "o recorte nao achou uma pessoa nessa foto"
             print(f"[estilo] tentativa {n}: {ultimo_erro}")
             continue
+        try:
+            if not M._avaliar_silhueta_pessoa(rgba):
+                print(f"[estilo] tentativa {n}: silhueta ruim — mantendo ultima mesmo assim")
+        except Exception:
+            pass
         break
     if rgba is None:
+        if img_original is not None:
+            print("[estilo] recorte falhou em todas as tentativas — usando foto original SEM fundo novo")
+            fundo = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
+            composto = Image.blend(fundo, img_original, 0.92)
+            composto = ImageEnhance.Sharpness(composto).enhance(1.08)
+            composto = ImageEnhance.Contrast(composto).enhance(1.03)
+            aviso = (f"Nao consegui recortar nenhuma das {tentativas} fotos sorteadas "
+                     f"({ultimo_erro}); mantive a foto original com fundo suave.")
+            return composto, aviso
         raise ErroEstilo(f"nao consegui recortar nenhuma das {tentativas} fotos sorteadas "
                          f"({ultimo_erro}).")
     _ETAPA["v"] = "gerar fundo por IA"
@@ -296,7 +328,15 @@ def _base_pessoa(estilo, seed):
         fundo = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
         aviso = f"O fundo por IA falhou ({motivo}); usei o gradiente da paleta."
 
-    composto, _bbox = M.compor_pessoa(rgba, fundo)
+    try:
+        composto, _bbox = M.compor_pessoa(rgba, fundo)
+    except Exception as e:
+        print(f"[estilo] compor_pessoa falhou: {e}")
+        fundo2 = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
+        composto = fundo2.convert("RGBA")
+        composto.paste(rgba, (int(M.W * 0.35), 0), rgba)
+        composto = composto.convert("RGB")
+        aviso = (aviso + " " if aviso else "") + f"Composicao automatica (erro: {e})."
     composto = ImageEnhance.Sharpness(composto).enhance(1.08)
     composto = ImageEnhance.Contrast(composto).enhance(1.03)
     return composto, aviso
@@ -335,7 +375,7 @@ def rota_preview_card_estilo():
     _ETAPA["v"] = "gerar imagem-base"
     try:
         if ESTILOS[estilo]["tipo"] == "cena":
-            base, aviso = _base_cena(estilo)
+            base, aviso = _base_cena(estilo, seed)
         else:
             base, aviso = _base_pessoa(estilo, seed)
 
