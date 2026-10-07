@@ -573,12 +573,42 @@ def _base_cena(estilo, seed):
     return img, aviso
 
 
+def _evitar_pymatting():
+    """v48: o rembg importa pymatting (so usado em alpha matting, que nao usamos) e
+    o pymatting compila funcoes numba NO IMPORT. No Render (Python 3.14, sem cache)
+    isso passa dos 300s do gunicorn -> worker abortado e SIGKILL -> 500. Registra
+    modulos vazios para esses 3 imports antes de importar o rembg. Se o pymatting
+    real ja foi carregado (fluxo normal do main.py), nao faz nada."""
+    if "pymatting" in sys.modules:
+        return
+    import types
+
+    def _desativado(*a, **k):
+        raise RuntimeError("pymatting desativado (alpha matting nao usado)")
+
+    for nome, attrs in (
+        ("pymatting", {}),
+        ("pymatting.alpha", {}),
+        ("pymatting.alpha.estimate_alpha_cf", {"estimate_alpha_cf": _desativado}),
+        ("pymatting.foreground", {}),
+        ("pymatting.foreground.estimate_foreground_ml", {"estimate_foreground_ml": _desativado}),
+        ("pymatting.util", {}),
+        ("pymatting.util.util", {"stack_images": _desativado}),
+    ):
+        m = types.ModuleType(nome)
+        m.__dict__.update(attrs)
+        m.__path__ = []
+        sys.modules[nome] = m
+    print("[estilo] pymatting/numba evitado (sem compilacao JIT)")
+
+
 def _recortar_pessoa_leve(img):
     """v47: recorte com UM unico modelo leve (u2netp). O remover_fundo_rembg do
     main.py cai no u2net_human_seg (~170MB) quando a silhueta vem ruim, e junto
     com o resto isso estoura os 512MB do Render free (SIGKILL -> 500). Aqui,
     silhueta ruim devolve None e o chamador tenta outra foto."""
     import gc
+    _evitar_pymatting()
     from rembg import remove as rembg_remove
     M = _m()
     original = img.convert("RGB")
