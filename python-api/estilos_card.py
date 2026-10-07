@@ -209,14 +209,13 @@ def _fundo_cinematic_procedural(cor1, cor2, seed):
 
     arr = np.zeros((H_, W_, 3), dtype=np.float32)
 
-    # 1) Gradiente base (vertical com leve diagonal)
-    for y in range(H_):
-        for x in range(W_):
-            ty = y / H_
-            tx = x / W_
-            t = ty * 0.75 + tx * 0.25
-            for ch in range(3):
-                arr[y, x, ch] = cor1[ch] * (1 - t) + cor2[ch] * t
+    # 1) Gradiente base (vertical com leve diagonal) — VETORIZADO (v47): o laco
+    #    pixel a pixel em Python levava dezenas de segundos no Render free.
+    _yy = (np.arange(H_, dtype=np.float32) / H_)[:, None]
+    _xx = (np.arange(W_, dtype=np.float32) / W_)[None, :]
+    _t = _yy * 0.75 + _xx * 0.25
+    for ch in range(3):
+        arr[:, :, ch] = cor1[ch] * (1 - _t) + cor2[ch] * _t
 
     # 2) Bokeh anamórfico (elipses achatadas horizontalmente)
     ys, xs = np.ogrid[:H_, :W_]
@@ -234,12 +233,17 @@ def _fundo_cinematic_procedural(cor1, cor2, seed):
         raio_x = rng.uniform(18, 120) * (rng.uniform(0.4, 1.0))
         raio_y = raio_x * rng.uniform(0.25, 0.55)
         intensidade = rng.uniform(0.12, 0.55)
-        dx = (xs - cx) / raio_x
-        dy = (ys - cy) / raio_y
+        # v47: calcula so numa janela (+-3 raios) — fora disso exp(-d2*2) ~ 0
+        x0 = max(0, int(cx - raio_x * 3)); x1 = min(W_, int(cx + raio_x * 3) + 1)
+        y0 = max(0, int(cy - raio_y * 3)); y1 = min(H_, int(cy + raio_y * 3) + 1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        dx = (xs[:, x0:x1] - cx) / raio_x
+        dy = (ys[y0:y1, :] - cy) / raio_y
         d2 = dx*dx + dy*dy
-        masc = np.exp(-d2 * 2.0) * intensidade
+        masc = (np.exp(-d2 * 2.0) * intensidade).astype(np.float32)
         for ch in range(3):
-            arr[:, :, ch] = np.clip(arr[:, :, ch] + masc * cor[ch], 0, 255)
+            arr[y0:y1, x0:x1, ch] = np.clip(arr[y0:y1, x0:x1, ch] + masc * cor[ch], 0, 255)
 
     # 3) Feixe de luz volumétrico (diagonal, do canto superior direito → meio)
     cx_fim = W_ * rng.uniform(0.35, 0.55)
@@ -569,9 +573,46 @@ def _base_cena(estilo, seed):
     return img, aviso
 
 
+def _recortar_pessoa_leve(img):
+    """v47: recorte com UM unico modelo leve (u2netp). O remover_fundo_rembg do
+    main.py cai no u2net_human_seg (~170MB) quando a silhueta vem ruim, e junto
+    com o resto isso estoura os 512MB do Render free (SIGKILL -> 500). Aqui,
+    silhueta ruim devolve None e o chamador tenta outra foto."""
+    import gc
+    from rembg import remove as rembg_remove
+    M = _m()
+    original = img.convert("RGB")
+    ow, oh = original.size
+    escala = min(1.0, M._REMBG_MAX_LADO / max(ow, oh))
+    trabalho = original if escala >= 1.0 else original.resize(
+        (max(1, int(ow * escala)), max(1, int(oh * escala))), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    trabalho.save(buf, format="PNG")
+    try:
+        out = rembg_remove(buf.getvalue(), session=M._sessao_rembg("u2netp"))
+    except Exception:
+        M._rembg_sessions.pop("u2netp", None)
+        raise
+    rgba_p = Image.open(io.BytesIO(out)).convert("RGBA")
+    alpha = rgba_p.split()[3]
+    if alpha.size != (ow, oh):
+        alpha = alpha.resize((ow, oh), Image.Resampling.LANCZOS)
+    r, g, b = original.split()
+    rgba = M._afinar_mascara(Image.merge("RGBA", (r, g, b, alpha)))
+    del rgba_p, out, buf, trabalho
+    gc.collect()
+    if M._avaliar_silhueta_pessoa(rgba):
+        print("[estilo] recorte leve ok (u2netp)")
+        return rgba
+    print("[estilo] recorte leve: silhueta ruim")
+    return None
+
+
 def _base_pessoa(estilo, seed):
     M = _m()
     rgba, img_original, ultimo_erro, tentativas = None, None, None, 3
+    # v47: dados da pessoa para o titulo respeitar a coluna livre / o rosto
+    meta = {"tem_pessoa": False, "bbox": None, "em_pe": True}
 
     cor_parede, cor_piso = M.MARINHO, M.PETROLEO
 
@@ -602,10 +643,7 @@ def _base_pessoa(estilo, seed):
             continue
         _ETAPA["v"] = f"recortar a pessoa (tentativa {n}/{tentativas})"
         try:
-            if hasattr(M, "remover_fundo_rembg"):
-                rgba = M.remover_fundo_rembg(img)
-            else:
-                rgba = None
+            rgba = _recortar_pessoa_leve(img)
         except Exception as e:
             ultimo_erro = f"recorte: {type(e).__name__}: {e}"
             print(f"[estilo] tentativa {n}: {ultimo_erro}")
@@ -642,6 +680,7 @@ def _base_pessoa(estilo, seed):
     if rgba is not None:
         try:
             composto, _bbox = _compor_pessoa_safe(rgba, fundo, estilo, seed)
+            meta["bbox"] = _bbox
         except Exception as e:
             print(f"[estilo] composicao falhou inesperadamente: {e} — fallback colagem simples")
             fundo2 = fundo.convert("RGBA")
@@ -685,6 +724,23 @@ def _base_pessoa(estilo, seed):
                 f"({ultimo_erro or 'recorte vazio'}); fiz uma composicao suave "
                 "da foto sobre o fundo do estilo.")
 
+    # v47: fecha os dados da pessoa (o titulo usa coluna esquerda livre + protecao do rosto)
+    meta["tem_pessoa"] = (rgba is not None) or (img_original is not None)
+    if meta["tem_pessoa"]:
+        try:
+            if rgba is not None:
+                meta["em_pe"] = bool(M._detectar_pose_em_pe(rgba))
+        except Exception as e:
+            print(f"[estilo] pose: {e}")
+        try:
+            _bb = M._detectar_rosto(composto)
+            if _bb:
+                meta["bbox"] = _bb
+        except Exception as e:
+            print(f"[estilo] rosto: {e}")
+        if not meta["bbox"]:
+            meta["bbox"] = (int(M.W * 0.35), int(M.H * 0.05), M.W, int(M.H * 0.55))
+
     # 4) Tratamento FINAL do estilo (color grade, vinheta, grão) — nunca falha
     try:
         composto = _aplicar_tratamento_estilo(composto, estilo, seed)
@@ -698,7 +754,28 @@ def _base_pessoa(estilo, seed):
     except Exception:
         pass
 
-    return composto, aviso
+    return composto, aviso, meta
+
+
+def _card_pessoa(tema, base, seed, meta):
+    """v47: titulo para Showcase/Cinematic SEM passar pelo gerar_card_imagem.
+    Antes, o card ia por um URL temporario cujo nome nao tem 'ronilson', entao
+    tem_pessoa=False: o titulo ocupava a largura toda (cruzando a pessoa) e
+    ainda recebia um segundo color grade editorial por cima do estilo. Aqui o
+    desenhar_titulo recebe tem_pessoa/em_pe/cabeca_bbox reais, como no fluxo
+    normal do Ronilson, e a imagem do estilo segue intacta."""
+    M = _m()
+    seed = M._seed_variavel(tema, seed)
+    cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
+    tem = bool(meta.get("tem_pessoa"))
+    img, _ = M.desenhar_titulo(
+        base, tema, seed,
+        cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
+        cor_overlay=None,
+        tem_pessoa=tem,
+        em_pe=bool(meta.get("em_pe", True)),
+        cabeca_bbox=meta.get("bbox") if tem else None)
+    return img
 
 
 # ── Rota ──────────────────────────────────────────────────────────────────────
@@ -733,26 +810,32 @@ def rota_preview_card_estilo():
     tmp_pid = ""
     _ETAPA["v"] = "gerar imagem-base"
     try:
+        meta = None
         if ESTILOS[estilo]["tipo"] == "cena":
             base, aviso = _base_cena(estilo, seed)
         else:
-            base, aviso = _base_pessoa(estilo, seed)
+            base, aviso, meta = _base_pessoa(estilo, seed)
 
-        # O motor do card recebe URL: envia a base como arquivo temporario.
-        _ETAPA["v"] = "upload temporario no Cloudinary"
-        buf = io.BytesIO()
-        base.convert("RGB").save(buf, format="JPEG", quality=95)
-        buf.seek(0)
-        res = cloudinary.uploader.upload(
-            buf, public_id=f"{M.CLOUDINARY_PREVIEW}/estilo_tmp_{uuid.uuid4().hex[:10]}",
-            resource_type="image", overwrite=True)
-        url_tmp = res.get("secure_url", "")
-        tmp_pid = res.get("public_id", "")
-        if not url_tmp:
-            raise ErroEstilo("Falha ao preparar a imagem do estilo (upload temporario).")
+        if meta is not None:
+            # v47: Showcase/Cinematic montam o titulo direto (sem upload temporario)
+            _ETAPA["v"] = "montar o card (titulo/layout)"
+            card = _card_pessoa(tema, base, seed, meta)
+        else:
+            # O motor do card recebe URL: envia a base como arquivo temporario.
+            _ETAPA["v"] = "upload temporario no Cloudinary"
+            buf = io.BytesIO()
+            base.convert("RGB").save(buf, format="JPEG", quality=95)
+            buf.seek(0)
+            res = cloudinary.uploader.upload(
+                buf, public_id=f"{M.CLOUDINARY_PREVIEW}/estilo_tmp_{uuid.uuid4().hex[:10]}",
+                resource_type="image", overwrite=True)
+            url_tmp = res.get("secure_url", "")
+            tmp_pid = res.get("public_id", "")
+            if not url_tmp:
+                raise ErroEstilo("Falha ao preparar a imagem do estilo (upload temporario).")
 
-        _ETAPA["v"] = "montar o card (titulo/layout)"
-        card = M.gerar_card_imagem(tema, legenda, url_tmp, tmp_pid, seed=seed)
+            _ETAPA["v"] = "montar o card (titulo/layout)"
+            card = M.gerar_card_imagem(tema, legenda, url_tmp, tmp_pid, seed=seed)
 
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()

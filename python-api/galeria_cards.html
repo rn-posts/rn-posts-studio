@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Galeria — Cards Showcase & Cinematic (Resultado REAL do teste)</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px;
+    background: #1b1b1b;
+    color: #f6f1e8;
+    font-family: Malgun Gothic, Segoe UI, Arial;
+  }
+  h1 { margin: 0 0 4px; color: #F9AB0B; }
+  .sub { color: #aaa; margin-bottom: 22px; font-size: 14px;}
+  .linha { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
+  .cartao {
+    background: #2a2a2a;
+    padding: 14px 14px 16px; border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+  }
+  h2 { margin: 0 0 10px; font-size: 18px; color: #F9AB0B; letter-spacing: 0.5px;}
+  img.card {
+    display: block;
+    width: 420px; height: 525px;
+    object-fit: cover;
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    background: #000;
+  }
+  .legenda { font-size: 12px; color: #bbb; margin-top: 10px; line-height: 1.4; }
+  .tag {
+    display: inline-block; background: #1B797D; color: white; padding: 3px 10px;
+    border-radius: 999px; font-size: 11px; margin-right: 6px;
+  }
+  .tag.laranja { background: #F9AB0B; color: #024059; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>✅ Resultado REAL do teste — Cards gerados localmente</h1>
+<div class="sub">
+  Tema: <b style="color:#F9AB0B">*É possível · :ser feliz tendo · -depressão?</b> &nbsp;|&nbsp;
+  Seed: 2452107 &nbsp;|&nbsp;
+  Tempo total de geração: <b>13,67s</b> (sem IA externa, sem rede nenhuma)
+</div>
+
+<div class="linha">
+  <div class="cartao">
+    <h2>🏆 Showcase (Estúdio Editorial)</h2>
+    <img class="card" src="./output_cards_TESTE/card_SHOWCASE_2452107.png" alt="card showcase">
+    <div class="legenda">
+      <span class="tag laranja">Parede + Piso curvo</span>
+      <span class="tag">Key-light quente</span>
+      <span class="tag">Fill-light sage</span>
+      <span class="tag">Reflexão piso</span>
+      <span class="tag">Sombra projetada</span>
+      <br>
+      + tratamento: vinheta 18% · grão 0.6 · nitidez · contraste 1.04
+    </div>
+  </div>
+
+  <div class="cartao">
+    <h2>🎬 Cinematic (Cena cinematográfica)</h2>
+    <img class="card" src="./output_cards_TESTE/card_CINEMATIC_2452107.png" alt="card cinematic">
+    <div class="legenda">
+      <span class="tag laranja">Bokeh anamórfico ~30</span>
+      <span class="tag">Feixe luz volumétrico</span>
+      <span class="tag">Névoa baixa</span>
+      <span class="tag">Color grade teal/laranja</span>
+      <span class="tag">S-curve contraste</span>
+      <br>
+      + tratamento: vinheta 30% · grão filme 1.0 · nitidez · sat 0.94
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
