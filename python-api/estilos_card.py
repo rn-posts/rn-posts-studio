@@ -575,7 +575,7 @@ def _base_cena(estilo, seed):
 
 _ORT_U2NETP = {"sess": None}
 _U2NETP_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
-_U2NETP_LADO = 256  # lado da entrada do modelo (320 e o nativo; 256 usa ~40% menos memoria)
+_U2NETP_LADO = 320  # o modelo u2netp so aceita entrada 320x320 (256 da INVALID_ARGUMENT)
 
 
 def _mem(rotulo):
