@@ -573,6 +573,78 @@ def _base_cena(estilo, seed):
     return img, aviso
 
 
+_ORT_U2NETP = {"sess": None}
+_U2NETP_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
+_U2NETP_LADO = 256  # lado da entrada do modelo (320 e o nativo; 256 usa ~40% menos memoria)
+
+
+def _mem(rotulo):
+    """v49: loga a memoria do processo (Linux/Render) para achar onde estoura."""
+    try:
+        rss = pico = 0
+        with open("/proc/self/status") as f:
+            for linha in f:
+                if linha.startswith("VmRSS:"):
+                    rss = int(linha.split()[1]) // 1024
+                elif linha.startswith("VmHWM:"):
+                    pico = int(linha.split()[1]) // 1024
+        print(f"[mem] {rotulo}: atual={rss}MB pico={pico}MB")
+    except Exception:
+        pass
+
+
+def _caminho_u2netp():
+    import tempfile
+    home = os.environ.get("U2NET_HOME") or ""
+    destino = os.path.join(tempfile.gettempdir(), "u2netp.onnx")
+    for p in (os.path.join(home, "models", "u2netp", "u2netp.onnx"),
+              os.path.join(home, "u2netp.onnx"), destino):
+        if os.path.isfile(p) and os.path.getsize(p) > 1_000_000:
+            return p
+    r = requests.get(_U2NETP_URL, timeout=60)
+    r.raise_for_status()
+    with open(destino, "wb") as f:
+        f.write(r.content)
+    return destino
+
+
+def _sessao_u2netp():
+    """Sessao ONNX propria (sem importar o rembg): 1 thread, sem arena de memoria."""
+    s = _ORT_U2NETP["sess"]
+    if s is None:
+        import onnxruntime as ort
+        op = ort.SessionOptions()
+        op.enable_cpu_mem_arena = False
+        op.enable_mem_pattern = False
+        op.intra_op_num_threads = 1
+        op.inter_op_num_threads = 1
+        op.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        s = ort.InferenceSession(_caminho_u2netp(), sess_options=op,
+                                 providers=["CPUExecutionProvider"])
+        _ORT_U2NETP["sess"] = s
+    return s
+
+
+def _mascara_u2netp(original):
+    """Mascara alpha (L, tamanho original) da pessoa, mesmo pre/pos-processamento
+    que o rembg usa para o u2netp."""
+    ow, oh = original.size
+    lado = _U2NETP_LADO
+    a = np.asarray(original.resize((lado, lado), Image.Resampling.LANCZOS), dtype=np.float32)
+    a = a / max(float(a.max()), 1e-6)
+    media = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    desvio = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    x = ((a - media) / desvio).transpose(2, 0, 1)[None].astype(np.float32)
+    sess = _sessao_u2netp()
+    _mem("sessao u2netp pronta")
+    saida = sess.run(None, {sess.get_inputs()[0].name: x})[0]
+    pred = saida[0, 0]
+    mi, ma = float(pred.min()), float(pred.max())
+    pred = (pred - mi) / max(ma - mi, 1e-6)
+    m = Image.fromarray((pred * 255).astype(np.uint8))
+    return m.resize((ow, oh), Image.Resampling.BICUBIC)
+
+
 def _evitar_pymatting():
     """v48: o rembg importa pymatting (so usado em alpha matting, que nao usamos) e
     o pymatting compila funcoes numba NO IMPORT. No Render (Python 3.14, sem cache)
@@ -608,28 +680,15 @@ def _recortar_pessoa_leve(img):
     com o resto isso estoura os 512MB do Render free (SIGKILL -> 500). Aqui,
     silhueta ruim devolve None e o chamador tenta outra foto."""
     import gc
-    _evitar_pymatting()
-    from rembg import remove as rembg_remove
     M = _m()
     original = img.convert("RGB")
     ow, oh = original.size
-    escala = min(1.0, M._REMBG_MAX_LADO / max(ow, oh))
-    trabalho = original if escala >= 1.0 else original.resize(
-        (max(1, int(ow * escala)), max(1, int(oh * escala))), Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    trabalho.save(buf, format="PNG")
-    try:
-        out = rembg_remove(buf.getvalue(), session=M._sessao_rembg("u2netp"))
-    except Exception:
-        M._rembg_sessions.pop("u2netp", None)
-        raise
-    rgba_p = Image.open(io.BytesIO(out)).convert("RGBA")
-    alpha = rgba_p.split()[3]
-    if alpha.size != (ow, oh):
-        alpha = alpha.resize((ow, oh), Image.Resampling.LANCZOS)
+    _mem("antes do recorte")
+    alpha = _mascara_u2netp(original)
+    _mem("depois da mascara")
     r, g, b = original.split()
     rgba = M._afinar_mascara(Image.merge("RGBA", (r, g, b, alpha)))
-    del rgba_p, out, buf, trabalho
+    del alpha
     gc.collect()
     if M._avaliar_silhueta_pessoa(rgba):
         print("[estilo] recorte leve ok (u2netp)")
@@ -643,6 +702,7 @@ def _base_pessoa(estilo, seed):
     rgba, img_original, ultimo_erro, tentativas = None, None, None, 3
     # v47: dados da pessoa para o titulo respeitar a coluna livre / o rosto
     meta = {"tem_pessoa": False, "bbox": None, "em_pe": True}
+    _mem("inicio do estilo pessoa")
 
     cor_parede, cor_piso = M.MARINHO, M.PETROLEO
 
