@@ -328,11 +328,15 @@ def _fundo_showcase_procedural(cor1, cor2, seed):
         arr[:, :, ch] = np.clip(arr[:, :, ch] + fill * cor_f, 0, 255)
 
     # 4) Reflexão no piso (faixa sutil clara pós-horizonte)
-    masc_refl = ys >= horizonte_y
+    masc_refl = (ys >= horizonte_y).astype(np.float32)
+    if masc_refl.ndim == 3:
+        masc_refl = masc_refl[:, :, 0]
     t_refl = np.clip((ys - horizonte_y) / (H_ * 0.28), 0, 1)
-    intens_refl = (1 - t_refl) * 0.22
+    if t_refl.ndim == 3:
+        t_refl = t_refl[:, :, 0]
+    intens_refl = (1 - t_refl) * 0.22 * masc_refl
     for ch in range(3):
-        arr[masc_refl, ch] = np.clip(arr[masc_refl, ch] + intens_refl[masc_refl] * 244, 0, 255)
+        arr[:, :, ch] = np.clip(arr[:, :, ch] + intens_refl * 244, 0, 255)
 
     # 5) Sombra projetada sutil no chão (lugar onde a pessoa vai ficar)
     cx_s = W_ * rng.uniform(0.70, 0.82)
