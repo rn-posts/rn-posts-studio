@@ -484,11 +484,194 @@ def _compor_pessoa_safe(rgba, fundo, estilo, seed):
     return res.convert("RGB"), None
 
 
+# ── v51: composicao profissional (Cinematic / Showcase) ────────────────────────────────────────────────
+def _fundo_cinematic_v2(cor1, cor2, seed, foco):
+    """Fundo cinematografico: gradiente escuro (marinho->petroleo), brilho teal
+    atras do sujeito (foco), luz quente de amanhecer no canto superior direito,
+    feixes volumetricos suaves, nevoa baixa e poucos discos de bokeh anamorfico
+    bem desfocados (profundidade de campo, sem aspecto de confete)."""
+    import math
+    M = _m()
+    W_, H_ = M.W, M.H
+    rng = random.Random(seed)
+    fx, fy = foco
+    ys = np.arange(H_, dtype=np.float32)[:, None]
+    xs = np.arange(W_, dtype=np.float32)[None, :]
+
+    t = (ys / H_) * 0.8 + (xs / W_) * 0.2
+    arr = np.empty((H_, W_, 3), dtype=np.float32)
+    for ch in range(3):
+        arr[:, :, ch] = cor1[ch] * 0.55 * (1 - t) + cor2[ch] * 0.80 * t
+
+    g = np.exp(-(((xs - fx) / (W_ * 0.55)) ** 2 + ((ys - fy) / (H_ * 0.45)) ** 2) * 1.6)
+    for ch, v in enumerate((120, 185, 175)):
+        arr[:, :, ch] += g * (v * 0.38)
+
+    w = np.exp(-(((xs - W_ * 0.95) / (W_ * 0.6)) ** 2 + ((ys - H_ * 0.02) / (H_ * 0.5)) ** 2) * 1.8)
+    for ch, v in enumerate((255, 190, 110)):
+        arr[:, :, ch] += w * (v * 0.30)
+
+    for _ in range(3):
+        ang = rng.uniform(0.45, 0.95)
+        ox = W_ * rng.uniform(0.85, 1.02)
+        oy = -H_ * 0.05
+        ux, uy = -math.sin(ang), math.cos(ang)
+        px, py = xs - ox, ys - oy
+        proj = px * ux + py * uy
+        perp = np.abs(-px * uy + py * ux)
+        larg = 90 + np.maximum(proj, 0) * 0.22
+        inten = (np.exp(-(perp / larg) ** 2) * np.clip(1 - proj / (H_ * 1.3), 0, 1)
+                 * (proj > 0) * rng.uniform(0.10, 0.18))
+        for ch, v in enumerate((255, 215, 150)):
+            arr[:, :, ch] += inten * v
+
+    fog = np.clip((ys - H_ * 0.62) / (H_ * 0.38), 0, 1) * 0.22
+    for ch, v in enumerate((90, 150, 155)):
+        arr[:, :, ch] = arr[:, :, ch] * (1 - fog) + v * fog
+
+    base = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).convert("RGBA")
+    del arr
+    camada = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
+    d = ImageDraw.Draw(camada)
+    paleta = [(255, 200, 110)] * 5 + [(244, 246, 248)] * 3 + [(80, 190, 190)] * 3
+    for _ in range(16):
+        cor = rng.choice(paleta)
+        cx = rng.uniform(0.03, 0.78) * W_
+        cy = rng.uniform(0.03, 0.80) * H_
+        r = rng.uniform(22, 80)
+        rx, ry = r * 1.15, r * 0.85
+        a = rng.randint(26, 66)
+        d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry],
+                  fill=cor + (a,), outline=cor + (min(255, a + 28),), width=2)
+    camada = camada.filter(ImageFilter.GaussianBlur(2.6))
+    return Image.alpha_composite(base, camada).convert("RGB")
+
+
+def _fundo_showcase_v2(cor1, cor2, seed, foco):
+    """Fundo de estudio de campanha: gradiente discreto marinho->petroleo, piscina
+    de luz suave atras do sujeito, nucleo claro sutil, luz de chave lateral e
+    queda de luz no piso. Limpo, elegante, sem objetos."""
+    M = _m()
+    W_, H_ = M.W, M.H
+    rng = random.Random(seed)
+    fx, fy = foco
+    ys = np.arange(H_, dtype=np.float32)[:, None]
+    xs = np.arange(W_, dtype=np.float32)[None, :]
+
+    t = ys / H_
+    arr = np.empty((H_, W_, 3), dtype=np.float32)
+    for ch in range(3):
+        arr[:, :, ch] = cor1[ch] * 0.62 * (1 - t) + cor2[ch] * 0.72 * t
+
+    g = np.exp(-(((xs - fx) / (W_ * 0.42)) ** 2 + ((ys - (fy + H_ * 0.05)) / (H_ * 0.38)) ** 2) * 1.5)
+    for ch, v in enumerate((150, 205, 200)):
+        arr[:, :, ch] += g * (v * 0.42)
+    nucleo = np.exp(-(((xs - fx) / (W_ * 0.20)) ** 2 + ((ys - (fy + H_ * 0.02)) / (H_ * 0.20)) ** 2) * 1.6)
+    for ch, v in enumerate((235, 240, 235)):
+        arr[:, :, ch] += nucleo * (v * 0.14)
+    kx = W_ * rng.uniform(0.04, 0.14)
+    k = np.exp(-(((xs - kx) / (W_ * 0.8)) ** 2 + ((ys + H_ * 0.05) / (H_ * 0.7)) ** 2) * 1.4)
+    for ch, v in enumerate((255, 225, 180)):
+        arr[:, :, ch] += k * (v * 0.10)
+    piso = np.clip((ys - H_ * 0.80) / (H_ * 0.20), 0, 1) * 0.35
+    arr *= (1 - piso)[:, :, None]
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+
+def _compor_pessoa_estilo(rgba, estilo, seed):
+    """Composicao profissional: recorta a pessoa pelo contorno real (antes o quadro
+    inteiro da foto era empurrado para a direita e o corpo saia cortado), posiciona
+    com respiro, cria o fundo ja sabendo onde ela fica e integra com sombra
+    ambiente, 'light wrap' (luz do fundo envolvendo a borda) e luz de contorno.
+    Retorna (RGB, cabeca_bbox)."""
+    from PIL import ImageChops
+    M = _m()
+    W_, H_ = M.W, M.H
+    a0 = rgba.split()[3]
+    bb = a0.point(lambda v: 255 if v > 40 else 0).getbbox()
+    if not bb:
+        raise ErroEstilo("recorte vazio")
+    pessoa = rgba.crop(bb)
+    pw, ph = pessoa.size
+    esc = min(H_ / ph, (W_ * 0.60) / pw, 1.6)
+    nw, nh = max(1, int(pw * esc)), max(1, int(ph * esc))
+    pessoa = pessoa.resize((nw, nh), Image.Resampling.LANCZOS)
+    x = max(int(W_ * 0.38), W_ - nw - int(W_ * 0.03))
+    y = H_ - nh
+
+    # borda limpa: suaviza o serrilhado da mascara e come 1px de franja do fundo original
+    al = pessoa.split()[3]
+    al = al.filter(ImageFilter.GaussianBlur(2.2)).point(
+        lambda v: 0 if v < 90 else 255 if v > 170 else int((v - 90) * 255 / 80))
+    al = al.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(0.9))
+    pessoa.putalpha(al)
+
+    # cabeca/rosto (para o titulo nao cruzar) e ponto de foco da luz do fundo
+    pa = np.asarray(al.resize((max(1, nw // 4), max(1, nh // 4))))
+    linhas = np.where(pa.max(axis=1) > 40)[0]
+    r0 = int(linhas[0]) if len(linhas) else 0
+    faixa = max(2, int(len(pa) * 0.34))
+    cols = np.where(pa[r0:r0 + faixa].max(axis=0) > 40)[0]
+    c0, c1 = (int(cols.min()), int(cols.max())) if len(cols) else (0, pa.shape[1] - 1)
+    cabeca = (x + c0 * 4 - 20, max(0, y + r0 * 4 - 15),
+              x + c1 * 4 + 20, y + (r0 + faixa) * 4 + 20)
+    foco = (x + (c0 + c1) * 2, y + r0 * 4 + faixa * 2)
+
+    criar = _fundo_cinematic_v2 if estilo == "cinematic" else _fundo_showcase_v2
+    fundo = criar(M.MARINHO, M.PETROLEO, seed, foco)
+    comp = fundo.convert("RGBA")
+    alpha_c = Image.new("L", (W_, H_), 0)
+    alpha_c.paste(al, (x, y))
+
+    # sombra ambiente suave ao redor da pessoa
+    sombra = alpha_c.filter(ImageFilter.MaxFilter(15)).filter(
+        ImageFilter.GaussianBlur(30)).point(lambda v: int(v * 0.30))
+    comp = Image.composite(Image.new("RGBA", comp.size, (4, 10, 20, 255)), comp, sombra)
+    comp.paste(pessoa, (x, y), pessoa)
+    rgb = comp.convert("RGB")
+    del comp
+
+    # light wrap: a luz desfocada do fundo envolve a borda interna da pessoa
+    borda = ImageChops.subtract(alpha_c, alpha_c.filter(ImageFilter.MinFilter(15))).filter(
+        ImageFilter.GaussianBlur(3))
+    envolve = fundo.filter(ImageFilter.GaussianBlur(28))
+    rgb = Image.composite(envolve, rgb, borda.point(lambda v: int(v * 0.50)))
+
+    # luz de contorno (rim light) no lado voltado para a luz principal
+    d = 7
+    a = np.asarray(alpha_c, dtype=np.float32) / 255.0
+    if estilo == "cinematic":
+        dx, dy, cor_rim, forca = d, -d, (255, 190, 120), 0.75   # amanhecer, vindo da direita
+    else:
+        dx, dy, cor_rim, forca = -d, -d, (215, 238, 242), 0.50  # luz de estudio, vinda da esquerda
+    ap = np.pad(a, d, mode="edge")
+    viz = ap[d + dy:d + dy + H_, d + dx:d + dx + W_]
+    rim = np.clip(a - viz, 0, 1)
+    rim_img = Image.fromarray((rim * 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(2.0)).point(lambda v: min(255, int(v * forca)))
+    luz = ImageChops.screen(rgb, Image.new("RGB", rgb.size, cor_rim))
+    rgb = Image.composite(luz, rgb, rim_img)
+    return rgb, cabeca
+
+
+def _bloom(img, limiar=190, raio=20, forca=0.22):
+    """Halacao suave nas altas luzes (aparencia de lente cinematografica)."""
+    from PIL import ImageChops
+    img = img.convert("RGB")
+    k = 255.0 / max(1, 255 - limiar)
+    mascara = img.convert("L").point(lambda v: min(255, int(max(0, v - limiar) * k)))
+    mascara = mascara.filter(ImageFilter.GaussianBlur(raio))
+    brilho = ImageChops.multiply(mascara.convert("RGB"), Image.new("RGB", img.size, (255, 225, 190)))
+    brilho = brilho.point(lambda v: int(v * forca))
+    return ImageChops.screen(img, brilho)
+
+
 def _aplicar_tratamento_estilo(img, estilo, seed):
     """Aplica o pipeline de pós-processamento do estilo (no final, depois de
     colar a pessoa). Cinematic = color grade + vinheta + grão. Showcase =
     grão leve + nitidez."""
     if estilo == "cinematic":
+        img = _bloom(img, 190, 20, 0.22)
         img = _color_grade_cinematic(img)
         img = _vinheta(img, 0.30)
         img = _grain_filme(img, seed, 1.0)
@@ -752,12 +935,15 @@ def _base_pessoa(estilo, seed):
     # 2) Gerar FUNDO — PROCEDURAL primeiro para Showcase/Cinematic, IA só opcional
     _ETAPA["v"] = "montar fundo do estilo"
     aviso = None
-    if estilo == "cinematic":
-        fundo = _fundo_cinematic_procedural(cor_parede, cor_piso, seed)
-        print("[estilo] fundo CINEMATIC procedural pronto (sem IA)")
-    elif estilo == "showcase":
-        fundo = _fundo_showcase_procedural(cor_parede, cor_piso, seed)
-        print("[estilo] fundo SHOWCASE procedural pronto (sem IA)")
+    if estilo in ("cinematic", "showcase"):
+        # v51: com a pessoa recortada, o fundo e criado em _compor_pessoa_estilo (so depois
+        # de saber onde ela fica). Sem recorte (blend), usa o fundo v51 com foco padrao.
+        fundo = None
+        if rgba is None:
+            _foco = (int(M.W * 0.68), int(M.H * 0.30))
+            _criar = _fundo_cinematic_v2 if estilo == "cinematic" else _fundo_showcase_v2
+            fundo = _criar(cor_parede, cor_piso, seed, _foco)
+            print(f"[estilo] fundo {estilo.upper()} v51 pronto (sem IA)")
     else:
         # Outros estilos pessoa (futuros): tenta IA, cai em gradiente
         fundo, motivo = _gerar_imagem_ia(_prompt(estilo, True))
@@ -769,7 +955,20 @@ def _base_pessoa(estilo, seed):
     _ETAPA["v"] = "compor pessoa sobre o fundo"
     if rgba is not None:
         try:
-            composto, _bbox = _compor_pessoa_safe(rgba, fundo, estilo, seed)
+            composto = None
+            if estilo in ("cinematic", "showcase"):
+                try:
+                    composto, _bbox = _compor_pessoa_estilo(rgba, estilo, seed)
+                    print(f"[estilo] composicao profissional v51 ok ({estilo})")
+                    _mem("depois da composicao v51")
+                except Exception as e_v51:
+                    print(f"[estilo] composicao v51 falhou ({type(e_v51).__name__}: {e_v51}) — usando a anterior")
+                    composto = None
+            if composto is None:
+                if fundo is None:
+                    _fb = _fundo_cinematic_procedural if estilo == "cinematic" else _fundo_showcase_procedural
+                    fundo = _fb(cor_parede, cor_piso, seed)
+                composto, _bbox = _compor_pessoa_safe(rgba, fundo, estilo, seed)
             meta["bbox"] = _bbox
         except Exception as e:
             print(f"[estilo] composicao falhou inesperadamente: {e} — fallback colagem simples")
