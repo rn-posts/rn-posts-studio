@@ -509,7 +509,7 @@ def _fundo_cinematic_v2(cor1, cor2, seed, foco):
 
     w = np.exp(-(((xs - W_ * 0.95) / (W_ * 0.6)) ** 2 + ((ys - H_ * 0.02) / (H_ * 0.5)) ** 2) * 1.8)
     for ch, v in enumerate((255, 190, 110)):
-        arr[:, :, ch] += w * (v * 0.30)
+        arr[:, :, ch] += w * (v * 0.22)
 
     for _ in range(3):
         ang = rng.uniform(0.45, 0.95)
@@ -521,7 +521,7 @@ def _fundo_cinematic_v2(cor1, cor2, seed, foco):
         perp = np.abs(-px * uy + py * ux)
         larg = 90 + np.maximum(proj, 0) * 0.22
         inten = (np.exp(-(perp / larg) ** 2) * np.clip(1 - proj / (H_ * 1.3), 0, 1)
-                 * (proj > 0) * rng.uniform(0.10, 0.18))
+                 * (proj > 0) * rng.uniform(0.07, 0.13))
         for ch, v in enumerate((255, 215, 150)):
             arr[:, :, ch] += inten * v
 
@@ -531,19 +531,28 @@ def _fundo_cinematic_v2(cor1, cor2, seed, foco):
 
     base = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).convert("RGBA")
     del arr
+    # v52: paineis de luz bem fora de foco ao fundo (janelas/ambiente), da profundidade de cena
+    paineis = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
+    dp = ImageDraw.Draw(paineis)
+    for _ in range(5):
+        px0 = rng.uniform(0.0, 0.62) * W_
+        dp.rectangle([px0, 0, px0 + rng.uniform(0.05, 0.11) * W_, rng.uniform(0.45, 0.80) * H_],
+                     fill=(255, 215, 150, rng.randint(14, 30)))
+    base = Image.alpha_composite(base, paineis.filter(ImageFilter.GaussianBlur(40)))
+    del paineis
     camada = Image.new("RGBA", (W_, H_), (0, 0, 0, 0))
     d = ImageDraw.Draw(camada)
     paleta = [(255, 200, 110)] * 5 + [(244, 246, 248)] * 3 + [(80, 190, 190)] * 3
-    for _ in range(16):
+    for _ in range(12):
         cor = rng.choice(paleta)
         cx = rng.uniform(0.03, 0.78) * W_
         cy = rng.uniform(0.03, 0.80) * H_
         r = rng.uniform(22, 80)
         rx, ry = r * 1.15, r * 0.85
-        a = rng.randint(26, 66)
+        a = rng.randint(22, 52)
         d.ellipse([cx - rx, cy - ry, cx + rx, cy + ry],
-                  fill=cor + (a,), outline=cor + (min(255, a + 28),), width=2)
-    camada = camada.filter(ImageFilter.GaussianBlur(2.6))
+                  fill=cor + (a,), outline=cor + (min(255, a + 18),), width=2)
+    camada = camada.filter(ImageFilter.GaussianBlur(6.5))
     return Image.alpha_composite(base, camada).convert("RGB")
 
 
@@ -573,6 +582,11 @@ def _fundo_showcase_v2(cor1, cor2, seed, foco):
     k = np.exp(-(((xs - kx) / (W_ * 0.8)) ** 2 + ((ys + H_ * 0.05) / (H_ * 0.7)) ** 2) * 1.4)
     for ch, v in enumerate((255, 225, 180)):
         arr[:, :, ch] += k * (v * 0.10)
+    # v52: faixas de sombra difusa diagonal (luz de estudio recortada), dao textura editorial
+    for c_diag, larg_d, forca_d in ((W_ * rng.uniform(0.55, 0.75), W_ * 0.10, 0.16),
+                                    (W_ * rng.uniform(0.95, 1.15), W_ * 0.07, 0.12)):
+        banda = np.exp(-(((xs * 0.6 + ys * 0.8) - c_diag) / larg_d) ** 2)
+        arr *= (1 - banda * forca_d)[:, :, None]
     piso = np.clip((ys - H_ * 0.80) / (H_ * 0.20), 0, 1) * 0.35
     arr *= (1 - piso)[:, :, None]
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
@@ -593,18 +607,32 @@ def _compor_pessoa_estilo(rgba, estilo, seed):
         raise ErroEstilo("recorte vazio")
     pessoa = rgba.crop(bb)
     pw, ph = pessoa.size
-    esc = min(H_ / ph, (W_ * 0.60) / pw, 1.6)
+    esc = min(H_ / ph, (W_ * 0.50) / pw, 1.6)
     nw, nh = max(1, int(pw * esc)), max(1, int(ph * esc))
     pessoa = pessoa.resize((nw, nh), Image.Resampling.LANCZOS)
-    x = max(int(W_ * 0.38), W_ - nw - int(W_ * 0.03))
+    x = max(int(W_ * 0.50), W_ - nw - int(W_ * 0.02))
     y = H_ - nh
 
-    # borda limpa: suaviza o serrilhado da mascara e come 1px de franja do fundo original
+    # v52 — recorte limpo: (1) fecha buracos da mascara; (2) suaviza e come ~4px da borda
+    # (some a franja clara do fundo original); (3) descontamina a cor da borda copiando a
+    # cor de dentro da pessoa, para nao sobrar halo claro/azul em volta.
     al = pessoa.split()[3]
+    al = al.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.MinFilter(15))
     al = al.filter(ImageFilter.GaussianBlur(2.2)).point(
-        lambda v: 0 if v < 90 else 255 if v > 170 else int((v - 90) * 255 / 80))
-    al = al.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(0.9))
+        lambda v: 0 if v < 110 else 255 if v > 190 else int((v - 110) * 255 / 80))
+    al = al.filter(ImageFilter.MinFilter(9)).filter(ImageFilter.GaussianBlur(1.1))
+    rgb_i = np.asarray(pessoa.convert("RGB"), dtype=np.float32)
+    interior = al.filter(ImageFilter.MinFilter(25)).filter(ImageFilter.GaussianBlur(6))
+    ai = np.asarray(interior, dtype=np.float32)[:, :, None] / 255.0
+    pre = np.asarray(Image.fromarray((rgb_i * ai).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(10)), dtype=np.float32)
+    den = np.asarray(interior.filter(ImageFilter.GaussianBlur(10)), dtype=np.float32)[:, :, None] / 255.0
+    cor_int = np.clip(pre / np.maximum(den, 0.02), 0, 255)
+    w_borda = 1.0 - ai
+    limpo = rgb_i * (1.0 - w_borda) + cor_int * w_borda
+    pessoa = Image.fromarray(np.clip(limpo, 0, 255).astype(np.uint8)).convert("RGBA")
     pessoa.putalpha(al)
+    del rgb_i, ai, pre, den, cor_int, limpo
 
     # cabeca/rosto (para o titulo nao cruzar) e ponto de foco da luz do fundo
     pa = np.asarray(al.resize((max(1, nw // 4), max(1, nh // 4))))
@@ -635,15 +663,15 @@ def _compor_pessoa_estilo(rgba, estilo, seed):
     borda = ImageChops.subtract(alpha_c, alpha_c.filter(ImageFilter.MinFilter(15))).filter(
         ImageFilter.GaussianBlur(3))
     envolve = fundo.filter(ImageFilter.GaussianBlur(28))
-    rgb = Image.composite(envolve, rgb, borda.point(lambda v: int(v * 0.50)))
+    rgb = Image.composite(envolve, rgb, borda.point(lambda v: int(v * 0.30)))
 
     # luz de contorno (rim light) no lado voltado para a luz principal
     d = 7
     a = np.asarray(alpha_c, dtype=np.float32) / 255.0
     if estilo == "cinematic":
-        dx, dy, cor_rim, forca = d, -d, (255, 190, 120), 0.75   # amanhecer, vindo da direita
+        dx, dy, cor_rim, forca = d, -d, (255, 190, 120), 0.50   # amanhecer, vindo da direita
     else:
-        dx, dy, cor_rim, forca = -d, -d, (215, 238, 242), 0.50  # luz de estudio, vinda da esquerda
+        dx, dy, cor_rim, forca = -d, -d, (215, 238, 242), 0.32  # luz de estudio, vinda da esquerda
     ap = np.pad(a, d, mode="edge")
     viz = ap[d + dy:d + dy + H_, d + dx:d + dx + W_]
     rim = np.clip(a - viz, 0, 1)
