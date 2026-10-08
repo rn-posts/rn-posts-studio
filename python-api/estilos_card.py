@@ -607,16 +607,41 @@ def _compor_pessoa_estilo(rgba, estilo, seed):
         raise ErroEstilo("recorte vazio")
     pessoa = rgba.crop(bb)
     pw, ph = pessoa.size
-    esc = min(H_ / ph, (W_ * 0.50) / pw, 1.6)
+    esc = min(H_ / ph, (W_ * 0.56) / pw, 1.6)
     nw, nh = max(1, int(pw * esc)), max(1, int(ph * esc))
     pessoa = pessoa.resize((nw, nh), Image.Resampling.LANCZOS)
-    x = max(int(W_ * 0.50), W_ - nw - int(W_ * 0.02))
+    x = max(int(W_ * 0.44), W_ - nw - int(W_ * 0.02))
     y = H_ - nh
 
     # v52 — recorte limpo: (1) fecha buracos da mascara; (2) suaviza e come ~4px da borda
     # (some a franja clara do fundo original); (3) descontamina a cor da borda copiando a
     # cor de dentro da pessoa, para nao sobrar halo claro/azul em volta.
+    # v53: moldura transparente de 20px. Os filtros do PIL NAO processam a borda da imagem e
+    # deixavam um retangulo cru (fundo original) no limite do recorte (topo da cabeca, punho).
+    import cv2
+    pad = 20
+    arr0 = np.asarray(pessoa)
+    pad_arr = np.zeros((nh + 2 * pad, nw + 2 * pad, 4), dtype=np.uint8)
+    pad_arr[pad:pad + nh, pad:pad + nw] = arr0
+    if bb[3] >= rgba.size[1] - 2:   # tocava a base da foto: segue ate o fim do quadro
+        pad_arr[pad + nh:, pad:pad + nw] = arr0[-1:, :]
+    pessoa = Image.fromarray(pad_arr, "RGBA")
+    x, y = x - pad, y - pad
+    nw, nh = pessoa.size
+
+    # v53: preenche buracos PEQUENOS e fechados da mascara (rosto/camisa com furos); vaos
+    # grandes (ex.: entre braco e tronco) continuam transparentes.
     al = pessoa.split()[3]
+    a_np = np.asarray(al)
+    inv = (a_np <= 90).astype(np.uint8)
+    _n, lab, stats, _c = cv2.connectedComponentsWithStats(inv, connectivity=4)
+    ok = stats[:, cv2.CC_STAT_AREA] < 9000
+    ok[0] = False
+    ok[lab[0, 0]] = False
+    buracos = ok[lab]
+    if buracos.any():
+        al = Image.fromarray(np.where(buracos, 255, a_np).astype(np.uint8))
+        print(f"[estilo] mascara: {int(buracos.sum())}px de buracos preenchidos")
     al = al.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.MinFilter(15))
     al = al.filter(ImageFilter.GaussianBlur(2.2)).point(
         lambda v: 0 if v < 110 else 255 if v > 190 else int((v - 110) * 255 / 80))
