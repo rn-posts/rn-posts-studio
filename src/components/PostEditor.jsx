@@ -9,21 +9,20 @@ const RENDER_URL = import.meta.env.DEV
 // v41: estilos visuais selecionáveis antes de gerar o card (enviados como `estilo`).
 // grupo "cena" = imagem-metáfora criada com a paleta; "pessoa" = foto do Ronilson com fundo novo.
 const ESTILOS = [
-  { id: "",          grupo: "base",   label: "Automático",   desc: "Padrão: foto do banco de imagens, como sempre." },
-  { id: "gold",      grupo: "cena",   label: "✦ Kintsugi",   desc: "/gold — peça cerâmica consertada com fio dourado. Trauma, luto e recomeço." },
-  { id: "smoke",     grupo: "cena",   label: "🌫 Fumaça",     desc: "/smoke — fumaça se dissipando com luz atrás. Ansiedade e pensamentos acelerados." },
-  { id: "portal",    grupo: "cena",   label: "🚪 Portal",    desc: "/portal — porta ou passagem com luz do amanhecer. Acolhimento e primeira consulta." },
-  { id: "ice",       grupo: "cena",   label: "🧊 Gelo",      desc: "/ice — gelo derretendo em água clara. Emoções congeladas, luto e depressão." },
-  { id: "floating",  grupo: "cena",   label: "🍃 Flutuante", desc: "/floating — poucos objetos simbólicos suspensos, com muito respiro." },
-  { id: "macro",     grupo: "cena",   label: "🔍 Macro",     desc: "/macro — detalhe em close (gota, folha) com aspecto premium." },
-  { id: "museum",    grupo: "cena",   label: "🖼 Museu",     desc: "/museum — objeto simbólico exposto como obra de arte." },
-  { id: "showcase",  grupo: "pessoa", label: "📸 Showcase",  desc: "/showcase — foto do Ronilson com luz de estúdio e fundo editorial de revista." },
-  { id: "cinematic", grupo: "pessoa", label: "🎬 Cinematic", desc: "/cinematic — foto do Ronilson em cena cinematográfica." },
+  { id: "",          grupo: "base", label: "Automático",   desc: "Padrão: foto do banco de imagens, como sempre." },
+  { id: "cinematic", grupo: "cena", label: "🎬 Cinematic", desc: "/cinematic — visual cinematográfico sofisticado, iluminação dramática e natural, luz suave e volumétrica, profundidade de campo, contraste equilibrado, composição de filme, enquadramento profissional, atmosfera envolvente, textura realista, tons elegantes, sombras suaves, aparência fotográfica premium, lente cinematográfica, bokeh sutil, alta definição, sem aparência artificial." },
+  { id: "showcase",  grupo: "cena", label: "📸 Showcase",  desc: "/showcase — apresentação premium do elemento principal, composição limpa e sofisticada, foco absoluto no objeto ou personagem, iluminação de estúdio cuidadosamente posicionada, fundo elegante e discreto, profundidade visual, detalhes nítidos, aparência profissional, estética de campanha publicitária, realismo elevado, acabamento premium, composição visual equilibrada." },
+  { id: "gold",      grupo: "cena", label: "✦ Kintsugi",   desc: "/gold — peça cerâmica consertada com fio dourado. Trauma, luto e recomeço." },
+  { id: "smoke",     grupo: "cena", label: "🌫 Fumaça",     desc: "/smoke — fumaça se dissipando com luz atrás. Ansiedade e pensamentos acelerados." },
+  { id: "portal",    grupo: "cena", label: "🚪 Portal",    desc: "/portal — porta ou passagem com luz do amanhecer. Acolhimento e primeira consulta." },
+  { id: "ice",       grupo: "cena", label: "🧊 Gelo",      desc: "/ice — gelo derretendo em água clara. Emoções congeladas, luto e depressão." },
+  { id: "floating",  grupo: "cena", label: "🍃 Flutuante", desc: "/floating — poucos objetos simbólicos suspensos, com muito respiro." },
+  { id: "macro",     grupo: "cena", label: "🔍 Macro",     desc: "/macro — detalhe em close (gota, folha) com aspecto premium." },
+  { id: "museum",    grupo: "cena", label: "🖼 Museu",     desc: "/museum — objeto simbólico exposto como obra de arte." },
 ];
 const GRUPOS_ESTILO = [
-  { grupo: "base",   titulo: "" },
-  { grupo: "cena",   titulo: "Imagem criada (metáforas com a paleta da clínica)" },
-  { grupo: "pessoa", titulo: "Com foto do Ronilson" },
+  { grupo: "base", titulo: "" },
+  { grupo: "cena", titulo: "Estilos Visuais & Metáforas (IA com a paleta da clínica)" },
 ];
 
 function abrirTamanhoReal(previewUrl) {
