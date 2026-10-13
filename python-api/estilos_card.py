@@ -16,6 +16,7 @@ ESTILOS VISUAIS:
 """
 import base64
 import io
+import json
 import os
 import random
 import sys
@@ -138,8 +139,8 @@ ESTILOS = {
 
 
 # v55b: ajustes pequenos e independentes para Cinematic/Showcase (False desliga)
-_AJUSTE_POSICAO_TEXTO = True   # desce a cena se o rosto estiver alto demais, liberando o topo p/ o titulo
-_REALISMO_SUAVE = True         # uma frase curta e suave de realismo no prompt
+_AJUSTE_POSICAO_TEXTO = False  # v55c: desligado (dependia do Haar frontal, que nao ve perfil); substituido por _TITULO_INTELIGENTE
+_REALISMO_SUAVE = False        # v55c: desligado para o rosto de frente repetir o prompt original (v54)
 _ESTILOS_COM_PESSOA = ("cinematic", "showcase")
 _TOQUE_REALISMO = (
     "If a person appears: natural unretouched skin with gentle texture, relaxed natural eyes with a soft "
@@ -147,7 +148,34 @@ _TOQUE_REALISMO = (
 )
 
 
-def _prompt(estilo, tema=""):
+# v55c: variantes de cena para Cinematic/Showcase (alternam a cada geracao)
+_VARIANTES_ATIVAS = True     # False = volta a gerar sempre como na v54
+_TITULO_INTELIGENTE = True   # True = Gemini (visao) acha a cabeca e o titulo desvia dela
+_VARIANTES = ("frente", "sem_rosto", "perfil", "foto_real")
+_DIRETRIZ_VARIANTE = {
+    "frente": (
+        "Subject: ONE adult person in a natural frontal or three-quarter view, soft directional window light "
+        "that clearly and softly lights the face, gentle genuine expression, plain dark or softly blurred background."
+    ),
+    "perfil": (
+        "Subject: ONE adult person in a calm side profile or three-quarter profile, looking toward a window, "
+        "face clearly and softly lit by window light (not in deep shadow, not a silhouette), natural human proportions."
+    ),
+    "sem_rosto": (
+        "Subject: ONE adult person seen from behind or in a distant wide shot looking out of a window, or only "
+        "hands holding a cup near a window; the face is NOT visible. Soft window light, quiet contemplative "
+        "atmosphere with gentle hope."
+    ),
+}
+
+
+def _escolher_variante(seed, pedida=None):
+    if pedida in _VARIANTES:
+        return pedida
+    return _VARIANTES[int(seed) % len(_VARIANTES)]
+
+
+def _prompt(estilo, tema="", variante=None):
     e = ESTILOS[estilo]
     M = _m()
     tema_limpo = (
@@ -166,6 +194,7 @@ def _prompt(estilo, tema=""):
     realismo = ""
     if _REALISMO_SUAVE and estilo in _ESTILOS_COM_PESSOA:
         realismo = _TOQUE_REALISMO + " "
+    diretriz = (_DIRETRIZ_VARIANTE.get(variante, "") + " ") if variante else ""
 
     return (
         "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic "
@@ -175,7 +204,7 @@ def _prompt(estilo, tema=""):
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
         "Mood: professional, welcoming, intimate, never clinical-cold, never hospital, "
-        f"elevated realism, authentic photographic texture. {composicao} {realismo}"
+        f"elevated realism, authentic photographic texture. {composicao} {realismo}{diretriz}"
         "No text, no letters, no typography, no words, no logos, no watermark, no borders, "
         "no artificial 3D look, no deformed elements, no extra limbs, high definition, authentic photography."
     )
@@ -329,9 +358,124 @@ def _abrir_espaco_topo(img, dy):
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).crop((0, 0, _W, _H))
 
 
-def _base_cena(estilo, seed, tema=""):
+# v55c: foto real do banco (Cloudinary) com tratamento leve por estilo
+def _grade_estilo(img, estilo):
+    a = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+    lum = a.mean(axis=2, keepdims=True)
+    if estilo == "cinematic":
+        # sombras levemente azul-petroleo, altas-luzes levemente quentes, contraste suave
+        a = a + np.array([0.00, 0.03, 0.05], dtype=np.float32) * (1 - lum) \
+              + np.array([0.04, 0.02, -0.02], dtype=np.float32) * lum
+        a = (a - 0.5) * 1.08 + 0.5
+        forca = 0.38
+    else:
+        a = (a - 0.5) * 1.04 + 0.5
+        forca = 0.22
+    h, w = a.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    d = np.sqrt(((xx - w / 2) / (w / 2)) ** 2 + ((yy - h * 0.45) / (h * 0.62)) ** 2)
+    v = 1 - forca * np.clip(d - 0.55, 0, 1) ** 1.6
+    a = a * v[..., None]
+    return Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8))
+
+
+def _foto_real_do_banco(estilo, tema):
+    """Foto real do banco de imagens + tratamento. Retorna imagem PIL ou None."""
     M = _m()
-    prompt = _prompt(estilo, tema)
+    try:
+        url, pid = M.buscar_imagem(tema)
+        if not url:
+            return None
+        r = requests.get(url, timeout=25)
+        r.raise_for_status()
+        img = M._fit_canvas(Image.open(io.BytesIO(r.content)))
+        print(f"[estilo] foto real do banco: {pid}")
+        return _grade_estilo(img, estilo)
+    except Exception as e:
+        print(f"[estilo] foto real indisponivel: {e}")
+        return None
+
+
+# v55c: o Gemini (visao) diz onde esta a cabeca, inclusive de perfil, de costas ou em silhueta
+def _cabeca_por_visao(img):
+    """(x0, y0, x1, y1) em px do canvas, ou None se nao ha cabeca visivel / falhou."""
+    M = _m()
+    chave = getattr(M, "GEMINI_API_KEY", None)
+    if not chave:
+        return None
+    mini = img.convert("RGB").resize((432, 540), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    mini.save(buf, format="JPEG", quality=85)
+    pergunta = (
+        'Look at this image. If a person is visible, answer ONLY with JSON {"cabeca":[ymin,xmin,ymax,xmax]} '
+        "giving the bounding box of the person's HEAD (top of the hair to the chin, also for a profile or the "
+        "back of the head), coordinates normalized 0-1000. If no head is visible answer {\"cabeca\":null}."
+    )
+    payload = {
+        "contents": [{"parts": [
+            {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()}},
+            {"text": pergunta},
+        ]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
+    }
+    for modelo in ("gemini-2.5-flash", "gemini-3.5-flash"):
+        try:
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{modelo}:generateContent?key={chave}")
+            r = requests.post(url, json=payload, timeout=25)
+            if r.status_code >= 400:
+                print(f"[cabeca] {modelo} HTTP {r.status_code}")
+                continue
+            partes = r.json()["candidates"][0]["content"]["parts"]
+            txt = "".join(p.get("text", "") for p in partes if not p.get("thought"))
+            txt = txt.replace("```json", "").replace("```", "").strip()
+            caixa = json.loads(txt).get("cabeca")
+            if not caixa:
+                print(f"[cabeca] {modelo}: sem cabeca visivel")
+                return None
+            ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) for v in caixa]
+            if ymax <= ymin or xmax <= xmin:
+                continue
+            bbox = (int(xmin / 1000 * _W), int(ymin / 1000 * _H),
+                    int(xmax / 1000 * _W), int(ymax / 1000 * _H))
+            print(f"[cabeca] {modelo}: cabeca em {bbox}")
+            return bbox
+        except Exception as e:
+            print(f"[cabeca] {modelo} falhou: {e}")
+    return None
+
+
+def _card_titulo_inteligente(M, base, tema, seed):
+    """Mesmo motor de titulo do gerar_card_imagem, mas com a cabeca real (perfil incluso)."""
+    cabeca = _cabeca_por_visao(base)
+    cor1 = M.MARINHO
+    try:
+        cor1, _ = M.cores_fundo(base.convert("RGB").resize((120, 150), Image.Resampling.LANCZOS))
+    except Exception as e:
+        print(f"[estilo] cores_fundo falhou: {e}")
+    img = M.tratar_foto_editorial(base.convert("RGB"), cor1, seed)
+    cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
+    out, _ = M.desenhar_titulo(img, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
+                               cor_overlay=None, tem_pessoa=False, em_pe=True,
+                               cabeca_bbox=cabeca)
+    return out
+
+
+def _base_cena(estilo, seed, tema="", variante_pedida=None):
+    M = _m()
+    variante = None
+    if _VARIANTES_ATIVAS and estilo in _ESTILOS_COM_PESSOA:
+        variante = _escolher_variante(seed, variante_pedida)
+        print(f"[estilo] variante da cena: {variante}")
+        if variante == "foto_real":
+            real = _foto_real_do_banco(estilo, tema)
+            if real is not None:
+                _ETAPA["variante"] = variante
+                return real, None
+            print("[estilo] sem foto real; usando rosto de frente por IA")
+            variante = "frente"
+    _ETAPA["variante"] = variante or "-"
+    prompt = _prompt(estilo, tema, variante)
     print(f"[estilo] Gerando imagem IA para '{estilo}'...")
     img, motivo = _gerar_imagem_ia(prompt)
     aviso = None
@@ -386,7 +530,7 @@ def rota_preview_card_estilo():
     tmp_pid = ""
     _ETAPA["v"] = "gerar imagem-base"
     try:
-        base, aviso = _base_cena(estilo, seed, tema)
+        base, aviso = _base_cena(estilo, seed, tema, data.get("variante"))
 
         # Envia a base como arquivo temporário no Cloudinary para usar o motor de tipografia
         _ETAPA["v"] = "upload temporario no Cloudinary"
@@ -405,7 +549,15 @@ def rota_preview_card_estilo():
             raise ErroEstilo("Falha ao preparar a imagem do estilo (upload temporario).")
 
         _ETAPA["v"] = "montar o card (titulo/layout)"
-        card = M.gerar_card_imagem(tema, legenda, url_tmp, tmp_pid, seed=seed)
+        card = None
+        if _TITULO_INTELIGENTE and estilo in _ESTILOS_COM_PESSOA:
+            try:
+                card = _card_titulo_inteligente(M, base, tema, seed)
+            except Exception as e:
+                print(f"[estilo] titulo inteligente falhou, usando o caminho padrao: {e}")
+                card = None
+        if card is None:
+            card = M.gerar_card_imagem(tema, legenda, url_tmp, tmp_pid, seed=seed)
 
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()
@@ -447,6 +599,8 @@ def rota_preview_card_estilo():
     }
     if erros_leg:
         resp["aviso_legenda"] = erros_leg
+    if _ETAPA.get("variante") and _ETAPA["variante"] != "-":
+        resp["variante"] = _ETAPA["variante"]
     if aviso:
         resp["aviso_estilo"] = aviso
     return jsonify(resp)
