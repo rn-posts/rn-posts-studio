@@ -137,6 +137,36 @@ ESTILOS = {
 }
 
 
+# ── v55: Cinematic/Showcase — rosto realista + espaço livre no topo para o título ─
+_ESTILOS_COM_PESSOA = ("cinematic", "showcase")
+
+_COMPOSICAO_PESSOA = (
+    "Vertical 4:5 Instagram portrait. If a person appears, frame a medium close-up (head, shoulders and "
+    "upper chest): the face is NOT huge, it occupies only about 22 to 26 percent of the image width, "
+    "placed slightly right of center and LOW in the frame, with the top of the head at about 45 percent "
+    "of the image height and never cropped. The entire UPPER 40 percent of the frame is calm, dark, "
+    "softly out-of-focus background (shadowed wall or curtain, gentle bokeh) with no lamp, no window, "
+    "no picture frame, no bright spot and no high-contrast detail, reserved for large typography. "
+    "If no person appears, place the main subject in the lower two thirds with the same calm dark upper area."
+)
+
+_REALISMO_PESSOA = (
+    "If a real person appears, the portrait must be indistinguishable from an unretouched photograph of a real, "
+    "ordinary adult shot on a full-frame camera with an 85mm f/1.8 lens: natural skin with visible pores, fine "
+    "lines, subtle uneven tone, slight redness and natural under-eye shadows, a few stray flyaway hairs, slight "
+    "natural facial asymmetry, sharp realistic eyes with natural catchlights and detailed irises, natural lips and "
+    "teeth, believable fabric texture with real wrinkles, genuine candid expression (not a posed stock-photo smile), "
+    "soft natural film grain. Avoid anything that reads as AI-generated: no airbrushed, waxy or plastic skin, "
+    "no beauty-filter smoothing, no perfectly symmetrical idealized face, no glossy over-sharpened eyes, "
+    "no oversaturated colors, no HDR halo, no illustration or 3D-render look."
+)
+
+_REFORCO_ENQUADRAMENTO = (
+    " IMPORTANT FRAMING: pull the camera back to a medium shot; the face must be small (about 20 percent of the "
+    "image width) and sit in the lower half of the frame, leaving the whole upper 45 percent empty, dark and out of focus."
+)
+
+
 def _prompt(estilo, tema=""):
     e = ESTILOS[estilo]
     M = _m()
@@ -153,6 +183,11 @@ def _prompt(estilo, tema=""):
         "two thirds, slightly right of center, with generous negative space and clear visual depth."
     )
 
+    realismo = ""
+    if estilo in _ESTILOS_COM_PESSOA:
+        composicao = _COMPOSICAO_PESSOA
+        realismo = _REALISMO_PESSOA + " "
+
     return (
         "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic "
         "whose identity is dawn, hope, emotional care, healing and transformation. "
@@ -161,7 +196,7 @@ def _prompt(estilo, tema=""):
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
         "Mood: professional, welcoming, intimate, never clinical-cold, never hospital, "
-        f"elevated realism, authentic photographic texture. {composicao} "
+        f"elevated realism, authentic photographic texture. {composicao} {realismo}"
         "No text, no letters, no typography, no words, no logos, no watermark, no borders, "
         "no artificial 3D look, no deformed elements, no extra limbs, high definition, authentic photography."
     )
@@ -258,6 +293,76 @@ def _gerar_imagem_ia(prompt):
 
 
 # ── Montagem da imagem-base do estilo ─────────────────────────────────────────
+# v55: reenquadramento (espaço livre no topo p/ o título) e acabamento fotográfico
+_W, _H = 1080, 1350
+_DY_MAX = int(_H * 0.30)          # desloca no máximo ~405px (senão corta demais o corpo)
+_ALVO_TOPO_ROSTO = int(_H * 0.40)  # topo da folga do rosto (como o motor mede) deve ficar abaixo disto
+_cascata_rosto = None
+
+
+def _medir_rosto(img):
+    """(x, y, w, h) do maior rosto frontal (Haar, tolerante) ou None."""
+    global _cascata_rosto
+    try:
+        import cv2
+        if _cascata_rosto is None:
+            _cascata_rosto = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        arr = np.array(img.convert("L"))
+        lado = int(_W * 0.08)
+        for sf, mn in ((1.1, 5), (1.05, 4), (1.05, 3)):
+            faces = _cascata_rosto.detectMultiScale(
+                arr, scaleFactor=sf, minNeighbors=mn, minSize=(lado, lado))
+            faces = [f for f in faces if f[1] + f[3] / 2 < _H * 0.80]
+            if len(faces):
+                fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+                print(f"[estilo] rosto detectado: x={fx} y={fy} w={fw} h={fh}")
+                return int(fx), int(fy), int(fw), int(fh)
+    except Exception as e:
+        print(f"[estilo] deteccao de rosto falhou: {e}")
+    return None
+
+
+def _dy_necessario(rosto):
+    """Quantos px a cena precisa descer para o título caber acima do rosto.
+    O motor de título protege o rosto com folga de 0.55*altura acima dele."""
+    if rosto is None:
+        return 0
+    _, fy, _, fh = rosto
+    return max(0, _ALVO_TOPO_ROSTO - (fy - int(fh * 0.55)))
+
+
+def _abrir_espaco_topo(img, dy):
+    """Desloca a cena para baixo em dy px; o topo é estendido espelhando e
+    desfocando as linhas de cima (fundo escuro fora de foco)."""
+    a = np.asarray(img.convert("RGB"))
+    n = min(dy, 220)
+    ext = np.pad(a[:n], ((dy, 0), (0, 0), (0, 0)), mode="reflect")[:dy]
+    cheio = np.concatenate([ext, a], axis=0)
+    borrado = np.asarray(
+        Image.fromarray(cheio).filter(ImageFilter.GaussianBlur(20))).astype(np.float32)
+    cheio = cheio.astype(np.float32)
+    feather = 70
+    m = np.zeros((cheio.shape[0], 1, 1), dtype=np.float32)
+    m[:dy] = 1.0
+    m[dy:dy + feather, 0, 0] = np.linspace(1.0, 0.0, feather)
+    out = cheio * (1 - m) + borrado * m
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).crop((0, 0, _W, _H))
+
+
+def _acabamento_fotografico(img, seed):
+    """Grão de filme fino + microcontraste: tira o ar liso/plástico de imagem gerada."""
+    rng = np.random.default_rng(int(seed) % (2 ** 32))
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    lum = a.mean(axis=2, keepdims=True) / 255.0
+    amp = 3.2 * (1.15 - 0.6 * lum)
+    a = (a
+         + rng.normal(0.0, 1.0, a.shape[:2] + (1,)).astype(np.float32) * amp
+         + rng.normal(0.0, 0.7, a.shape).astype(np.float32))
+    out = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+    return out.filter(ImageFilter.UnsharpMask(radius=1.2, percent=40, threshold=3))
+
+
 def _base_cena(estilo, seed, tema=""):
     M = _m()
     prompt = _prompt(estilo, tema)
@@ -268,6 +373,26 @@ def _base_cena(estilo, seed, tema=""):
         print(f"[estilo] Falha na imagem IA ({motivo}), usando gradiente da paleta")
         img = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
         aviso = f"A imagem por IA falhou ({motivo}); usei o gradiente da paleta."
+
+    # v55: Cinematic/Showcase — libera o topo para o título e dá acabamento fotográfico
+    if img is not None and aviso is None and estilo in _ESTILOS_COM_PESSOA:
+        try:
+            rosto = _medir_rosto(img)
+            dy = _dy_necessario(rosto)
+            if rosto is not None and dy > _DY_MAX:
+                print(f"[estilo] rosto grande/alto demais (dy={dy}); tentando 1 nova geracao")
+                img2, _ = _gerar_imagem_ia(prompt + _REFORCO_ENQUADRAMENTO)
+                if img2 is not None:
+                    rosto2 = _medir_rosto(img2)
+                    if rosto2 is not None and _dy_necessario(rosto2) < dy:
+                        img, rosto, dy = img2, rosto2, _dy_necessario(rosto2)
+            if rosto is not None and dy > 12:
+                dy = min(dy, _DY_MAX)
+                print(f"[estilo] abrindo {dy}px de espaco livre no topo para o titulo")
+                img = _abrir_espaco_topo(img, dy)
+            img = _acabamento_fotografico(img, seed)
+        except Exception as e:
+            print(f"[estilo] enquadramento/acabamento falhou: {e}")
     return img, aviso
 
 

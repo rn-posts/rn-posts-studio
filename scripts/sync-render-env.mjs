@@ -40,6 +40,8 @@ const ALLOW = new Set([
   "GEMINI_API_KEY",
   "GROQ_API_KEY",
   "GOOGLE_SERVICE_ACCOUNT_JSON",
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
 ]);
 
 function parseEnv(text) {
