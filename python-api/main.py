@@ -187,6 +187,7 @@ W, H = 1080, 1350
 CLOUDINARY_POSTS   = "AlvoreSer_Posts"
 CLOUDINARY_PREVIEW = "AlvoreSer_Preview"
 PASTA_RONILSON     = "banco de imagens/ronilson"
+PASTA_RONILSON_SEM_FUNDO = "Banco de Imagens/Ronilson_sem_fundo"  # fotos dele ja recortadas (PNG sem fundo)
 
 # ── Paleta ────────────────────────────────────────────────────────────────────
 MARINHO       = (2,   64,  89)
@@ -561,6 +562,44 @@ def _proxima_foto_baralho(chave, recursos):
         print(f"[baralho] novo ciclo '{chave}' ({len(fila)} fotos)")
     return fila.pop()
 
+# v56: pasta "Ronilson_sem_fundo" (Cloudinary) = fotos dele ja recortadas, sem fundo.
+# E mais uma opcao no baralho de fotos; o fundo e criado pelo tema (ver preparar_foto).
+_sem_fundo_cache = {"recursos": None, "t": 0.0}
+
+def _chave_pasta(txt):
+    return (txt or "").lower().replace("\\", "/").replace("_", "").replace("-", "").replace(" ", "")
+
+def eh_recorte_ronilson(pid):
+    p = _chave_pasta(pid)
+    return "ronilson" in p and "semfundo" in p
+
+def _pasta_sem_fundo():
+    try:
+        res = cloudinary.api.subfolders("Banco de Imagens")
+        for f in res.get("folders", []):
+            if "semfundo" in _chave_pasta(f.get("name", "")):
+                return f.get("path") or PASTA_RONILSON_SEM_FUNDO
+    except Exception as e: print(f"[sem_fundo] subpastas: {e}")
+    return PASTA_RONILSON_SEM_FUNDO
+
+def _recursos_sem_fundo():
+    import time
+    c = _sem_fundo_cache
+    ttl = 600 if c["recursos"] else 60
+    if c["recursos"] is not None and time.time() - c["t"] < ttl: return c["recursos"]
+    recs = []
+    try:
+        pasta = _pasta_sem_fundo()
+        res = cloudinary.api.resources(type="upload", prefix=pasta + "/", max_results=100)
+        recs = [r for r in res.get("resources", [])
+                if (r.get("format") or "").lower() in ("png", "webp")
+                and CLOUDINARY_POSTS not in r.get("public_id", "")
+                and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
+        print(f"[sem_fundo] '{pasta}': {len(recs)} recortes")
+    except Exception as e: print(f"[sem_fundo] {e}")
+    c["recursos"], c["t"] = recs, time.time()
+    return recs
+
 def buscar_imagem(tema=""):
     t     = tema.lower()
     todas = list(set(MAPA_PASTAS.values()))
@@ -573,6 +612,7 @@ def buscar_imagem(tema=""):
                    if CLOUDINARY_POSTS not in r.get("public_id", "")
                    and CLOUDINARY_PREVIEW not in r.get("public_id", "")]
             if rec:
+                rec = rec + _recursos_sem_fundo()  # v56: pasta Ronilson_sem_fundo = mais uma opcao no baralho
                 c = _proxima_foto_baralho(p, rec)
                 print(f"[busca] {c.get('public_id')}")
                 return c.get("secure_url"), c.get("public_id", "")
@@ -1111,7 +1151,8 @@ def _texto_tema_limpo(tema):
     return " ".join(t.split())[:280]
 
 def _cena_do_tema(tema):
-    t = (tema or "").lower()
+    import unicodedata
+    t = unicodedata.normalize("NFKD", (tema or "").lower()).encode("ascii", "ignore").decode()  # v56: "depressão" casa com "depressao"
     for chave, cena in _CENA_POR_TEMA:
         if chave in t:
             return cena
@@ -1295,6 +1336,51 @@ def compor_pessoa(pessoa_rgba, fundo_rgb):
     res.paste(pessoa_rgba, (x, 0), pessoa_rgba)
     return res.convert("RGB"), cabeca_bbox
 
+# v56: Ronilson_sem_fundo — recorte (PNG com transparencia) sobre fundo criado pelo TEMA.
+# Nao usa rembg (ja vem recortado), entao e leve para o Render free.
+_RECORTE_LARGURA_MAX = 0.62   # fracao maxima da largura do card ocupada por ele
+_RECORTE_ALTURA_MAX  = 0.96
+
+def _preparar_recorte_ronilson(img):
+    """RGBA cortado na caixa da pessoa; None se o arquivo nao tem transparencia de verdade."""
+    rgba = img.convert("RGBA")
+    a = np.asarray(rgba.split()[3])
+    if int((a < 250).sum()) < a.size * 0.02:
+        return None
+    ys, xs = np.where(a > 10)
+    if len(ys) == 0: return None
+    rgba = rgba.crop((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1))
+    if rgba.height > H:
+        esc = H / rgba.height
+        rgba = rgba.resize((max(1, int(rgba.width * esc)), H), Image.Resampling.LANCZOS)
+    return rgba
+
+def _compor_recorte_ronilson(rec, seed, tema, fundo=None):
+    """Retorna (img, em_pe, tem_pessoa, cabeca_bbox) no mesmo formato de preparar_foto.
+    `fundo` opcional: se vier (ex.: cena de um estilo), usa-o; senao cria o fundo pelo TEMA."""
+    pw, ph = rec.size
+    esc = min(_RECORTE_ALTURA_MAX * H / ph, _RECORTE_LARGURA_MAX * W / pw)
+    nw, nh = max(1, int(pw * esc)), max(1, int(ph * esc))
+    canvas = Image.new("RGBA", (nw, H), (0, 0, 0, 0))
+    canvas.paste(rec.resize((nw, nh), Image.Resampling.LANCZOS), (0, H - nh))
+
+    if fundo is None:
+        try:
+            fundo = gerar_fundo_rico(MARINHO, PETROLEO, seed, tema, True)  # fundo pelo tema, lado direito livre
+        except Exception as e:
+            print(f"[foto] fundo falhou ({e})")
+    if fundo is None:
+        fundo = _gerar_fundo_gradiente(MARINHO, PETROLEO, seed)
+
+    print("[foto] Ronilson sem fundo: recorte sobre fundo do tema")
+    em_pe = _detectar_pose_em_pe(canvas)
+    img, cabeca_bbox = compor_pessoa(canvas, fundo)
+    img = ImageEnhance.Sharpness(img).enhance(1.08)
+    img = ImageEnhance.Contrast(img).enhance(1.03)
+    bbox_haar = _detectar_rosto(img)
+    if bbox_haar: cabeca_bbox = bbox_haar
+    return img, em_pe, True, cabeca_bbox
+
 def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
     """Retorna (img, em_pe, tem_pessoa, cabeca_bbox).
     Identifica se há pessoa na imagem, aplica recorte e preserva cores 100% naturais."""
@@ -1303,6 +1389,11 @@ def preparar_foto(url, pid, cor1, cor2, seed, tema=""):
     cabeca_bbox = None
     try:
         r = requests.get(url, timeout=25); r.raise_for_status()
+        if eh_recorte_ronilson(pid):  # v56: pasta Ronilson_sem_fundo -> fundo pelo tema, sem rembg
+            rec = _preparar_recorte_ronilson(Image.open(io.BytesIO(r.content)))
+            if rec is not None:
+                return _compor_recorte_ronilson(rec, seed, tema)
+            print(f"[foto] {pid} sem transparencia — segue como foto comum")
         img   = Image.open(io.BytesIO(r.content)).convert("RGB")
         ratio = max(W / img.width, H / img.height)
         nw, nh = int(img.width * ratio), int(img.height * ratio)

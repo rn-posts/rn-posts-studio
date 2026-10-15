@@ -151,7 +151,7 @@ _TOQUE_REALISMO = (
 # v55c: variantes de cena para Cinematic/Showcase (alternam a cada geracao)
 _VARIANTES_ATIVAS = True     # False = volta a gerar sempre como na v54
 _TITULO_INTELIGENTE = True   # True = Gemini (visao) acha a cabeca e o titulo desvia dela
-_VARIANTES = ("frente", "sem_rosto", "perfil", "foto_real")
+_VARIANTES = ("frente", "sem_rosto", "perfil", "foto_real", "ronilson")
 _DIRETRIZ_VARIANTE = {
     "frente": (
         "Subject: ONE adult person in a natural frontal or three-quarter view, soft directional window light "
@@ -165,6 +165,12 @@ _DIRETRIZ_VARIANTE = {
         "Subject: ONE adult person seen from behind or in a distant wide shot looking out of a window, or only "
         "hands holding a cup near a window; the face is NOT visible. Soft window light, quiet contemplative "
         "atmosphere with gentle hope."
+    ),
+    # v56: cena sem pessoas, com a direita livre para o recorte do Ronilson (pasta Ronilson_sem_fundo)
+    "recorte": (
+        "Subject: NO people, no faces, no hands in this image. The RIGHT 45% of the frame is a calm, softly lit, "
+        "uncluttered, slightly out-of-focus area reserved for a real person who will be composited later; keep strong "
+        "objects out of it and carry the scene and its atmosphere on the LEFT, with the upper-left calm for typography."
     ),
 }
 
@@ -386,6 +392,8 @@ def _foto_real_do_banco(estilo, tema):
         url, pid = M.buscar_imagem(tema)
         if not url:
             return None
+        if M.eh_recorte_ronilson(pid):  # v56: foto da pasta Ronilson_sem_fundo -> recorte sobre a cena do estilo
+            return _ronilson_sobre_cena(M, estilo, tema, random.randint(0, 9999), url=url)
         r = requests.get(url, timeout=25)
         r.raise_for_status()
         img = M._fit_canvas(Image.open(io.BytesIO(r.content)))
@@ -461,6 +469,33 @@ def _card_titulo_inteligente(M, base, tema, seed):
     return out
 
 
+# v56: recorte do Ronilson (pasta Ronilson_sem_fundo) sobre a cena do estilo
+def _ronilson_sobre_cena(M, estilo, tema, seed, url=None):
+    """Imagem PIL RGB (cena do estilo + Ronilson recortado) ou None se nao der."""
+    try:
+        if url is None:
+            recs = M._recursos_sem_fundo()
+            if not recs:
+                return None
+            url = recs[int(seed) % len(recs)]["secure_url"]
+        r = requests.get(url, timeout=25)
+        r.raise_for_status()
+        rec = M._preparar_recorte_ronilson(Image.open(io.BytesIO(r.content)))
+        if rec is None:
+            print("[estilo] arquivo da pasta sem_fundo sem transparencia")
+            return None
+        fundo, motivo = _gerar_imagem_ia(_prompt(estilo, tema, "recorte"))
+        if fundo is None:
+            print(f"[estilo] cena IA falhou para o recorte ({motivo})")
+            return None
+        img = M._compor_recorte_ronilson(rec, seed, tema, fundo=fundo)[0]
+        print("[estilo] Ronilson sem fundo sobre a cena do estilo")
+        return img
+    except Exception as e:
+        print(f"[estilo] recorte do Ronilson indisponivel: {e}")
+        return None
+
+
 def _base_cena(estilo, seed, tema="", variante_pedida=None):
     M = _m()
     variante = None
@@ -473,6 +508,13 @@ def _base_cena(estilo, seed, tema="", variante_pedida=None):
                 _ETAPA["variante"] = variante
                 return real, None
             print("[estilo] sem foto real; usando rosto de frente por IA")
+            variante = "frente"
+        if variante == "ronilson":  # v56: recorte do Ronilson sobre a cena do estilo
+            comp = _ronilson_sobre_cena(M, estilo, tema, seed)
+            if comp is not None:
+                _ETAPA["variante"] = variante
+                return comp, None
+            print("[estilo] sem recorte do Ronilson; usando rosto de frente por IA")
             variante = "frente"
     _ETAPA["variante"] = variante or "-"
     prompt = _prompt(estilo, tema, variante)

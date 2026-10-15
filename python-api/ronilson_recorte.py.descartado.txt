@@ -1,0 +1,393 @@
+"""
+python-api/ronilson_recorte.py  —  v56  —  "Ronilson_sem_fundo" nos cards
+
+Caminho SEPARADO (o fluxo que já funciona não é alterado). Rotas:
+
+  POST /preview-card-ronilson     corpo: { tema, legenda?, estilo?, seed? }
+      estilo vazio -> "Automático": fundo gerado por IA a partir do TÍTULO
+      estilo = gold | smoke | portal | ice | floating | macro | museum | cinematic | showcase
+               -> fundo da cena do estilo (sem pessoas), com o lado direito livre
+      O recorte (PNG com transparência) entra sobre o fundo e o título usa o motor de
+      sempre (desenhar_titulo) com a posição real da cabeça. Não usa rembg (leve p/ o Render free).
+
+  GET  /ronilson-recorte/status   diz se o recorte foi achado e onde (?recarregar=1 busca de novo)
+
+Onde o recorte é procurado (nesta ordem):
+  1) variável de ambiente RONILSON_RECORTE_URL (link direto do PNG)
+  2) python-api/assets/ (ou python-api/): PNG/WEBP com "ronilson" e "sem_fundo" no nome
+  3) Cloudinary: PNG/WEBP com "ronilson" e "sem_fundo" no caminho ("Banco de Imagens/" primeiro)
+Se houver mais de um, alterna entre eles conforme a seed.
+"""
+import base64
+import io
+import os
+import random
+import sys
+import time
+import traceback
+import unicodedata
+import uuid
+
+import numpy as np
+import requests
+from flask import Blueprint, jsonify, request
+from PIL import Image
+
+bp = Blueprint("ronilson_recorte", __name__)
+
+_W, _H = 1080, 1350
+_LARGURA_MAX = 0.62   # fração máxima da largura do card ocupada pelo Ronilson
+_ALTURA_MAX = 0.96    # fração máxima da altura do card
+_MAX_RECORTES = 4
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_PASTAS_LOCAIS = (os.path.join(_DIR, "assets"), _DIR)
+
+_CACHE = {"lista": [], "t": 0.0, "origens": [], "erro": ""}
+
+
+class ErroRecorte(Exception):
+    """Falha esperada (a mensagem vai para a tela)."""
+
+
+def _m():
+    return sys.modules.get("main") or sys.modules.get("__main__")
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    return "".join(ch for ch in s if ch.isalnum())
+
+
+def _eh_nome_do_recorte(texto):
+    n = _norm(texto)
+    return "ronilson" in n and "semfundo" in n
+
+
+# ── Carregar o recorte ────────────────────────────────────────────────────────
+def _preparar_recorte(img):
+    """RGBA recortado na caixa da pessoa; None se não houver transparência de verdade."""
+    rgba = img.convert("RGBA")
+    a = np.asarray(rgba.split()[3])
+    if int((a < 250).sum()) < a.size * 0.02:
+        print("[ronilson] arquivo sem transparencia (nao e um recorte) — ignorado")
+        return None
+    ys, xs = np.where(a > 10)
+    if len(ys) == 0:
+        return None
+    rgba = rgba.crop((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1))
+    if rgba.height > _H:  # limita memória (Render free)
+        esc = _H / rgba.height
+        rgba = rgba.resize((max(1, int(rgba.width * esc)), _H), Image.Resampling.LANCZOS)
+    return rgba
+
+
+def _carregar_locais():
+    achados = []
+    for pasta in _PASTAS_LOCAIS:
+        try:
+            for nome in sorted(os.listdir(pasta)):
+                if nome.lower().endswith((".png", ".webp")) and _eh_nome_do_recorte(nome):
+                    achados.append(os.path.join(pasta, nome))
+        except Exception:
+            pass
+    saida = []
+    for caminho in achados[:_MAX_RECORTES]:
+        try:
+            rec = _preparar_recorte(Image.open(caminho))
+            if rec is not None:
+                saida.append((f"arquivo:{os.path.basename(caminho)}", rec))
+        except Exception as e:
+            print(f"[ronilson] falhou ao abrir {caminho}: {e}")
+    return saida
+
+
+def _baixar(url, nome):
+    r = requests.get(url, timeout=40)
+    r.raise_for_status()
+    rec = _preparar_recorte(Image.open(io.BytesIO(r.content)))
+    return (nome, rec) if rec is not None else None
+
+
+def _listar_cloudinary():
+    import cloudinary.api
+    M = _m()
+    achados = []
+    for prefixo in ("Banco de Imagens/", ""):
+        cursor = None
+        for _ in range(8):  # até ~800 imagens por prefixo
+            kw = {"type": "upload", "max_results": 100}
+            if prefixo:
+                kw["prefix"] = prefixo
+            if cursor:
+                kw["next_cursor"] = cursor
+            res = cloudinary.api.resources(**kw)
+            for r in res.get("resources", []):
+                pid = r.get("public_id", "")
+                if M.CLOUDINARY_POSTS in pid or M.CLOUDINARY_PREVIEW in pid:
+                    continue
+                if _eh_nome_do_recorte(pid) and (r.get("format") or "").lower() in ("png", "webp"):
+                    achados.append((pid, r.get("secure_url", "")))
+            cursor = res.get("next_cursor")
+            if not cursor:
+                break
+        if achados:
+            break
+    return sorted(achados)
+
+
+def carregar_recortes(forcar=False):
+    """Lista de (origem, RGBA). Guarda em memória; se não achar, só tenta de novo após 60s."""
+    if _CACHE["lista"] and not forcar:
+        return _CACHE["lista"]
+    agora = time.time()
+    if not forcar and agora - _CACHE["t"] < 60:
+        return []
+    _CACHE["t"] = agora
+    _CACHE["erro"] = ""
+    lista = []
+
+    url_env = (os.getenv("RONILSON_RECORTE_URL") or "").strip()
+    if url_env:
+        try:
+            item = _baixar(url_env, "url:RONILSON_RECORTE_URL")
+            if item:
+                lista.append(item)
+        except Exception as e:
+            _CACHE["erro"] = f"RONILSON_RECORTE_URL: {e}"
+            print(f"[ronilson] {_CACHE['erro']}")
+
+    if not lista:
+        lista = _carregar_locais()
+
+    if not lista:
+        try:
+            for pid, url in _listar_cloudinary()[:_MAX_RECORTES]:
+                try:
+                    item = _baixar(url, f"cloudinary:{pid}")
+                    if item:
+                        lista.append(item)
+                except Exception as e:
+                    print(f"[ronilson] falhou ao baixar {pid}: {e}")
+        except Exception as e:
+            _CACHE["erro"] = f"Cloudinary: {e}"
+            print(f"[ronilson] busca no Cloudinary falhou: {e}")
+
+    _CACHE["lista"] = lista
+    _CACHE["origens"] = [o for o, _ in lista]
+    print(f"[ronilson] recortes carregados: {_CACHE['origens'] or 'nenhum'}")
+    return lista
+
+
+def _escolher_recorte(seed):
+    lista = carregar_recortes()
+    if not lista:
+        raise ErroRecorte(
+            "Nao encontrei o recorte 'Ronilson_sem_fundo' (PNG com fundo transparente). "
+            "Envie-o ao Cloudinary (pasta Banco de Imagens) ou coloque em python-api/assets/ "
+            "com 'Ronilson_sem_fundo' no nome. Detalhe em /ronilson-recorte/status."
+        )
+    return lista[int(seed) % len(lista)]
+
+
+# ── Cena conforme o título ────────────────────────────────────────────────────
+def _cena_ia(M, tema_limpo):
+    chave = getattr(M, "GEMINI_API_KEY", None)
+    if not chave or not tema_limpo:
+        return None
+    pergunta = (
+        "You write one-sentence scene descriptions for photorealistic background images. "
+        f'Post title (Brazilian Portuguese, psychology clinic): "{tema_limpo}". '
+        "Describe in English ONE calm, hopeful, people-free environment or still-life that visually "
+        "expresses the emotional idea of this title (a metaphor is welcome). No people, no hands, "
+        "no text. Maximum 35 words. Reply with the sentence only."
+    )
+    for modelo in ("gemini-2.5-flash", "gemini-3.5-flash"):
+        try:
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{modelo}:generateContent?key={chave}")
+            r = requests.post(url, json={"contents": [{"parts": [{"text": pergunta}]}],
+                                         "generationConfig": {"temperature": 0.8}}, timeout=15)
+            if r.status_code >= 400:
+                print(f"[ronilson] cena {modelo} HTTP {r.status_code}")
+                continue
+            partes = r.json()["candidates"][0]["content"]["parts"]
+            txt = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip().strip('"')
+            if 8 <= len(txt) <= 400:
+                return txt
+        except Exception as e:
+            print(f"[ronilson] cena {modelo} falhou: {e}")
+    return None
+
+
+def _cena_do_titulo(M, tema):
+    limpo = M._texto_tema_limpo(tema)
+    cena = _cena_ia(M, limpo)
+    if cena:
+        print("[ronilson] cena via IA")
+        return cena
+    n = _norm(limpo)
+    for chave, texto in getattr(M, "_CENA_POR_TEMA", ()):
+        if _norm(chave) in n:
+            print(f"[ronilson] cena por palavra-chave: {chave}")
+            return texto
+    print("[ronilson] cena padrao")
+    return "dawn over still water and vegetation, cinematic natural light, hope and calm"
+
+
+_LUZES = (
+    "golden hour side light",
+    "cool blue hour with a warm lamp",
+    "soft overcast morning",
+    "sunbeam through leaves",
+    "reflections on water at dawn",
+)
+
+_PALETA = (
+    "Color palette strictly harmonious with the clinic identity: deep navy #024059, petroleum teal #1B797D, "
+    "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
+    "Mood: professional, welcoming, intimate, never clinical-cold, never hospital."
+)
+_SEM_PESSOAS = (
+    "Absolutely no people, no faces, no hands, no silhouettes, no text, no letters, no typography, "
+    "no logos, no watermark, no borders, no artificial 3D look."
+)
+_AREA_DA_PESSOA = (
+    "Vertical 4:5 Instagram portrait. The RIGHT 45% of the frame is a calm, softly lit, uncluttered, "
+    "slightly out-of-focus area (plain wall, open air or gentle bokeh) where a real person will be "
+    "composited later; keep strong objects and details out of it."
+)
+
+
+def _prompt_automatico(M, tema, seed):
+    luz = _LUZES[int(seed) % len(_LUZES)]
+    return (
+        "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic whose identity is "
+        f'dawn, hope and emotional care. Title of this post: "{M._texto_tema_limpo(tema)}". '
+        f"Scene: {_cena_do_titulo(M, tema)}. Lighting: {luz}. {_PALETA} {_AREA_DA_PESSOA} "
+        "The LEFT half carries the atmosphere of the scene, slightly darker and muted so large typography "
+        f"can sit over it. {_SEM_PESSOAS} Shot on 35mm, shallow depth, high detail, authentic photographic texture."
+    )
+
+
+def _prompt_estilo(M, estilo, tema):
+    from estilos_card import ESTILOS
+    e = ESTILOS[estilo]
+    limpo = M._texto_tema_limpo(tema)
+    contexto = f' Concept / emotional theme of this post: "{limpo}". ' if limpo else " "
+    return (
+        "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic whose identity is "
+        "dawn, hope, emotional care, healing and transformation."
+        f"{contexto}Visual style and scene: {e['cena']}. Lighting: {e['luz']}. {_PALETA} "
+        f"{_AREA_DA_PESSOA} Place the symbolic subject of the scene in the LEFT-bottom area with generous "
+        "negative space, and keep the UPPER-LEFT calm and darker for large typography. "
+        f"{_SEM_PESSOAS} Elevated realism, authentic photographic texture, high definition."
+    )
+
+
+# ── Composição ────────────────────────────────────────────────────────────────
+def _pessoa_no_canvas(rec):
+    """Escala o recorte para caber (altura e largura máximas) e ancora embaixo num RGBA (nw × H)."""
+    pw, ph = rec.size
+    esc = min(_ALTURA_MAX * _H / ph, _LARGURA_MAX * _W / pw)
+    nw, nh = max(1, int(pw * esc)), max(1, int(ph * esc))
+    pessoa = rec.resize((nw, nh), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (nw, _H), (0, 0, 0, 0))
+    canvas.paste(pessoa, (0, _H - nh))
+    return canvas
+
+
+def montar_card(M, tema, estilo, seed):
+    """Retorna (card PIL RGB, aviso | None, origem_do_recorte)."""
+    origem, rec = _escolher_recorte(seed)
+
+    from estilos_card import ESTILOS, _gerar_imagem_ia
+    prompt = _prompt_estilo(M, estilo, tema) if estilo else _prompt_automatico(M, tema, seed)
+    fundo, motivo = _gerar_imagem_ia(prompt)
+    aviso = None
+    if fundo is None:
+        print(f"[ronilson] fundo IA falhou ({motivo}) — gradiente da paleta")
+        fundo = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
+        aviso = f"A imagem de fundo por IA falhou ({motivo}); usei o gradiente da paleta."
+
+    pessoa = _pessoa_no_canvas(rec)
+    comp, cabeca = M.compor_pessoa(pessoa, fundo)
+    em_pe = M._detectar_pose_em_pe(pessoa)
+    bbox_rosto = M._detectar_rosto(comp)
+    if bbox_rosto:
+        cabeca = bbox_rosto
+
+    cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
+    card, _ = M.desenhar_titulo(comp, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
+                                cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca)
+    return card, aviso, origem
+
+
+# ── Rotas ─────────────────────────────────────────────────────────────────────
+@bp.route("/ronilson-recorte/status", methods=["GET"])
+def rota_status_recorte():
+    lista = carregar_recortes(forcar=request.args.get("recarregar") == "1")
+    return jsonify({
+        "encontrado": bool(lista),
+        "recortes": [{"origem": o, "tamanho": list(img.size)} for o, img in lista],
+        "erro": _CACHE["erro"] or None,
+        "procura": ["RONILSON_RECORTE_URL", "python-api/assets/", "Cloudinary: Banco de Imagens/"],
+    })
+
+
+@bp.route("/preview-card-ronilson", methods=["POST"])
+def rota_preview_card_ronilson():
+    M = _m()
+    data = request.get_json() or {}
+    tema = data.get("tema", "").strip()
+    legenda = data.get("legenda", "").strip()
+    estilo = (data.get("estilo") or "").strip().lower()
+    if not tema:
+        return jsonify({"erro": "Tema obrigatorio"}), 400
+    if estilo:
+        try:
+            from estilos_card import ESTILOS
+        except Exception as e:
+            return jsonify({"erro": f"Estilos indisponiveis: {e}"}), 500
+        if estilo not in ESTILOS:
+            return jsonify({"erro": "Estilo invalido"}), 400
+
+    erros_leg = None
+    if not legenda:
+        try:
+            legenda = M.gerar_legenda_ia(tema)
+        except Exception as e:
+            erros_leg = str(e)
+            legenda = ""
+    if legenda and "CRP 04/57327" not in legenda:
+        legenda = legenda.rstrip() + M.ASSINATURA
+
+    seed = M._seed_variavel(tema, data.get("seed"))
+    print(f"[ronilson] tema='{tema}' estilo='{estilo or 'automatico'}' seed={seed}")
+
+    try:
+        card, aviso, origem = montar_card(M, tema, estilo, seed)
+        card_id = f"preview_{uuid.uuid4().hex[:10]}"
+        saida = io.BytesIO()
+        card.save(saida, format="JPEG", quality=93)
+        card_bytes = saida.getvalue()
+        preview_url = f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}"
+        M._cards_pendentes[card_id] = {
+            "tema": tema,
+            "legenda": legenda,
+            "imagem_fundo": "",
+            "pid_fundo": f"ronilson:{estilo or 'auto'}",
+            "card_bytes": card_bytes,
+        }
+    except ErroRecorte as e:
+        return jsonify({"erro": str(e)}), 404
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"erro": f"Erro ao montar o card com o Ronilson: {type(e).__name__}: {str(e)[:200]}"}), 500
+
+    resp = {"card_id": card_id, "preview_url": preview_url, "legenda": legenda,
+            "imagem_fundo": "", "recorte": origem}
+    if erros_leg:
+        resp["aviso_legenda"] = erros_leg
+    if aviso:
+        resp["aviso_estilo"] = aviso
+    return jsonify(resp)
