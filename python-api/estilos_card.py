@@ -498,6 +498,345 @@ def _base_cena(estilo, seed, tema="", variante_pedida=None):
 
 
 # ── Rota ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# v57 — "Com Ronilson": recorte SEM FUNDO (pasta Cloudinary ronilson_sem_fundo)
+# integrado a um cenário criado conforme tema + paleta + estilo escolhido.
+# Só adiciona: nada do fluxo dos outros estilos é alterado (ativado por com_ronilson=True).
+# Não usa rembg (o recorte já vem pronto) -> leve para os 512MB do Render.
+# ══════════════════════════════════════════════════════════════════════════════
+_PREFIXOS_SEM_FUNDO = (
+    "Banco de Imagens/Ronilson_sem_fundo",
+    "Banco de Imagens/ronilson_sem_fundo",
+    "Banco de Imagens/Ronilson_Sem_Fundo",
+    "banco de imagens/ronilson_sem_fundo",
+    "Ronilson_sem_fundo",
+    "ronilson_sem_fundo",
+)
+_cache_recortes = {"t": 0.0, "lista": []}
+
+# desfoque do cenário (profundidade de campo) por estilo
+_BLUR_CENARIO = {
+    "cinematic": 3.2, "showcase": 2.0, "macro": 4.0, "auto": 1.8,
+    "gold": 2.4, "smoke": 2.2, "portal": 2.4, "ice": 2.2, "floating": 1.8, "museum": 2.0,
+}
+
+
+def _listar_recortes_ronilson():
+    """Lista (com cache de 10 min) os recortes PNG/WebP da pasta ronilson_sem_fundo."""
+    import cloudinary.api
+    M = _m()
+    if _cache_recortes["lista"] and time.time() - _cache_recortes["t"] < 600:
+        return _cache_recortes["lista"]
+
+    def _ok(r):
+        pid = r.get("public_id", "")
+        return (
+            M.CLOUDINARY_POSTS not in pid
+            and M.CLOUDINARY_PREVIEW not in pid
+            and (r.get("format") or "png").lower() in ("png", "webp", "avif", "tiff", "tif")
+        )
+
+    achados = []
+    for pref in _PREFIXOS_SEM_FUNDO:
+        cursor = None
+        for _ in range(5):
+            kw = dict(type="upload", prefix=pref + "/", max_results=100)
+            if cursor:
+                kw["next_cursor"] = cursor
+            try:
+                res = cloudinary.api.resources(**kw)
+            except Exception as e:
+                print(f"[ronilson] '{pref}': {e}")
+                break
+            achados += [r for r in res.get("resources", []) if _ok(r)]
+            cursor = res.get("next_cursor")
+            if not cursor:
+                break
+        if achados:
+            print(f"[ronilson] {len(achados)} recortes em '{pref}'")
+            break
+
+    if not achados:  # varredura geral (caso a pasta tenha outro caminho/caixa)
+        cursor = None
+        for _ in range(10):
+            kw = dict(type="upload", max_results=500)
+            if cursor:
+                kw["next_cursor"] = cursor
+            try:
+                res = cloudinary.api.resources(**kw)
+            except Exception as e:
+                print(f"[ronilson] varredura geral: {e}")
+                break
+            achados += [
+                r for r in res.get("resources", [])
+                if _ok(r) and "sem_fundo" in r.get("public_id", "").lower().replace(" ", "_")
+            ]
+            cursor = res.get("next_cursor")
+            if not cursor:
+                break
+
+    if achados:
+        _cache_recortes.update(t=time.time(), lista=achados)
+    return achados
+
+
+def _carregar_recorte_ronilson():
+    """Sorteia (baralho, sem repetir) um recorte e devolve (imagem RGBA, public_id)."""
+    M = _m()
+    recursos = _listar_recortes_ronilson()
+    if not recursos:
+        raise ErroEstilo(
+            "Nao encontrei imagens na pasta ronilson_sem_fundo do Cloudinary "
+            "(PNG/WebP com transparencia)."
+        )
+    r = M._proxima_foto_baralho("ronilson_sem_fundo", recursos)
+    url, pid = r.get("secure_url"), r.get("public_id", "")
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    img = Image.open(io.BytesIO(resp.content))
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        img = img.convert("RGBA")
+    else:
+        raise ErroEstilo(f"A imagem {pid} nao tem transparencia (fundo removido).")
+    lado = max(img.size)
+    if lado > 2000:  # economiza memoria
+        f = 2000 / lado
+        img = img.resize((int(img.width * f), int(img.height * f)), Image.Resampling.LANCZOS)
+    print(f"[ronilson] recorte: {pid} {img.size}")
+    return img, pid
+
+
+# ── Cenário (sem pessoas) conforme tema + paleta + estilo ─────────────────────
+def _prompt_cenario_ronilson(estilo, tema, seed):
+    M = _m()
+    if estilo == "auto":
+        return (
+            M._prompt_fundo_ia(tema, seed, True)
+            + " The scene needs a believable floor or ground plane and clear depth so a standing "
+              "adult can be placed on the right side; soft key light from the upper left."
+        )
+    e = ESTILOS[estilo]
+    tema_limpo = M._texto_tema_limpo(tema) if hasattr(M, "_texto_tema_limpo") else (tema or "")
+    contexto = f' Concept / emotional theme of this post: "{tema_limpo}". ' if tema_limpo else " "
+    return (
+        "Photorealistic editorial photograph of an EMPTY environment (no people) for AlvoreSer, a Brazilian "
+        "psychology clinic whose identity is dawn, hope, emotional care, healing and transformation."
+        f"{contexto}"
+        f"Visual style and scene: {e['cena']}. Lighting: {e['luz']}. "
+        "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
+        "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
+        "Composition: vertical 4:5, a believable floor or ground plane and clear visual depth. The RIGHT 55% "
+        "of the frame is open, softly lit space (wall, air, bokeh or empty floor) reserved for compositing a "
+        "real standing adult later; keep the LEFT 40% calm, darker and uncluttered for large typography. "
+        "Any symbolic object sits low, small, in the lower-left or center, below the typography area. "
+        "Soft key light coming from the upper left. "
+        "Absolutely no people, no faces, no hands, no mannequins, no silhouettes, no text, no letters, "
+        "no logos, no watermark, no borders, high definition, authentic photographic texture."
+    )
+
+
+def _cenario_ronilson(estilo, tema, seed):
+    M = _m()
+    img, motivo = _gerar_imagem_ia(_prompt_cenario_ronilson(estilo, tema, seed))
+    aviso = None
+    if img is None:
+        print(f"[ronilson] cenario IA falhou ({motivo}); gradiente da paleta")
+        img = M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed)
+        aviso = f"O cenario por IA falhou ({motivo}); usei o gradiente da paleta."
+    return img, aviso
+
+
+# ── Integração: o Ronilson passa a fazer parte da luz e da sombra da cena ────
+def _limpar_borda_recorte(rgba):
+    """Tira a franja clara do recorte: encolhe 1px o alpha e repinta a borda com a cor de dentro."""
+    import cv2
+    a = np.asarray(rgba.split()[3]).astype(np.float32) / 255.0
+    rgb = np.asarray(rgba.convert("RGB")).astype(np.float32)
+    a = np.clip((a - 0.10) / 0.80, 0, 1)
+    nucleo = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    num = cv2.GaussianBlur(rgb * nucleo[..., None], (0, 0), 4)
+    den = cv2.GaussianBlur(nucleo, (0, 0), 4)[..., None]
+    sangra = num / np.maximum(den, 1e-3)
+    w = np.clip(1.0 - nucleo, 0, 1)[..., None] * (den > 0.05)
+    rgb = rgb * (1 - w) + sangra * w
+    a = cv2.GaussianBlur(cv2.erode(a, np.ones((3, 3), np.uint8)), (0, 0), 0.7)
+    return rgb, a
+
+
+def _caixa_cabeca(a_f):
+    """Zona da cabeça (heurística do salto de largura dos ombros, igual à compor_pessoa)."""
+    try:
+        m = a_f > 0.04
+        linhas = np.where(m.any(axis=1))[0]
+        if len(linhas) == 0:
+            return None
+        larg = np.zeros(m.shape[0], dtype=np.int32)
+        for r in linhas:
+            cols = np.where(m[r])[0]
+            larg[r] = cols.max() - cols.min()
+        y_topo = int(linhas[0])
+        jan = larg[y_topo: y_topo + max(10, int(_H * 0.05))]
+        ref = float(np.median(jan[jan > 0])) if np.any(jan > 0) else 0.0
+        y_fim = y_topo + int(_H * 0.30)
+        if ref > 0:
+            for r in range(y_topo, min(m.shape[0], y_topo + int(_H * 0.55))):
+                if larg[r] > ref * 1.5:
+                    y_fim = r + int(_H * 0.08)
+                    break
+        cols = np.where(m[y_topo:y_fim].any(axis=0))[0]
+        if len(cols) == 0:
+            return None
+        return (max(0, int(cols.min()) - 25), max(0, y_topo - 15),
+                min(_W, int(cols.max()) + 25), min(_H, y_fim + 25))
+    except Exception as e:
+        print(f"[ronilson] caixa da cabeca falhou: {e}")
+        return None
+
+
+def _integrar_ronilson(fundo, recorte, estilo, seed):
+    """Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca)."""
+    import cv2
+    rgb_r, a_r = _limpar_borda_recorte(recorte)
+    ys, xs = np.where(a_r > 0.04)
+    if len(ys) == 0:
+        raise ErroEstilo("O recorte do Ronilson veio vazio.")
+    x_a, x_b, y_a, y_b = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    rgb_r, a_r = rgb_r[y_a:y_b, x_a:x_b], a_r[y_a:y_b, x_a:x_b]
+    ph, pw = a_r.shape
+    prop = ph / pw
+
+    # tamanho/posição: corpo inteiro pisa no chão; busto/meio corpo é cortado pela base do card
+    corpo = prop >= 2.2
+    if corpo:
+        alt = int(_H * 0.80)
+    else:
+        larg_alvo = int(_W * (0.52 if prop >= 1.35 else 0.58))
+        alt = min(int(larg_alvo * prop), int(_H * 1.0))
+    nw = max(1, int(alt / prop))
+    rgb_s = cv2.resize(rgb_r, (nw, alt), interpolation=cv2.INTER_AREA)
+    a_s = cv2.resize(a_r, (nw, alt), interpolation=cv2.INTER_AREA)
+    x0 = max(int(_W * 0.42), _W - nw - int(_W * 0.03))
+    y0 = int(_H * 0.975) - alt if corpo else _H - alt
+
+    sub = np.zeros((_H, _W, 3), np.float32)
+    a_f = np.zeros((_H, _W), np.float32)
+    sx0, sy0 = max(0, -x0), max(0, -y0)
+    dx0, dy0 = max(0, x0), max(0, y0)
+    cw, ch = min(nw - sx0, _W - dx0), min(alt - sy0, _H - dy0)
+    sub[dy0:dy0 + ch, dx0:dx0 + cw] = rgb_s[sy0:sy0 + ch, sx0:sx0 + cw]
+    a_f[dy0:dy0 + ch, dx0:dx0 + cw] = a_s[sy0:sy0 + ch, sx0:sx0 + cw]
+
+    # cenário com profundidade de campo
+    fundo = fundo.convert("RGB").resize((_W, _H), Image.Resampling.LANCZOS)
+    fundo = fundo.filter(ImageFilter.GaussianBlur(_BLUR_CENARIO.get(estilo, 2.0)))
+    bg = np.asarray(fundo).astype(np.float32)
+
+    # direção da luz: lado mais claro do cenário
+    lum = bg.mean(axis=2)
+    luz_x = -1.0 if lum[:, : _W // 2].mean() >= lum[:, _W // 2:].mean() * 0.95 else 1.0
+
+    # cor/luz ambiente em volta dele
+    solido = (a_f > 0.5).astype(np.uint8)
+    anel = cv2.dilate(solido, np.ones((41, 41), np.uint8)) - solido
+    amb = bg[anel > 0].mean(axis=0) if anel.any() else bg.reshape(-1, 3).mean(axis=0)
+
+    # 1) ajusta cor e exposição do Ronilson à cena (sem pintar a pele)
+    media = sub[solido > 0].mean(axis=0)
+    ganho = (amb / max(amb.mean(), 1)) / (media / max(media.mean(), 1))
+    ganho = np.clip(1 + 0.30 * (ganho - 1), 0.80, 1.20)
+    expo = float(np.clip((amb.mean() + 55) / (media.mean() + 55), 0.62, 1.08))
+    sub = sub * ganho * (expo ** 0.65)
+
+    # 2) luz direcional na pessoa: lado da luz mais claro, lado oposto mais escuro
+    X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
+    t = np.clip((X - x0 / _W) / max(nw / _W, 1e-3), 0, 1)
+    t = t if luz_x > 0 else 1 - t  # t=0 no lado da luz
+    sub *= (1.06 - 0.16 * t)[..., None]
+    sub *= (1.0 - 0.06 * np.linspace(0, 1, _H, dtype=np.float32))[:, None, None]
+
+    # 3) light wrap + contorno de luz na borda
+    bg_suave = cv2.GaussianBlur(bg, (0, 0), 20)
+    nucleo = cv2.GaussianBlur(cv2.erode(a_f, np.ones((13, 13), np.uint8)), (0, 0), 3)
+    borda = np.clip(a_f - nucleo, 0, 1)[..., None]
+    sub = sub * (1 - 0.38 * borda) + bg_suave * 1.08 * 0.38 * borda
+    lado = np.clip(1 - np.abs(t - 0.0) * 2.0, 0, 1)[..., None]
+    rim = np.array([255, 205, 130], np.float32) * 0.5 + amb * 0.6
+    sub = sub + 0.28 * borda * lado * rim * (1 - sub / 255.0)
+
+    # 4) sombras no cenário: projetada + de contato no chão
+    sil = cv2.GaussianBlur(a_f, (0, 0), 26)
+    desloc = np.float32([[1, 0, -luz_x * 34], [0, 1, 14]])
+    sombra = cv2.warpAffine(sil, desloc, (_W, _H))
+    if corpo:
+        base_y = int(y0 + alt - 4)
+        fx = np.where(a_f[max(0, base_y - 40):min(_H, base_y), :].max(axis=0) > 0.3)[0]
+        cx = int(fx.mean()) if len(fx) else x0 + nw // 2
+        chao = np.zeros((_H, _W), np.float32)
+        cv2.ellipse(chao, (cx, base_y), (int(nw * 0.62), int(_H * 0.016) + 6), 0, 0, 360, 1.0, -1)
+        chao = cv2.GaussianBlur(chao, (0, 0), 14)
+        sombra = np.clip(sombra + 0.9 * chao, 0, 1)
+        degrade = np.clip((np.arange(_H, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
+        bg = bg * (1 - 0.22 * degrade)[:, None, None]
+    cor_sombra = amb * 0.20
+    s = (0.50 * sombra)[..., None]
+    bg = bg * (1 - s) + cor_sombra * s
+
+    # 5) composição + grão único em cena e pessoa (esconde emenda de recorte)
+    out = bg * (1 - a_f[..., None]) + sub * a_f[..., None]
+    out += np.random.RandomState(int(seed) % 100000).normal(0, 2.4, (_H, _W, 1)).astype(np.float32)
+    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+    img = _grade_estilo(img, "cinematic" if estilo == "cinematic" else "showcase")
+    return img, corpo, _caixa_cabeca(a_f)
+
+
+def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
+    """Card = cenário por estilo/tema + Ronilson (ronilson_sem_fundo) integrado + título."""
+    rotulo = ESTILOS[estilo]["rotulo"] if estilo in ESTILOS else "Automático"
+    aviso = None
+    try:
+        _ETAPA["v"] = "escolher recorte do Ronilson"
+        recorte, pid = _carregar_recorte_ronilson()
+        _ETAPA["v"] = "gerar cenario"
+        fundo, aviso = _cenario_ronilson(estilo, tema, seed)
+        _ETAPA["v"] = "integrar o Ronilson ao cenario"
+        img, em_pe, cabeca = _integrar_ronilson(fundo, recorte, estilo, seed)
+        try:
+            haar = M._detectar_rosto(img)
+            if haar:
+                cabeca = haar
+        except Exception as e:
+            print(f"[ronilson] Haar ignorado: {e}")
+        _ETAPA["v"] = "montar o card (titulo/layout)"
+        cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
+        card, _ = M.desenhar_titulo(
+            img, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
+            cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca)
+        card_id = f"preview_{uuid.uuid4().hex[:10]}"
+        saida = io.BytesIO()
+        card.save(saida, format="JPEG", quality=93)
+        card_bytes = saida.getvalue()
+        M._cards_pendentes[card_id] = {
+            "tema": tema, "legenda": legenda, "imagem_fundo": "",
+            "pid_fundo": f"ronilson_sem_fundo:{estilo}:{pid}", "card_bytes": card_bytes,
+        }
+    except ErroEstilo as e:
+        return jsonify({"erro": f"Com Ronilson ({rotulo}): {e}"}), 502
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"erro": f"Erro Com Ronilson ({rotulo}) (etapa: {_ETAPA['v']}): "
+                                f"{type(e).__name__}: {str(e)[:200]}"}), 500
+    resp = {
+        "card_id": card_id,
+        "preview_url": f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}",
+        "legenda": legenda, "imagem_fundo": "", "foto_ronilson": pid,
+    }
+    if erros_leg:
+        resp["aviso_legenda"] = erros_leg
+    if aviso:
+        resp["aviso_estilo"] = aviso
+    return jsonify(resp)
+
+
 @bp.route("/preview-card-estilo", methods=["POST"])
 def rota_preview_card_estilo():
     import cloudinary.uploader
@@ -510,7 +849,10 @@ def rota_preview_card_estilo():
     estilo = (data.get("estilo") or "").strip().lower()
     if not tema:
         return jsonify({"erro": "Tema obrigatorio"}), 400
-    if estilo not in ESTILOS:
+    com_ronilson = bool(data.get("com_ronilson"))  # v57: foto sem fundo do Ronilson integrada ao cenario
+    if com_ronilson and estilo in ("", "auto"):
+        estilo = "auto"
+    elif estilo not in ESTILOS:
         return jsonify({"erro": "Estilo invalido"}), 400
 
     # Legenda: mesmo tratamento do /preview-card
@@ -526,6 +868,9 @@ def rota_preview_card_estilo():
 
     seed = M._seed_variavel(tema, data.get("seed"))
     print(f"[estilo] tema='{tema}' estilo='{estilo}' seed={seed}")
+
+    if com_ronilson:  # v57: caminho novo; os demais estilos seguem abaixo, intactos
+        return _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed)
 
     tmp_pid = ""
     _ETAPA["v"] = "gerar imagem-base"

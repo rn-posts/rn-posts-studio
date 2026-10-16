@@ -112,6 +112,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [modo,          setModo]          = useState(post?.modo || "manual");
   const [dadosCard,     setDadosCard]     = useState(null);
   const [estilo,         setEstilo]        = useState("");
+  const [comRonilson,    setComRonilson]   = useState(false);
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
@@ -149,12 +150,14 @@ export default function PostEditor({ post, onClose, onNotify }) {
     try {
       // v45: estilo escolhido -> rota propria (/preview-card-estilo); "Automático" segue
       // na rota de sempre (/preview-card), que nao conhece os estilos.
-      const rota = estilo ? "/preview-card-estilo" : "/preview-card";
+      // v57: "Com Ronilson" (foto sem fundo integrada ao cenario) usa a mesma rota de estilos.
+      const rota = (estilo || comRonilson) ? "/preview-card-estilo" : "/preview-card";
       const res = await fetch(`${RENDER_URL}${rota}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(estilo ? { tema, legenda: legenda || "", estilo }
-                                    : { tema, legenda: legenda || "" }),
+        body: JSON.stringify((estilo || comRonilson)
+          ? { tema, legenda: legenda || "", estilo, ...(comRonilson ? { com_ronilson: true } : {}) }
+          : { tema, legenda: legenda || "" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
@@ -293,6 +296,29 @@ export default function PostEditor({ post, onClose, onNotify }) {
               — opcional, vale para o próximo card gerado
             </span>
           </label>
+          {/* v57: foto do Ronilson SEM FUNDO (Cloudinary: ronilson_sem_fundo) integrada ao cenario do estilo */}
+          <div style={{ marginBottom: "0.5rem" }}>
+            <button
+              type="button"
+              onClick={() => setComRonilson(v => !v)}
+              disabled={loadingCard}
+              title="Usa as fotos sem fundo da pasta ronilson_sem_fundo e cria o cenário conforme o tema, a paleta e o estilo escolhido abaixo (Automático = cenário pelo tema)."
+              style={{
+                fontSize: "0.8rem", padding: "6px 14px", borderRadius: 999, cursor: "pointer",
+                border: comRonilson ? "1.5px solid var(--laranja, #F9AB0B)" : "1px dashed var(--marinho, #024059)",
+                background: comRonilson ? "var(--marinho, #024059)" : "transparent",
+                color: comRonilson ? "#fff" : "var(--marinho, #024059)",
+                fontWeight: 700, transition: "all 0.15s",
+              }}
+            >
+              {comRonilson ? "🧍 Com Ronilson: ATIVADO" : "🧍 Com Ronilson (fundo personalizado)"}
+            </button>
+            {comRonilson && (
+              <span style={{ fontSize: "0.72rem", color: "var(--texto-suave)", marginLeft: "0.5rem" }}>
+                escolha abaixo a variação do cenário — cada geração sorteia outra foto dele
+              </span>
+            )}
+          </div>
           {GRUPOS_ESTILO.map(({ grupo, titulo }) => (
             <div key={grupo} style={{ marginBottom: "0.4rem" }}>
               {titulo && (
