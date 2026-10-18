@@ -1844,9 +1844,9 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
-                    respiro=1.10, gap_fator=0.06, x_texto=None):
+                    respiro=1.10, gap_fator=0.06):
     img_rgba = img.convert("RGBA")
-    MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v59: origem do texto (padrao inalterado)
+    MARGIN   = SAFE_MARGIN
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
     MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     if tem_pessoa and max_px_pessoa:  # v58: opcional (modo Com Ronilson); padrao inalterado

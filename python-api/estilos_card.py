@@ -1753,11 +1753,11 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     aviso = None
     try:
         _ETAPA["v"] = "escolher recorte do Ronilson"
-        recorte, pid = _carregar_recorte_ronilson_v60()
+        recorte, pid = _carregar_recorte_ronilson()
         _ETAPA["v"] = "gerar cenario"
-        fundo, aviso = _cenario_ronilson_v60(estilo, tema, seed)
+        fundo, aviso = _cenario_ronilson(estilo, tema, seed)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
-        img, em_pe, cabeca, info = _integrar_v60(fundo, recorte, estilo, seed)
+        img, em_pe, cabeca, x_esq = _integrar_v58(fundo, recorte, estilo, seed)
         try:
             haar = M._detectar_rosto(img)
             if haar:
@@ -1766,19 +1766,13 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             print(f"[ronilson] Haar ignorado: {e}")
         _ETAPA["v"] = "montar o card (titulo/layout)"
         cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
-        # v59: o titulo vai para o lado livre (corpo encostado na esquerda -> texto a direita)
-        if info["lado"] == "esq":
-            x_texto = int(min(_W * 0.62, info["x_dir"] + 36))
-            max_px = int(max(300, min(520, _W - x_texto - 70)))
-        else:
-            x_texto = None
-            max_px = int(max(340, min(520, info["x_esq"] - getattr(M, "SAFE_MARGIN", 80) - 28)))
+        # v58: titulo maior e com mais respiro, limitado pela silhueta real do corpo
+        max_px = int(max(340, min(520, x_esq - getattr(M, "SAFE_MARGIN", 80) - 28)))
         escala = max(0.72, min(0.95, 0.72 * max_px / 352.0))
         card, _ = M.desenhar_titulo(
             img, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
             cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca,
-            max_px_pessoa=max_px, escala_pessoa=escala, respiro=1.22, gap_fator=0.14,
-            x_texto=x_texto)
+            max_px_pessoa=max_px, escala_pessoa=escala, respiro=1.22, gap_fator=0.14)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()
         card.save(saida, format="JPEG", quality=93)
