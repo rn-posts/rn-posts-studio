@@ -789,6 +789,169 @@ def _integrar_ronilson(fundo, recorte, estilo, seed):
     return img, corpo, _caixa_cabeca(a_f)
 
 
+# ── v58: correções da integração (rosto e mãos intocados, borda limpa, sem halo) ─────
+def _limpar_borda_v58(rgba):
+    """Recorte mais limpo: encolhe ~2px, repinta a borda com a cor de dentro e suaviza o alpha."""
+    import cv2
+    a = np.asarray(rgba.split()[3]).astype(np.float32) / 255.0
+    rgb = np.asarray(rgba.convert("RGB")).astype(np.float32)
+    a = np.clip((a - 0.18) / 0.64, 0, 1)
+    nucleo = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    num = cv2.GaussianBlur(rgb * nucleo[..., None], (0, 0), 5)
+    den = cv2.GaussianBlur(nucleo, (0, 0), 5)[..., None]
+    sangra = num / np.maximum(den, 1e-3)
+    w = np.clip(1.0 - nucleo, 0, 1)[..., None] * (den > 0.04)
+    rgb = rgb * (1 - w) + sangra * w
+    a = cv2.erode(a, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    a = cv2.GaussianBlur(a, (0, 0), 0.9)
+    return rgb, a
+
+
+def _zona_rosto_v58(a_f):
+    """(x0, y0, x1, y1) de cabeça + pescoço: do topo da cabeça até o início dos ombros."""
+    m = a_f > 0.04
+    tem = m.any(axis=1)
+    linhas = np.where(tem)[0]
+    if len(linhas) == 0:
+        return None
+    esq = np.argmax(m, axis=1)
+    dire = _W - 1 - np.argmax(m[:, ::-1], axis=1)
+    larg = np.where(tem, dire - esq, 0)
+    y_topo = int(linhas[0])
+    jan = larg[y_topo: y_topo + max(10, int(_H * 0.05))]
+    ref = float(np.median(jan[jan > 0])) if np.any(jan > 0) else 0.0
+    y_ombro = y_topo + int(_H * 0.16)
+    if ref > 0:
+        for r in range(y_topo, min(_H, y_topo + int(_H * 0.40))):
+            if larg[r] > ref * 1.5:
+                y_ombro = r
+                break
+    y1 = max(y_topo + 20, y_ombro - 12)
+    x0 = int(esq[y_topo:y1][tem[y_topo:y1]].min()) - 12
+    x1 = int(dire[y_topo:y1][tem[y_topo:y1]].max()) + 12
+    return max(0, x0), max(0, y_topo - 12), min(_W, x1), y1
+
+
+def _integrar_v58(fundo, recorte, estilo, seed):
+    """Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca, x_esquerdo_do_corpo)."""
+    import cv2
+    rgb_r, a_r = _limpar_borda_v58(recorte)
+    ys, xs = np.where(a_r > 0.04)
+    if len(ys) == 0:
+        raise ErroEstilo("O recorte do Ronilson veio vazio.")
+    rgb_r = rgb_r[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    a_r = a_r[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    ph, pw = a_r.shape
+    prop = ph / pw
+
+    corpo = prop >= 2.2
+    if corpo:
+        alt = int(_H * 0.86)
+    else:
+        larg_alvo = int(_W * (0.50 if prop >= 1.35 else 0.54))
+        alt = min(int(larg_alvo * prop), _H)
+    nw = max(1, int(alt / prop))
+    rgb_s = cv2.resize(rgb_r, (nw, alt), interpolation=cv2.INTER_AREA)
+    a_s = cv2.resize(a_r, (nw, alt), interpolation=cv2.INTER_AREA)
+    x0 = max(int(_W * 0.46), _W - nw - int(_W * 0.02))
+    y0 = int(_H * 0.975) - alt if corpo else _H - alt
+
+    sub = np.zeros((_H, _W, 3), np.float32)
+    a_f = np.zeros((_H, _W), np.float32)
+    sx0, sy0 = max(0, -x0), max(0, -y0)
+    dx0, dy0 = max(0, x0), max(0, y0)
+    cw, ch = min(nw - sx0, _W - dx0), min(alt - sy0, _H - dy0)
+    sub[dy0:dy0 + ch, dx0:dx0 + cw] = rgb_s[sy0:sy0 + ch, sx0:sx0 + cw]
+    a_f[dy0:dy0 + ch, dx0:dx0 + cw] = a_s[sy0:sy0 + ch, sx0:sx0 + cw]
+
+    fundo = fundo.convert("RGB").resize((_W, _H), Image.Resampling.LANCZOS)
+    fundo = fundo.filter(ImageFilter.GaussianBlur(_BLUR_CENARIO.get(estilo, 2.0)))
+    bg = np.asarray(fundo).astype(np.float32)
+
+    lum = bg.mean(axis=2)
+    luz_x = -1.0 if lum[:, : _W // 2].mean() >= lum[:, _W // 2:].mean() * 0.95 else 1.0
+    solido = (a_f > 0.5).astype(np.uint8)
+    anel = cv2.dilate(solido, np.ones((41, 41), np.uint8)) - solido
+    amb = bg[anel > 0].mean(axis=0) if anel.any() else bg.reshape(-1, 3).mean(axis=0)
+
+    # proteção: rosto, pescoço e mãos (pele) NÃO recebem nenhum ajuste
+    orig = sub.copy()
+    fm = np.zeros((_H, _W), np.float32)
+    zr = _zona_rosto_v58(a_f)
+    if zr:
+        fm[zr[1]:zr[3], zr[0]:zr[2]] = 1.0
+        fm = cv2.GaussianBlur(fm, (0, 0), 5)
+    ycc = cv2.cvtColor(np.clip(sub, 0, 255).astype(np.uint8), cv2.COLOR_RGB2YCrCb).astype(np.int32)
+    Yc, Cr, Cb = ycc[..., 0], ycc[..., 1], ycc[..., 2]
+    pele = ((Cr >= 135) & (Cr <= 173) & (Cb >= 77) & (Cb <= 122) & (Yc > 45) & (Yc < 235)).astype(np.float32)
+    pele = cv2.GaussianBlur(cv2.morphologyEx(pele, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)), (0, 0), 3)
+    protege = np.clip(np.maximum(fm, pele), 0, 1) * np.clip(a_f * 1.5, 0, 1)
+    protege = protege[..., None]
+
+    # 1) roupa/corpo: cor e exposição da cena (pele fica de fora depois)
+    media = sub[solido > 0].mean(axis=0)
+    ganho = (amb / max(amb.mean(), 1)) / (media / max(media.mean(), 1))
+    ganho = np.clip(1 + 0.42 * (ganho - 1), 0.78, 1.22)
+    expo = float(np.clip((amb.mean() + 55) / (media.mean() + 55), 0.58, 1.08))
+    sub = sub * ganho * (expo ** 0.85)
+    cinza = sub.mean(axis=2, keepdims=True)
+    sat = (sub.max(axis=2, keepdims=True) - sub.min(axis=2, keepdims=True)) / (sub.max(axis=2, keepdims=True) + 1.0)
+    sub = sub * (1 - 0.18 * np.clip(sat - 0.25, 0, 1)) + cinza * (0.18 * np.clip(sat - 0.25, 0, 1))
+
+    # 2) luz direcional suave
+    X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
+    t = np.clip((X - x0 / _W) / max(nw / _W, 1e-3), 0, 1)
+    t = t if luz_x > 0 else 1 - t
+    sub *= (1.04 - 0.12 * t)[..., None]
+    sub *= (1.0 - 0.05 * np.linspace(0, 1, _H, dtype=np.float32))[:, None, None]
+
+    # 3) light wrap e contorno de luz discretos (sem halo)
+    bg_suave = cv2.GaussianBlur(bg, (0, 0), 20)
+    nucleo = cv2.GaussianBlur(cv2.erode(a_f, np.ones((9, 9), np.uint8)), (0, 0), 2)
+    borda = np.clip(a_f - nucleo, 0, 1)[..., None]
+    sub = sub * (1 - 0.20 * borda) + bg_suave * 0.20 * borda
+    lado = np.clip(1 - t * 2.0, 0, 1)[..., None]
+    rim = np.array([255, 205, 130], np.float32) * 0.5 + amb * 0.6
+    sub = sub + 0.12 * borda * lado * rim * (1 - sub / 255.0)
+
+    # rosto/mãos: pixels originais, sem nenhum ajuste
+    sub = sub * (1 - protege) + orig * protege
+
+    # 4) sombras: projetada curta e suave + contato no chão (sem aura em volta)
+    sil = cv2.GaussianBlur(a_f, (0, 0), 14)
+    desloc = np.float32([[1, 0, -luz_x * 42], [0, 1, 12]])
+    sombra = cv2.warpAffine(sil, desloc, (_W, _H))
+    sombra = sombra * (1 - np.clip(cv2.GaussianBlur(a_f, (0, 0), 2), 0, 1))
+    if corpo:
+        base_y = int(y0 + alt - 4)
+        fx = np.where(a_f[max(0, base_y - 40):min(_H, base_y), :].max(axis=0) > 0.3)[0]
+        cx = int(fx.mean()) if len(fx) else x0 + nw // 2
+        chao = np.zeros((_H, _W), np.float32)
+        cv2.ellipse(chao, (cx, base_y), (int(nw * 0.55), int(_H * 0.013) + 5), 0, 0, 360, 1.0, -1)
+        chao = cv2.GaussianBlur(chao, (0, 0), 12)
+        sombra = np.clip(sombra + 0.75 * chao, 0, 1)
+        degrade = np.clip((np.arange(_H, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
+        bg = bg * (1 - 0.18 * degrade)[:, None, None]
+    s = (0.32 * sombra)[..., None]
+    bg = bg * (1 - s) + (amb * 0.20) * s
+
+    # 5) composição; grão e correção de cor da cena NÃO entram no rosto/mãos
+    out = bg * (1 - a_f[..., None]) + sub * a_f[..., None]
+    sem_grao = np.clip(out, 0, 255).astype(np.uint8)
+    grao = np.random.RandomState(int(seed) % 100000).normal(0, 2.4, (_H, _W, 1)).astype(np.float32)
+    graduada = _grade_estilo(Image.fromarray(np.clip(out + grao, 0, 255).astype(np.uint8)),
+                             "cinematic" if estilo == "cinematic" else "showcase")
+    P = (protege[..., 0] * a_f)[..., None]
+    final = np.asarray(graduada).astype(np.float32) * (1 - P) + sem_grao.astype(np.float32) * P
+    img = Image.fromarray(np.clip(final, 0, 255).astype(np.uint8))
+
+    # onde o corpo começa (para o título saber a largura livre)
+    r0, r1 = int(_H * 0.35), int(_H * 0.92)
+    cols = np.where((a_f[r0:r1] > 0.3).any(axis=0))[0]
+    x_esq = int(cols.min()) if len(cols) else x0
+    return img, corpo, _caixa_cabeca(a_f), x_esq
+
+
 def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     """Card = cenário por estilo/tema + Ronilson (ronilson_sem_fundo) integrado + título."""
     rotulo = ESTILOS[estilo]["rotulo"] if estilo in ESTILOS else "Automático"
@@ -799,7 +962,7 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         _ETAPA["v"] = "gerar cenario"
         fundo, aviso = _cenario_ronilson(estilo, tema, seed)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
-        img, em_pe, cabeca = _integrar_ronilson(fundo, recorte, estilo, seed)
+        img, em_pe, cabeca, x_esq = _integrar_v58(fundo, recorte, estilo, seed)
         try:
             haar = M._detectar_rosto(img)
             if haar:
@@ -808,9 +971,13 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             print(f"[ronilson] Haar ignorado: {e}")
         _ETAPA["v"] = "montar o card (titulo/layout)"
         cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
+        # v58: titulo maior e com mais respiro, limitado pela silhueta real do corpo
+        max_px = int(max(340, min(520, x_esq - getattr(M, "SAFE_MARGIN", 80) - 28)))
+        escala = max(0.72, min(0.95, 0.72 * max_px / 352.0))
         card, _ = M.desenhar_titulo(
             img, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
-            cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca)
+            cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca,
+            max_px_pessoa=max_px, escala_pessoa=escala, respiro=1.22, gap_fator=0.14)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()
         card.save(saida, format="JPEG", quality=93)

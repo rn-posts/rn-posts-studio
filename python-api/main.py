@@ -1843,11 +1843,14 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True,
-                    cabeca_bbox=None):
+                    cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
+                    respiro=1.10, gap_fator=0.06):
     img_rgba = img.convert("RGBA")
     MARGIN   = SAFE_MARGIN
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
     MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
+    if tem_pessoa and max_px_pessoa:  # v58: opcional (modo Com Ronilson); padrao inalterado
+        MAX_PX = int(max_px_pessoa)
     layout   = seed % 5
 
     # Estratégia de legibilidade da vez
@@ -2005,7 +2008,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
     # Quando pessoa está presente, reduz fonte para caber na metade esquerda
     if tem_pessoa:
-        tam_ag = max(44, int(tam_ag * 0.72))
+        tam_ag = max(44, int(tam_ag * escala_pessoa))
 
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
@@ -2180,7 +2183,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     if not blocos_render:
         return img_rgba.convert("RGB"), layout
 
-    gap_bloco = max(4, int(tam_ag * 0.06))  # gap menor entre blocos
+    gap_bloco = max(4, int(tam_ag * gap_fator))  # gap menor entre blocos
 
     # Agrupa blocos consecutivos de mesmo nível (malgun + fundo + malgun)
     # em "linhas compostas" para renderização horizontal coesa
@@ -2210,7 +2213,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     grupos = _agrupar_linhas_compostas(blocos_render, MAX_PX, fb)
     h_total = 0
     for grupo in grupos:
-        alt = max(int(_altura_linha(f) * 1.10) for _, f, *_ in grupo)
+        alt = max(int(_altura_linha(f) * respiro) for _, f, *_ in grupo)
         h_total += alt
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
@@ -2277,7 +2280,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     for gi, grupo in enumerate(grupos):
         if gi > 0: y += gap_bloco
         lns0, f0, *_ = grupo[0]
-        esp = int(_altura_linha(f0) * 1.10)
+        esp = int(_altura_linha(f0) * respiro)
 
         if len(grupo) == 1:
             lns, fonte, cor_txt, sp, est, cor_rect, tem_liga = grupo[0]
@@ -2535,7 +2538,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     _ultima_linha_sp = _sl_last_sp
                     _ultima_linha_texto = _sl_last_texto
                     _ultima_linha_tem_liga = _sl_last_tem_liga
-                    y += int(_altura_linha(sublinha[0][1]) * 1.10)
+                    y += int(_altura_linha(sublinha[0][1]) * respiro)
             else:
                 x_cursor = MARGIN
                 _gi_y_top_list = []
