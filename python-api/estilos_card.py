@@ -1315,17 +1315,449 @@ def _integrar_v59(fundo, recorte, estilo, seed):
     return img, corpo, _caixa_cabeca(a_f), info
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v60 — VERSÃO LEVE do "Com Ronilson" (corrige 503/429/502 do v59)
+#  • memória: recorte reduzido ANTES da limpeza + trabalho só na região do corpo (ROI)
+#  • Cloudinary Admin API: pasta lembrada, cache (inclusive "vazio") e limite de chamadas
+#  • Gemini: no máx. 2 gerações e só se vier pessoa; visão com 1 modelo e timeout curto
+# ══════════════════════════════════════════════════════════════════════════════
+def _listar_recortes_ronilson_v60():
+    """Lista recortes da pasta ronilson_sem_fundo com cache de 10 min (e 90s se vier vazio/erro)."""
+    import cloudinary.api
+    M = _m()
+    c = _cache_recortes
+    agora = time.time()
+    if c["lista"] and agora - c["t"] < 600:
+        return c["lista"]
+    if c.get("neg") and agora - c["neg"] < 90:
+        return c["lista"]
+
+    def _ok(r):
+        pid = r.get("public_id", "")
+        return (M.CLOUDINARY_POSTS not in pid and M.CLOUDINARY_PREVIEW not in pid
+                and (r.get("format") or "png").lower() in ("png", "webp", "avif", "tiff", "tif"))
+
+    def _limitado(e):
+        t = str(e).lower()
+        return "rate limit" in t or "420" in t or "429" in t
+
+    achados, chamadas = [], 0
+    prefixos = ([c["prefixo"]] if c.get("prefixo") else []) + \
+               [p for p in _PREFIXOS_SEM_FUNDO if p != c.get("prefixo")]
+    for pref in prefixos:
+        cursor = None
+        for _ in range(3):
+            kw = dict(type="upload", prefix=pref + "/", max_results=100)
+            if cursor:
+                kw["next_cursor"] = cursor
+            chamadas += 1
+            try:
+                res = cloudinary.api.resources(**kw)
+            except Exception as e:
+                print(f"[ronilson] '{pref}': {e}")
+                if _limitado(e):
+                    c["neg"] = agora
+                    return c["lista"]
+                break
+            achados += [r for r in res.get("resources", []) if _ok(r)]
+            cursor = res.get("next_cursor")
+            if not cursor:
+                break
+        if achados:
+            c["prefixo"] = pref
+            print(f"[ronilson] {len(achados)} recortes em '{pref}' ({chamadas} chamadas)")
+            break
+        if chamadas >= 8:
+            break
+
+    if not achados and chamadas < 8:  # varredura geral, curta
+        cursor = None
+        for _ in range(3):
+            kw = dict(type="upload", max_results=500)
+            if cursor:
+                kw["next_cursor"] = cursor
+            try:
+                res = cloudinary.api.resources(**kw)
+            except Exception as e:
+                print(f"[ronilson] varredura geral: {e}")
+                break
+            achados += [r for r in res.get("resources", [])
+                        if _ok(r) and "sem_fundo" in r.get("public_id", "").lower().replace(" ", "_")]
+            cursor = res.get("next_cursor")
+            if not cursor:
+                break
+
+    if achados:
+        c.update(t=time.time(), lista=achados, neg=0.0)
+    else:
+        c["neg"] = agora
+    return achados or c["lista"]
+
+
+def _carregar_recorte_ronilson_v60():
+    """Sorteia (baralho) um recorte e baixa já reduzido pelo Cloudinary (leve). Retorna (RGBA, public_id)."""
+    M = _m()
+    recursos = _listar_recortes_ronilson_v60()
+    if not recursos:
+        raise ErroEstilo("Nao encontrei imagens na pasta ronilson_sem_fundo do Cloudinary "
+                         "(PNG/WebP com transparencia). Tente de novo em instantes.")
+    r = M._proxima_foto_baralho("ronilson_sem_fundo", recursos)
+    url, pid = r.get("secure_url"), r.get("public_id", "")
+    resp = None
+    if "/upload/" in (url or ""):
+        try:  # versão reduzida (mantém o alpha); se a conta bloquear transformações, usa o original
+            resp = requests.get(url.replace("/upload/", "/upload/c_limit,w_1400,h_1800/", 1), timeout=30)
+            if resp.status_code >= 400:
+                resp = None
+        except Exception as e:
+            print(f"[ronilson] versao reduzida falhou: {e}")
+    if resp is None:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+    img = Image.open(io.BytesIO(resp.content))
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        img = img.convert("RGBA")
+    else:
+        raise ErroEstilo(f"A imagem {pid} nao tem transparencia (fundo removido).")
+    lado = max(img.size)
+    if lado > 1600:
+        f = 1600 / lado
+        img = img.resize((int(img.width * f), int(img.height * f)), Image.Resampling.LANCZOS)
+    print(f"[ronilson] recorte: {pid} {img.size}")
+    return img, pid
+
+
+def _gemini_tem_pessoa_v60(img):
+    """Visão do Gemini com 1 modelo e timeout curto: True/False, ou None se não deu para consultar."""
+    M = _m()
+    chave = getattr(M, "GEMINI_API_KEY", None)
+    if not chave:
+        return None
+    try:
+        buf = io.BytesIO()
+        img.convert("RGB").resize((320, 400)).save(buf, "JPEG", quality=75)
+        payload = {
+            "contents": [{"parts": [
+                {"text": "Does this image contain any person, face, human body part, hand or human "
+                         "silhouette (even blurred, dark, partial, in the background or as a portrait)? "
+                         "Answer with exactly one word: SIM or NAO."},
+                {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()}},
+            ]}],
+            "generationConfig": {"temperature": 0},
+        }
+        r = requests.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+                          f"?key={chave}", json=payload, timeout=12)
+        if r.status_code >= 400:
+            return None
+        partes = r.json()["candidates"][0]["content"]["parts"]
+        txt = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip().upper()
+        if txt.startswith("SIM"):
+            return True
+        if txt.startswith("NAO") or txt.startswith("NÃO"):
+            return False
+    except Exception as e:
+        print(f"[cenario] visao Gemini: {e}")
+    return None
+
+
+def _cenario_ronilson_v60(estilo, tema, seed):
+    """Cenário validado com o MÍNIMO de chamadas: refaz (1x) só se vier pessoa ou poluição extrema."""
+    M = _m()
+    t0 = time.time()
+    melhor = None
+    for tentativa in range(2):
+        if tentativa > 0 and time.time() - t0 > 25:
+            break
+        img, motivo = _gerar_imagem_ia(_prompt_cenario_v59(estilo, tema, seed + tentativa * 17, tentativa))
+        if img is None:
+            print(f"[cenario] IA falhou ({motivo})")
+            break
+        pessoa = _tem_rosto_haar(img)
+        if not pessoa:
+            pessoa = _gemini_tem_pessoa_v60(img) is True
+        score = _complexidade_cenario(img)
+        print(f"[cenario] tentativa {tentativa + 1}: pessoa={pessoa} poluicao={score:.1f}")
+        if not pessoa and score <= 70:
+            return img, None
+        if melhor is None or (pessoa, score) < (melhor[0], melhor[1]):
+            melhor = (pessoa, score, img)
+    if melhor is not None and not melhor[0]:
+        return melhor[2], None
+    aviso = ("O cenario gerado tinha pessoa; usei o gradiente da paleta." if melhor is not None
+             else "O cenario por IA falhou; usei o gradiente da paleta.")
+    return M._gerar_fundo_gradiente(M.MARINHO, M.PETROLEO, seed), aviso
+
+
+def _linha_do_chao_v60(g):
+    """y da transição parede/chão a partir da luminância 2D (H,W), ou None."""
+    import cv2
+    perfil = cv2.GaussianBlur(g.mean(axis=1).astype(np.float32).reshape(-1, 1), (0, 0), 12).ravel()
+    d = np.abs(np.diff(perfil))
+    a, b = int(_H * 0.55), int(_H * 0.95)
+    k = int(np.argmax(d[a:b])) + a
+    return k if d[k] > 0.35 else None
+
+
+def _zona_rosto_roi(a_f):
+    """(x0, y0, x1, y1) de cabeça+pescoço em coordenadas da ROI (usa a forma do array)."""
+    Hr, Wr = a_f.shape
+    m = a_f > 0.04
+    tem = m.any(axis=1)
+    linhas = np.where(tem)[0]
+    if len(linhas) == 0:
+        return None
+    esq = np.argmax(m, axis=1)
+    dire = Wr - 1 - np.argmax(m[:, ::-1], axis=1)
+    larg = np.where(tem, dire - esq, 0)
+    y_topo = int(linhas[0])
+    jan = larg[y_topo: y_topo + max(10, int(_H * 0.05))]
+    ref = float(np.median(jan[jan > 0])) if np.any(jan > 0) else 0.0
+    y_ombro = y_topo + int(_H * 0.16)
+    if ref > 0:
+        for r in range(y_topo, min(Hr, y_topo + int(_H * 0.40))):
+            if larg[r] > ref * 1.5:
+                y_ombro = r
+                break
+    y1 = max(y_topo + 20, y_ombro - 12)
+    y1 = y_topo + int((y1 - y_topo) * 0.88)  # só a cabeça; o pescoço entra pela máscara de pele
+    x0 = int(esq[y_topo:y1][tem[y_topo:y1]].min()) - 12
+    x1 = int(dire[y_topo:y1][tem[y_topo:y1]].max()) + 12
+    return max(0, x0), max(0, y_topo - 12), min(Wr, x1), min(Hr, y1)
+
+
+def _integrar_v60(fundo, recorte, estilo, seed):
+    """Mesma integração da v59, porém leve: reduz o recorte antes de limpar e processa só a ROI.
+    Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca, info) com info = {lado, x_esq, x_dir}."""
+    import cv2
+    a_raw = np.asarray(recorte.split()[3])
+    ys, xs = np.where(a_raw > 10)
+    if len(ys) == 0:
+        raise ErroEstilo("O recorte do Ronilson veio vazio.")
+    recorte = recorte.crop((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1))
+    del a_raw, ys, xs
+    pw0, ph0 = recorte.size
+    prop = ph0 / pw0
+
+    fundo = fundo.convert("RGB").resize((_W, _H), Image.Resampling.LANCZOS)
+    fundo = fundo.filter(ImageFilter.GaussianBlur(_BLUR_CENARIO.get(estilo, 2.0)))
+    gray = np.asarray(fundo.convert("L"), dtype=np.float32)
+    y_chao = _linha_do_chao_v60(gray)
+
+    corpo = prop >= 2.2
+    feet_y = int(np.clip((y_chao + 0.05 * _H) if y_chao else 0.975 * _H, 0.90 * _H, 0.975 * _H))
+    if corpo:
+        alt = min(int(_H * 0.86), feet_y - int(_H * 0.07))
+    else:
+        larg_alvo = int(_W * (0.50 if prop >= 1.35 else 0.54))
+        alt = min(int(larg_alvo * prop), _H)
+    nw = max(1, int(alt / prop))
+    y0 = feet_y - alt if corpo else _H - alt
+
+    # reduz (com alpha pré-multiplicado) e só então limpa a borda: arrays já no tamanho final
+    pes = recorte.convert("RGBa").resize((nw, alt), Image.Resampling.LANCZOS).convert("RGBA")
+    del recorte
+    rgb_s, a_s = _limpar_borda_v59(pes)
+    del pes
+    corte_esq, corte_dir = _corte_reto(a_s, "esq"), _corte_reto(a_s, "dir")
+
+    if corte_esq and not corte_dir:
+        lado, x0 = "esq", -2
+    elif corte_dir and not corte_esq:
+        lado, x0 = "dir", _W - nw + 2
+    elif corte_esq and corte_dir:
+        lado, x0 = "dir", _W - nw + 2
+    else:
+        lado = "dir"
+        x_max = _W - nw - int(_W * 0.02)
+        x_min = min(int(_W * 0.46), x_max)
+        cands = sorted(set(int(v) for v in np.linspace(x_min, x_max, 4)))
+        g = _pequeno_cinza(fundo)
+        melhor_c = None
+        for cx in cands:
+            gx0, gx1 = int(cx / _W * 270), int(min(_W, cx + nw) / _W * 270)
+            gy0 = int(max(0, y0) / _H * 340)
+            reg = g[gy0:340, gx0:max(gx0 + 2, gx1)]
+            sc = float(reg.std()) - 0.004 * (cx - x_min)
+            if melhor_c is None or sc < melhor_c[0]:
+                melhor_c = (sc, cx)
+        x0 = melhor_c[1]
+
+    rampa = np.ones(nw, np.float32)
+    n_r = min(90, nw // 3)
+    if lado == "dir" and corte_esq:
+        rampa[:n_r] = np.linspace(0, 1, n_r, dtype=np.float32) ** 1.5
+    elif lado == "esq" and corte_dir:
+        rampa[nw - n_r:] = np.linspace(1, 0, n_r, dtype=np.float32) ** 1.5
+    a_s = a_s * rampa[None, :]
+
+    # ROI = corpo + 100px de margem (sombras e brilho de borda)
+    pad = 100
+    rx0, rx1 = max(0, x0 - pad), min(_W, x0 + nw + pad)
+    ry0, ry1 = max(0, y0 - pad), min(_H, y0 + alt + pad)
+    Wr, Hr = rx1 - rx0, ry1 - ry0
+    ox, oy = x0 - rx0, y0 - ry0
+    sub = np.zeros((Hr, Wr, 3), np.float32)
+    a_f = np.zeros((Hr, Wr), np.float32)
+    sx0, sy0 = max(0, -ox), max(0, -oy)
+    dx0, dy0 = max(0, ox), max(0, oy)
+    cw, ch = min(nw - sx0, Wr - dx0), min(alt - sy0, Hr - dy0)
+    sub[dy0:dy0 + ch, dx0:dx0 + cw] = rgb_s[sy0:sy0 + ch, sx0:sx0 + cw]
+    a_f[dy0:dy0 + ch, dx0:dx0 + cw] = a_s[sy0:sy0 + ch, sx0:sx0 + cw]
+    del rgb_s, a_s
+
+    base = np.array(fundo, dtype=np.uint8)  # cópia gravável do cenário (4MB)
+    bg = base[ry0:ry1, rx0:rx1].astype(np.float32)
+
+    ls = cv2.resize(gray, (54, 68), interpolation=cv2.INTER_AREA)
+    pesos = np.clip(ls - np.percentile(ls, 40), 0, None) ** 2
+    cx_luz = float((pesos * np.arange(54)[None, :]).sum() / max(pesos.sum(), 1e-3)) / 54 * _W
+    luz_x = -1.0 if cx_luz < (x0 + nw / 2) else 1.0
+    del gray, ls, pesos
+
+    solido = (a_f > 0.5).astype(np.uint8)
+    anel = cv2.dilate(solido, np.ones((41, 41), np.uint8)) - solido
+    amb = bg[anel > 0].mean(axis=0) if anel.any() else bg.reshape(-1, 3).mean(axis=0)
+    del anel
+
+    # proteção: rosto, pescoço e mãos NÃO recebem ajuste
+    orig = sub.copy()
+    fm = np.zeros((Hr, Wr), np.float32)
+    zr = _zona_rosto_roi(a_f)
+    if zr:
+        fm[zr[1]:zr[3], zr[0]:zr[2]] = 1.0
+        fm = cv2.GaussianBlur(fm, (0, 0), 5)
+    ycc = cv2.cvtColor(np.clip(sub, 0, 255).astype(np.uint8), cv2.COLOR_RGB2YCrCb)
+    Yc, Cr, Cb = ycc[..., 0].astype(np.int16), ycc[..., 1].astype(np.int16), ycc[..., 2].astype(np.int16)
+    del ycc
+    R, G, B = sub[..., 0], sub[..., 1], sub[..., 2]
+    pele = ((Cr >= 135) & (Cr <= 173) & (Cb >= 77) & (Cb <= 120) & (Yc > 45) & (Yc < 235)
+            & (R > G) & (G >= B - 3) & ((R - B) > 18) & (a_f > 0.5)).astype(np.uint8)
+    del Yc, Cr, Cb
+    pele = cv2.morphologyEx(pele, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    pele = cv2.morphologyEx(pele, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n_c, lab, st, _ = cv2.connectedComponentsWithStats(pele)
+    area_corpo = max(int(solido.sum()), 1)
+    for k in range(1, n_c):
+        if st[k, cv2.CC_STAT_AREA] > 0.06 * area_corpo:
+            comp = lab == k
+            if not (fm[comp] > 0.3).any():  # mancha grande fora do rosto = roupa; rosto+pescoço ficam
+                pele[comp] = 0
+    del lab
+    pele = cv2.GaussianBlur(pele.astype(np.float32), (0, 0), 2)
+    nucleo_f = cv2.GaussianBlur(cv2.erode(a_f, np.ones((7, 7), np.uint8)), (0, 0), 1.5)
+    protege = (np.clip(np.maximum(fm, pele), 0, 1) * np.clip(nucleo_f * 1.4, 0, 1))[..., None]
+    del fm, pele, nucleo_f
+
+    # 1) roupa/corpo: cor e exposição da cena + nível de preto
+    media = sub[solido > 0].mean(axis=0)
+    ganho = (amb / max(amb.mean(), 1)) / (media / max(media.mean(), 1))
+    ganho = np.clip(1 + 0.42 * (ganho - 1), 0.78, 1.22)
+    expo = float(np.clip((amb.mean() + 55) / (media.mean() + 55), 0.58, 1.08))
+    sub *= (ganho * (expo ** 0.85)).astype(np.float32)
+    cinza = sub.mean(axis=2, keepdims=True)
+    mx, mn = sub.max(axis=2, keepdims=True), sub.min(axis=2, keepdims=True)
+    k_sat = 0.22 * np.clip((mx - mn) / (mx + 1.0) - 0.22, 0, 1)
+    sub = sub * (1 - k_sat) + cinza * k_sat
+    del cinza, mx, mn, k_sat
+    bg_suave = cv2.GaussianBlur(bg, (0, 0), 20)
+    sub = sub * 0.94 + bg_suave * 0.06
+
+    # 2) luz direcional suave
+    t = np.clip((np.arange(Wr, dtype=np.float32)[None, :] - ox) / max(nw, 1), 0, 1)
+    t = t if luz_x > 0 else 1 - t
+    sub *= (1.04 - 0.12 * t)[..., None]
+    sub *= (1.0 - 0.05 * (np.arange(ry0, ry1, dtype=np.float32) / (_H - 1)))[:, None, None]
+
+    # 3) borda: absorve a cor do cenário + contorno de luz discreto
+    n4 = cv2.GaussianBlur(cv2.erode(a_f, np.ones((9, 9), np.uint8)), (0, 0), 2)
+    n2 = cv2.GaussianBlur(cv2.erode(a_f, np.ones((5, 5), np.uint8)), (0, 0), 1)
+    b4 = np.clip(a_f - n4, 0, 1)[..., None]
+    b2 = np.clip(a_f - n2, 0, 1)[..., None]
+    s_e = np.clip(0.20 * b4 + 0.32 * b2, 0, 0.55)
+    sub = sub * (1 - s_e) + bg_suave * s_e
+    lado_luz = np.clip(1 - t * 2.0, 0, 1)[..., None]
+    rim = np.array([255, 205, 130], np.float32) * 0.5 + amb * 0.6
+    sub = sub + 0.12 * b4 * lado_luz * rim * (1 - sub / 255.0)
+    del n4, n2, b4, b2, s_e, bg_suave
+    sub = sub * (1 - protege) + orig * protege
+    del orig
+
+    # 4) sombras: projetada curta + contato POR PÉ
+    sil = cv2.GaussianBlur(a_f, (0, 0), 14)
+    sombra = cv2.warpAffine(sil, np.float32([[1, 0, -luz_x * 42], [0, 1, 12]]), (Wr, Hr))
+    sombra = sombra * (1 - np.clip(cv2.GaussianBlur(a_f, (0, 0), 2), 0, 1))
+    del sil
+    if corpo:
+        chao = np.zeros((Hr, Wr), np.float32)
+        base_y = oy + alt
+        banda_h = max(12, int(alt * 0.07))
+        yb0 = max(0, base_y - banda_h)
+        faixa = (a_f[yb0:min(Hr, base_y)] > 0.35).astype(np.uint8)
+        n_f, _, st_f, cen_f = cv2.connectedComponentsWithStats(faixa)
+        pes_l = [(int(cen_f[k][0]), yb0 + st_f[k, cv2.CC_STAT_TOP] + st_f[k, cv2.CC_STAT_HEIGHT],
+                  int(st_f[k, cv2.CC_STAT_WIDTH])) for k in range(1, n_f) if st_f[k, cv2.CC_STAT_AREA] >= 40]
+        if pes_l:
+            y_max = max(p[1] for p in pes_l)
+            for xk, ylow, wk in pes_l:
+                dif = y_max - ylow
+                yy_s = ylow - 2 if dif <= 10 else ylow + int(0.6 * dif) + 3
+                forca = 1.0 if dif <= 10 else 0.65
+                cv2.ellipse(chao, (xk, yy_s), (int(max(24, wk * 0.8)), int(_H * 0.011) + 4), 0, 0, 360, forca, -1)
+        else:
+            cv2.ellipse(chao, (ox + nw // 2, base_y - 4), (int(nw * 0.4), int(_H * 0.012) + 4), 0, 0, 360, 1.0, -1)
+        chao = cv2.GaussianBlur(chao, (0, 0), 10)
+        sombra = np.clip(sombra + 0.8 * chao, 0, 1)
+        degrade = np.clip((np.arange(Hr, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
+        bg = bg * (1 - 0.16 * degrade)[:, None, None]
+        del chao, degrade
+    s = (0.32 * sombra)[..., None]
+    bg = bg * (1 - s) + (amb * 0.20) * s
+    del sombra, s
+
+    # 5) composição na ROI; grão e correção de cor da cena NÃO entram no rosto/mãos
+    out = bg * (1 - a_f[..., None]) + sub * a_f[..., None]
+    del bg, sub
+    sem_grao = np.clip(out, 0, 255).astype(np.uint8)
+    del out
+    base[ry0:ry1, rx0:rx1] = sem_grao
+    rng = np.random.RandomState(int(seed) % 100000)
+    for r0 in range(0, _H, 225):
+        r1 = min(_H, r0 + 225)
+        ruido = rng.normal(0, 2.4, (r1 - r0, _W, 1)).astype(np.float32)
+        base[r0:r1] = np.clip(base[r0:r1].astype(np.float32) + ruido, 0, 255).astype(np.uint8)
+    graduada = np.asarray(_grade_estilo(Image.fromarray(base), "cinematic" if estilo == "cinematic" else "showcase"))
+    del base
+    final = np.array(graduada, dtype=np.uint8)
+    P = protege[..., 0] * a_f
+    P3 = P[..., None]
+    gr_roi = graduada[ry0:ry1, rx0:rx1].astype(np.float32)
+    final[ry0:ry1, rx0:rx1] = np.clip(gr_roi * (1 - P3) + sem_grao.astype(np.float32) * P3, 0, 255).astype(np.uint8)
+    del gr_roi, graduada, sem_grao, protege, P3
+    img = Image.fromarray(final)
+
+    # geometria para o título (coordenadas do card)
+    r0, r1 = max(0, int(_H * 0.35) - ry0), min(Hr, int(_H * 0.92) - ry0)
+    cols = np.where((a_f[r0:r1] > 0.3).any(axis=0))[0] if r1 > r0 else []
+    info = {"lado": lado,
+            "x_esq": int(cols.min()) + rx0 if len(cols) else x0,
+            "x_dir": int(cols.max()) + rx0 if len(cols) else x0 + nw}
+    cab = _caixa_cabeca(a_f)
+    if cab:
+        cab = (max(0, cab[0] + rx0), max(0, cab[1] + ry0), min(_W, cab[2] + rx0), min(_H, cab[3] + ry0))
+    return img, corpo, cab, info
+
+
 def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     """Card = cenário por estilo/tema + Ronilson (ronilson_sem_fundo) integrado + título."""
     rotulo = ESTILOS[estilo]["rotulo"] if estilo in ESTILOS else "Automático"
     aviso = None
     try:
         _ETAPA["v"] = "escolher recorte do Ronilson"
-        recorte, pid = _carregar_recorte_ronilson()
+        recorte, pid = _carregar_recorte_ronilson_v60()
         _ETAPA["v"] = "gerar cenario"
-        fundo, aviso = _cenario_ronilson_v59(estilo, tema, seed)
+        fundo, aviso = _cenario_ronilson_v60(estilo, tema, seed)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
-        img, em_pe, cabeca, info = _integrar_v59(fundo, recorte, estilo, seed)
+        img, em_pe, cabeca, info = _integrar_v60(fundo, recorte, estilo, seed)
         try:
             haar = M._detectar_rosto(img)
             if haar:
