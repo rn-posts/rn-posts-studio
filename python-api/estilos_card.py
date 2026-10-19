@@ -175,7 +175,265 @@ def _escolher_variante(seed, pedida=None):
     return _VARIANTES[int(seed) % len(_VARIANTES)]
 
 
-def _prompt(estilo, tema="", variante=None):
+# ══════════════════════════════════════════════════════════════════════════════
+# v61 — PROMPTS ENRIQUECIDOS: variação real a cada geração + leitura psicológica do tema
+#  • cada estilo tem bancos de sujeito/composição/luz/superfície escolhidos pela seed
+#  • Cinematic/Showcase/Automático ganham CONTEÚDO de cena: metáfora psicológica ligada ao tema
+#    (ser visto, recomeço, vazio, tensão, vínculo, tristeza, identidade) + identidade "novo dia"
+#  • só texto de prompt: sem custo extra de chamadas, memória ou processamento
+# ══════════════════════════════════════════════════════════════════════════════
+import unicodedata
+
+_CHAVES_PSI = {
+    "visto": ("vist", "ver ", "olhar", "olhad", "aparec", "atencao", "reconhec", "enxerg", "invisiv", "notad", "escut"),
+    "recomeco": ("recome", "novo dia", "nova chance", "oportunid", "esperanc", "renasc", "mudanc", "amanhec",
+                 "futuro", "chance", "supera", "cura", "transform"),
+    "vazio": ("vazio", "solidao", "sozinh", "abandon", "carenc", "isolad"),
+    "tensao": ("ansied", "raiva", "estress", "tensao", "panico", "irritab", "impuls", "crise", "intens", "explos"),
+    "vinculo": ("relacion", "vinculo", "amor", "casal", "famili", "amizad", "afeto", "conex", "apego", "rejeic"),
+    "tristeza": ("depress", "tristez", "luto", "perda", "dor ", "choro", "melanc"),
+    "autoestima": ("autoestim", "identidade", "valor", "autocuid", "aceit", "proprio"),
+}
+
+_AMBIENTES_PSI = {
+    "visto": (
+        "a warm, lived-in consulting room at dawn: two armchairs angled toward each other, one of them softly lit "
+        "by a shaft of morning light, a small wooden side table with a cup of tea and a closed notebook, sheer curtains glowing",
+        "a quiet room where a single beam of early morning light crosses the floor and lands on one wooden chair, "
+        "floating dust motes glowing in the beam, the rest of the room softly dark and calm",
+        "a window at sunrise seen from inside a cozy room, sheer curtain glowing gold, a small plant on the sill, "
+        "warm light spilling across the wooden floor toward the viewer",
+        "a round mirror leaning against a wall catching the golden light of sunrise, reflecting only the window and the curtain",
+        "a single warm lamp glowing on a wooden table in a softly blurred cool teal room, small but unmistakable, "
+        "like being noticed in the dark",
+    ),
+    "recomeco": (
+        "a wooden door slightly ajar in a calm room, bright sunrise light and soft sage plants at the threshold",
+        "an open window on a quiet morning, curtains lifting gently, new light entering the room, a small sprouting "
+        "plant in a clay pot on the sill",
+        "a made bed with crisp linen at first light, a cup on the nightstand, a warm sun stripe across the covers",
+        "a cozy reading corner with an armchair, a folded blanket and a window full of sunrise glow, an invitation to begin again",
+        "a stone path leading through a garden gate toward soft sunrise light, dew on the leaves",
+    ),
+    "vazio": (
+        "two armchairs facing each other, one empty with a folded blanket, warm morning light reaching the empty one",
+        "a table set for two in a quiet room, one cup steaming, the opposite chair empty but touched by soft sunlight",
+        "a quiet living room at golden hour with a lit lamp and a sunbeam over an empty sofa cushion",
+        "a single warm window glowing in an otherwise softly dark room, a plant keeping company on the sill",
+    ),
+    "tensao": (
+        "slow mist dissolving in a calm room where early light cuts through, tension easing, a plain wooden table",
+        "raindrops on a window glass with a warm sunrise glow behind, the storm passing, a dry cozy sill with a plant",
+        "a loosely coiled golden thread on a wooden table, untangling in soft light",
+        "a steaming cup of tea on a windowsill, steam curling into the first light, calm after intensity",
+    ),
+    "vinculo": (
+        "two ceramic cups side by side on a small table with morning steam, two chairs facing each other, warm light",
+        "two armchairs close together with a shared blanket and warm sunrise light through the window",
+        "a table with two sets of simple tableware and a small vase of sage leaves in warm morning light, welcoming and safe",
+        "a worn wooden bench in a sunlit garden corner with two cushions, soft golden dawn light",
+    ),
+    "tristeza": (
+        "gentle rain on a window with a thin line of warm golden light breaking through the clouds beyond, a quiet room, a cup of tea",
+        "a softly lit room turning from night toward dawn, a blanket over an armchair, one warm lamp, the first light touching the curtains",
+        "a plant leaning toward a sunlit window in a quiet room, new growth visible",
+        "a wooden table with an open empty notebook and a pen near a window with early light, room to start writing again",
+    ),
+    "autoestima": (
+        "a bright corner with an armchair, a plant and sunrise light forming a quiet spotlight on the seat",
+        "a sunlit desk with a notebook, a cup and a small green plant, calm confidence, morning light",
+        "a calm wall with a window reflecting the sunrise, a plant and warm light, quiet dignity",
+    ),
+    "novo_dia": (
+        "a window at sunrise seen from inside a cozy room, sheer curtain glowing gold, a plant on the sill, light on the floor",
+        "a wooden door slightly ajar with bright dawn light and sage plants at the threshold",
+        "a warm lived-in consulting room at dawn, two armchairs, one softly lit by morning light, a cup of tea",
+        "a quiet room with a single beam of early light landing on a wooden chair, dust motes glowing",
+    ),
+}
+
+_LEITURA_PSI = {
+    "visto": "the light should feel like being noticed, welcomed and safely witnessed",
+    "recomeco": "a calm, hopeful sense of a new day, a new chance and a first step",
+    "vazio": "an empty space that is not lonely but ready to be shared, with light finding it",
+    "tensao": "tension easing, breath returning, calm after intensity",
+    "vinculo": "safe connection, closeness without pressure, being held",
+    "tristeza": "gentle comfort, light returning after the storm",
+    "autoestima": "quiet dignity and self-worth, warmly lit",
+    "novo_dia": "dawn as a metaphor for a new chance and a new opportunity",
+}
+
+_VAR = {
+    "gold": {
+        "sujeito": (
+            "a wide matte teal-glazed chawan tea bowl", "a deep navy glazed cup with a delicate handle",
+            "a shallow sage-green plate", "a tall narrow vase in petroleum teal", "a small round teapot in dusty navy",
+            "a wide-mouthed pitcher in cream and teal", "a lidded jar with a deep teal glaze",
+        ),
+        "extra": (
+            "fine hairline gold seams", "bold branching gold seams like rivers", "a single dramatic crack filled with gold",
+            "scattered fragments joined by luminous gold",
+        ),
+        "onde": ("on dark slate", "on aged oak wood", "on rough linen cloth", "on pale stone", "on a dark walnut table",
+                 "on a sage-green ceramic tile"),
+        "comp": ("close-up on the seam with shallow depth of field", "three-quarter view at eye level",
+                 "low angle with generous negative space", "soft top-down angle", "wide framing with the object small"),
+        "luz": ("soft dawn side-light from the left", "warm window light with gentle shadow",
+                "backlit rim light with a glowing edge", "diffused overcast light with warm glints on the gold"),
+        "detalhe": ("a sprig of sage leaves nearby", "a folded neutral cloth", "a tiny wildflower", "a few fallen petals",
+                    "nothing else, minimal"),
+    },
+    "smoke": {
+        "sujeito": ("slow vertical ribbons of mist rising", "a gentle spiral of smoke unwinding",
+                    "a soft curtain of mist drifting sideways", "thin wisps threading through a beam of light",
+                    "low rolling mist at floor level with clear air above", "wisps curling around a window frame"),
+        "luz": ("backlit by a warm solar-orange dawn glow", "side-lit teal light with an orange edge",
+                "cold navy shadows opening to warm light at the top", "a single beam of golden light slicing through"),
+        "onde": ("in a calm dark room", "in a quiet room with a large window", "against a soft gradient backdrop",
+                 "over a wooden floor and a plain wall"),
+        "comp": ("seen straight on", "from a slightly low angle", "wide with generous empty space",
+                 "closer framing with soft depth"),
+    },
+    "portal": {
+        "sujeito": ("a wooden door slightly ajar", "an arched doorway without a door", "a glass door with a sheer curtain",
+                    "an open sliding wooden screen door", "a garden gate half open",
+                    "a tall window opening onto a garden like a door"),
+        "onde": ("from a quiet dark living room", "from a simple warm hallway", "from a cozy room with a rug and an armchair",
+                 "from a stairwell landing"),
+        "fora": ("a sunrise garden with sage plants", "a soft pastel sunrise sky above green hills",
+                 "a stone path across dewy grass", "tall plants glowing in backlight"),
+        "luz": ("golden-orange light flooding in", "long soft rays through dusty air", "gentle haze lit from behind"),
+        "comp": ("seen straight on", "from a low angle", "from a gentle diagonal", "a wide shot with the ceiling visible"),
+    },
+    "ice": {
+        "sujeito": ("a clear ice sphere melting on a sage leaf", "an ice cube on dark stone releasing a bright droplet",
+                    "a fractured block of ice letting warm light through the crack",
+                    "a long icicle with a bead of water about to fall", "a frosted window pane thawing in sunrise light",
+                    "a small bowl carved of ice with a thin warm glow inside"),
+        "luz": ("first warm solar-orange light refracting through the ice", "soft golden backlight inside the ice",
+                "cool teal light with a warm point of orange"),
+        "onde": ("on a dark wooden surface", "on a slate tile", "on a window sill", "on a smooth stone"),
+        "comp": ("tabletop scale, macro-like", "eye level, shallow depth of field", "slightly from above"),
+    },
+    "floating": {
+        "sujeito": ("a ceramic cup, a few leaves and a thin golden thread",
+                    "a small key, a leaf and a golden thread (a new opportunity)",
+                    "a few smooth pebbles in balance and a feather", "seeds drifting upward with a thin golden thread",
+                    "an origami paper crane and a few sage leaves", "a small open book with lifting pages and floating leaves",
+                    "three small paper lanterns with a warm glow", "a young plant sprig with a thin golden thread"),
+        "comp": ("arranged in a vertical column", "along a gentle diagonal", "in a loose orbit around an empty center",
+                 "rising from lower-left toward upper-right"),
+        "fundo": ("a petroleum teal to navy gradient backdrop", "a sage to soft cream gradient with a warm glow",
+                  "a deep navy backdrop with a subtle warm horizon glow", "a petroleum teal backdrop with a soft light bloom"),
+    },
+    "macro": {
+        "sujeito": ("a dewdrop on a sage-green leaf vein", "a droplet on a spider web at sunrise", "a petal with a dew bead",
+                    "a tiny sprout breaking through soil", "frost crystals melting on a leaf edge",
+                    "moss with a glistening droplet", "a flower bud beginning to open", "a seed with a thin green shoot"),
+        "bokeh": ("creamy teal bokeh with a single orange light point", "warm golden bokeh with cool navy edges",
+                  "sage-green bokeh with white haze highlights"),
+        "comp": ("razor-thin depth of field at eye level with the subject", "slightly from above",
+                 "from a low angle, backlit"),
+    },
+    "museum": {
+        "sujeito": ("a mended ceramic bowl on a low plinth", "a small sprouting plant in an old cup on a plinth",
+                    "an empty gilded frame hanging alone under a spotlight",
+                    "a simple wooden chair displayed like art under a spotlight", "a stack of smooth stones on a plinth",
+                    "a gold-seamed vase on a plinth", "an open empty notebook on a lectern"),
+        "parede": ("a deep navy wall", "a petroleum teal wall", "a soft sage wall with a warm spotlight",
+                   "a warm off-white wall with a dark floor"),
+        "luz": ("a single soft spotlight from above", "a skylight beam", "a side track light grazing the wall texture"),
+    },
+}
+
+_TRATAMENTO = {
+    "cinematic": (
+        "35mm lens, shallow depth of field, blue hour turning to sunrise",
+        "50mm lens, soft morning backlight through sheer curtains",
+        "anamorphic look with a subtle warm flare, a quiet night turning to dawn",
+        "85mm compression, window light, gentle haze",
+    ),
+    "showcase": (
+        "soft diffused daylight, intimate and human scale, an editorial still-life feel",
+        "a gentle window key light with warm fill, calm and refined",
+        "a clean calm backdrop with a single symbolic element lit by morning light",
+    ),
+}
+
+_ATMOSFERA = ("volumetric dust in the light", "light rain outside the window", "soft morning haze", "clean crisp air")
+
+_REGRAS_PESSOA_DEPOIS = (
+    "RULES (a real adult will be composited into this scene later): show a solid floor and a wall clearly; "
+    "soft diffused light coming from the left or from the front, NEVER a sun disc, lamp, bright window or glare "
+    "directly behind the right-hand area; no water, sea, lake or wet reflective floor; not an empty real-estate-style "
+    "interior and not a long dark corridor; human scale with lived-in details; any object stays small and distant."
+)
+
+
+def _norm_psi(t):
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode("ascii").lower()
+    return " " + t.replace("*", " ").replace("-", " ").replace(":", " ") + " "
+
+
+def _grupo_psi(tema, rnd):
+    t = _norm_psi(tema)
+    grupos = [g for g, chaves in _CHAVES_PSI.items() if any(c in t for c in chaves)]
+    return rnd.choice(grupos) if grupos else "novo_dia"
+
+
+def _enriquecer(estilo, tema, seed, sem_pessoas=False):
+    """Texto extra do prompt: cena específica desta geração + leitura psicológica do tema."""
+    try:
+        rnd = random.Random(int(seed) * 7919 + sum(ord(c) for c in estilo))
+        esc = lambda lista: lista[rnd.randrange(len(lista))]
+        grupo = _grupo_psi(tema, rnd)
+        partes = []
+
+        if estilo in ("cinematic", "showcase", "auto"):
+            partes.append(f"Setting (a psychological metaphor, never literal): {esc(_AMBIENTES_PSI[grupo])}.")
+            if estilo in _TRATAMENTO:
+                partes.append(f"Treatment: {esc(_TRATAMENTO[estilo])}; {esc(_ATMOSFERA)}.")
+            if estilo == "showcase":
+                partes.append("Not an advertising or real-estate look: intimate, human, quiet.")
+            partes.append("No sea, lake, beach or tourist-landscape imagery.")
+        elif estilo in _VAR:
+            v = _VAR[estilo]
+            if estilo == "gold":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])}, "
+                              f"kintsugi-mended with {esc(v['extra'])}, {esc(v['onde'])}; {esc(v['comp'])}; "
+                              f"{esc(v['luz'])}; {esc(v['detalhe'])}.")
+            elif estilo == "smoke":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])} "
+                              f"{esc(v['onde'])}; {esc(v['luz'])}; {esc(v['comp'])}.")
+            elif estilo == "portal":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])} seen "
+                              f"{esc(v['onde'])}, with {esc(v['fora'])} outside; {esc(v['luz'])}; {esc(v['comp'])}.")
+            elif estilo == "ice":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])} "
+                              f"{esc(v['onde'])}; {esc(v['luz'])}; {esc(v['comp'])}; small tabletop scale only, no large bodies of water.")
+            elif estilo == "floating":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])}, "
+                              f"{esc(v['comp'])}, on {esc(v['fundo'])}.")
+            elif estilo == "macro":
+                partes.append(f"Specific scene (this takes priority over the generic description): macro of "
+                              f"{esc(v['sujeito'])}; {esc(v['comp'])}; {esc(v['bokeh'])}.")
+            elif estilo == "museum":
+                partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])}; "
+                              f"{esc(v['parede'])}; {esc(v['luz'])}.")
+
+        partes.append(f"Emotional reading of the image: {_LEITURA_PSI[grupo]}.")
+        partes.append(f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997}); "
+                      "avoid the most obvious, stock-photo composition.")
+        if sem_pessoas:
+            partes.append("The scene is EMPTY of people (no figures, faces, hands or silhouettes).")
+            partes.append(_REGRAS_PESSOA_DEPOIS)
+        return " ".join(partes)
+    except Exception as e:
+        print(f"[estilo] enriquecimento ignorado: {e}")
+        return ""
+
+
+def _prompt(estilo, tema="", variante=None, seed=None):
     e = ESTILOS[estilo]
     M = _m()
     tema_limpo = (
@@ -195,12 +453,14 @@ def _prompt(estilo, tema="", variante=None):
     if _REALISMO_SUAVE and estilo in _ESTILOS_COM_PESSOA:
         realismo = _TOQUE_REALISMO + " "
     diretriz = (_DIRETRIZ_VARIANTE.get(variante, "") + " ") if variante else ""
+    enriq = (_enriquecer(estilo, tema, seed) + " ") if seed is not None else ""  # v61
 
     return (
         "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic "
         "whose identity is dawn, hope, emotional care, healing and transformation. "
         f"{contexto_tema}"
         f"Visual style and scene: {e['cena']}. Lighting: {e['luz']}. "
+        f"{enriq}"
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
         "Mood: professional, welcoming, intimate, never clinical-cold, never hospital, "
@@ -475,7 +735,7 @@ def _base_cena(estilo, seed, tema="", variante_pedida=None):
             print("[estilo] sem foto real; usando rosto de frente por IA")
             variante = "frente"
     _ETAPA["variante"] = variante or "-"
-    prompt = _prompt(estilo, tema, variante)
+    prompt = _prompt(estilo, tema, variante, seed)
     print(f"[estilo] Gerando imagem IA para '{estilo}'...")
     img, motivo = _gerar_imagem_ia(prompt)
     aviso = None
@@ -613,7 +873,8 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
         return (
             M._prompt_fundo_ia(tema, seed, True)
             + " The scene needs a believable floor or ground plane and clear depth so a standing "
-              "adult can be placed on the right side; soft key light from the upper left."
+              "adult can be placed on the right side; soft key light from the upper left. "
+            + _enriquecer("auto", tema, seed, sem_pessoas=True)  # v61
         )
     e = ESTILOS[estilo]
     tema_limpo = M._texto_tema_limpo(tema) if hasattr(M, "_texto_tema_limpo") else (tema or "")
@@ -623,6 +884,7 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
         "psychology clinic whose identity is dawn, hope, emotional care, healing and transformation."
         f"{contexto}"
         f"Visual style and scene: {e['cena']}. Lighting: {e['luz']}. "
+        f"{_enriquecer(estilo, tema, seed, sem_pessoas=True)} "
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
         "Composition: vertical 4:5, a believable floor or ground plane and clear visual depth. The RIGHT 55% "
