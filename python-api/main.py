@@ -2404,6 +2404,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 else:
                     total_w += w
 
+            # v62: se algum bloco quebrou em mais de uma linha, o modo inline (que usa so a 1a linha
+            # de cada bloco) descartaria as demais palavras; forca o modo de linhas separadas.
+            if any(len(_g[0]) > 1 for _g in grupo):
+                total_w = MAX_PX + 1
+
             if total_w > MAX_PX:
                 # Não cabe inline: renderiza cada bloco em linha própria
                 # mas agrupa malgun+fundo+malgun que se seguem

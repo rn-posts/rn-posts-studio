@@ -363,11 +363,47 @@ _TRATAMENTO = {
 _ATMOSFERA = ("volumetric dust in the light", "light rain outside the window", "soft morning haze", "clean crisp air")
 
 _REGRAS_PESSOA_DEPOIS = (
-    "RULES (a real adult will be composited into this scene later): show a solid floor and a wall clearly; "
+    "RULES: show a solid floor and a wall clearly; "
     "soft diffused light coming from the left or from the front, NEVER a sun disc, lamp, bright window or glare "
     "directly behind the right-hand area; no water, sea, lake or wet reflective floor; not an empty real-estate-style "
-    "interior and not a long dark corridor; human scale with lived-in details; any object stays small and distant."
+    "interior and not a long dark corridor; human scale with lived-in details; any object stays small and distant. "
+    "EXPOSURE: bright, airy and luminous (mid-to-high key), a warm hopeful new-day morning mood, shadows lifted, "
+    "no large pure-black areas, never gloomy or heavy. SCALE: realistic proportions seen from standing eye level "
+    "(about 1.5 m camera height); furniture and objects stay in the left half and in the background, clearly smaller "
+    "than a standing adult would be, and the right-hand foreground stays empty."
 )
+
+# v63: estilos abstratos (fundo desfocado/gradiente) nao tem chao/parede; regra propria
+_ESTILOS_ABSTRATOS = ("macro", "floating", "ice")
+_REGRAS_PESSOA_ABSTRATO = (
+    "RULES: the backdrop is a smooth, soft, out-of-focus "
+    "gradient or bokeh with gentle depth, no hard horizon lines and no busy detail; the symbolic element stays small "
+    "and far from the right-hand area, which stays open and calmly lit; soft diffused light from the left or the "
+    "front, NEVER a sun disc, lamp or glare directly behind the right-hand area. EXPOSURE: bright, airy and "
+    "luminous (mid-to-high key), a warm hopeful new-day morning mood, no large pure-black areas, never gloomy or heavy."
+)
+
+# v63: o prompt do Automatico (main.py) sorteia agua; troca por equivalentes sem agua (so no modo Com Ronilson)
+_SUBST_AGUA = (
+    ("reflections on water at dawn", "warm reflections on a window glass at dawn"),
+    ("dawn over still water and vegetation", "dawn light entering a calm room with plants"),
+    ("still dawn landscape, open sky, slow water, breathing space, cool air",
+     "a calm room with a wide window onto an open dawn sky, breathing space, cool air"),
+    ("chrysalis of light: leaves, water reflection, dawn, growth",
+     "chrysalis of light: leaves, a glass jar catching dawn light, growth"),
+    # v64: o espaco "reservado para uma pessoa" induz o Gemini a desenhar um vulto; folhagem/escuro conflitam com a identidade
+    ("reserved for compositing a real person later", "kept plain and calm, with nothing in it"),
+    ("sunbeam through leaves", "a soft sunbeam through sheer curtains"),
+    ("stays darker/muted so typography can sit there", "stays calm and slightly deeper in tone so typography can sit there"),
+    ("soft overcast light through trees, mist, hope at the edge of the frame, not gloomy",
+     "soft overcast morning light through a window, gentle haze, hope at the edge of the frame, not gloomy"),
+)
+
+
+def _sem_agua(txt):
+    for a, b in _SUBST_AGUA:
+        txt = txt.replace(a, b)
+    return txt
 
 
 def _norm_psi(t):
@@ -425,8 +461,10 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
         partes.append(f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997}); "
                       "avoid the most obvious, stock-photo composition.")
         if sem_pessoas:
-            partes.append("The scene is EMPTY of people (no figures, faces, hands or silhouettes).")
-            partes.append(_REGRAS_PESSOA_DEPOIS)
+            partes.append("The scene is EMPTY of people: no figures, faces, hands, silhouettes, ghostly or blurred "
+                          "human shapes, reflections of people, statues, mannequins or portraits anywhere, "
+                          "especially not in the right-hand area.")
+            partes.append(_REGRAS_PESSOA_ABSTRATO if estilo in _ESTILOS_ABSTRATOS else _REGRAS_PESSOA_DEPOIS)
         return " ".join(partes)
     except Exception as e:
         print(f"[estilo] enriquecimento ignorado: {e}")
@@ -871,9 +909,9 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
     M = _m()
     if estilo == "auto":
         return (
-            M._prompt_fundo_ia(tema, seed, True)
-            + " The scene needs a believable floor or ground plane and clear depth so a standing "
-              "adult can be placed on the right side; soft key light from the upper left. "
+            _sem_agua(M._prompt_fundo_ia(tema, seed, True))
+            + " The scene needs a believable floor or ground plane and clear depth; keep the right side plain, "
+              "calm and empty; soft key light from the upper left. "
             + _enriquecer("auto", tema, seed, sem_pessoas=True)  # v61
         )
     e = ESTILOS[estilo]
@@ -887,9 +925,9 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
         f"{_enriquecer(estilo, tema, seed, sem_pessoas=True)} "
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
-        "Composition: vertical 4:5, a believable floor or ground plane and clear visual depth. The RIGHT 55% "
-        "of the frame is open, softly lit space (wall, air, bokeh or empty floor) reserved for compositing a "
-        "real standing adult later; keep the LEFT 40% calm, darker and uncluttered for large typography. "
+        f"Composition: vertical 4:5, {'a soft out-of-focus backdrop with clear visual depth' if estilo in _ESTILOS_ABSTRATOS else 'a believable floor or ground plane and clear visual depth'}. The RIGHT 55% "
+        "of the frame is plain, calm and softly lit (wall, air, bokeh or empty floor) with nothing in it; "
+        "keep the LEFT 40% calm and uncluttered for large typography. "
         "Any symbolic object sits low, small, in the lower-left or center, below the typography area. "
         "Soft key light coming from the upper left. "
         "Absolutely no people, no faces, no hands, no mannequins, no silhouettes, no text, no letters, "
@@ -1094,6 +1132,132 @@ def _zona_rosto_v58(a_f):
     return max(0, x0), max(0, y_topo - 12), min(_W, x1), y1
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v65 — COR DA ROUPA: verifica e, se preciso, RECOLORE (não "pinta")
+#  • mede a cor dominante da camisa (k-means em Lab, só roupa; rosto/mãos/pele ficam de fora)
+#  • decide: mantém se já combina com a paleta e contrasta com a cena; senão troca para uma
+#    cor da paleta (petróleo, marinho, sálvia, branco) escolhida pelo contraste com o cenário
+#  • a troca preserva a luminosidade/textura do tecido (dobras, costuras), só muda o tom
+#  • o ajuste antigo (mistura de cor da cena + dessaturação) foi removido: era ele que "pintava"
+# ══════════════════════════════════════════════════════════════════════════════
+_PALETA_ROUPA = {
+    "petroleo": (27, 121, 125),
+    "marinho": (2, 64, 89),
+    "salvia": (119, 153, 147),
+    "branco": (244, 246, 248),
+}
+_PESO_ROUPA = {"petroleo": 1.0, "marinho": 0.95, "salvia": 0.8, "branco": 0.7}
+
+
+def _lab_de_rgb(rgb):
+    import cv2
+    return cv2.cvtColor(np.array([[rgb]], np.float32) / 255.0, cv2.COLOR_RGB2LAB)[0, 0].astype(np.float32)
+
+
+def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
+    """sub: (H,W,3) float 0-255 do corpo no canvas; a_f: alpha; protege: (H,W) rosto/pele.
+    Retorna sub com a camisa mantida ou recolorida. Qualquer falha devolve sub intacto."""
+    import cv2
+    try:
+        ys, xs = np.where(a_f > 0.5)
+        if len(ys) < 3000:
+            return sub
+        y_a, y_b, x_a, x_b = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+        crop = np.clip(sub[y_a:y_b, x_a:x_b], 0, 255).astype(np.float32) / 255.0
+        a_c = a_f[y_a:y_b, x_a:x_b]
+        p_c = protege[y_a:y_b, x_a:x_b]
+        lab = cv2.cvtColor(crop, cv2.COLOR_RGB2LAB)
+        h = y_b - y_a
+        livre = (a_c > 0.5) & (p_c < 0.3)
+
+        # faixa onde está a camisa (abaixo da cabeça, acima do quadril estimado)
+        topo, base = int(h * (0.18 if corpo else 0.10)), int(h * (0.52 if corpo else 0.88))
+        faixa = livre.copy()
+        faixa[:topo] = False
+        faixa[base:] = False
+        idx = np.argwhere(faixa)
+        if len(idx) < 1500:
+            return sub
+        if len(idx) > 6000:
+            idx = idx[np.random.RandomState(1).choice(len(idx), 6000, replace=False)]
+        amostra = lab[idx[:, 0], idx[:, 1]].astype(np.float32)
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        _, rot, cent = cv2.kmeans(amostra, 3, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+        dom = cent[int(np.argmax(np.bincount(rot.ravel(), minlength=3)))]
+
+        amb_lab = _lab_de_rgb(tuple(float(v) for v in np.clip(amb, 0, 255)))
+        pal_lab = {k: _lab_de_rgb(v) for k, v in _PALETA_ROUPA.items()}
+        de = lambda p, q: float(np.linalg.norm(p - q))
+        croma = float(np.hypot(dom[1], dom[2]))
+        de_pal = min(de(dom, v) for v in pal_lab.values())
+        contraste = abs(float(dom[0]) - float(amb_lab[0]))
+
+        # 1) a cor atual já serve? (parece da paleta, ou neutra, e se destaca do cenário)
+        combina = de_pal <= 24 or (croma <= 9 and 25 < dom[0] < 92)
+        if combina and contraste >= 18:
+            return sub
+
+        # 2) escolhe a cor-alvo da paleta pelo contraste/separação com o cenário
+        rnd = np.random.RandomState(int(seed) % 100000)
+        melhor = None
+        for nome, plab in pal_lab.items():
+            c_l = min(abs(float(plab[0]) - float(amb_lab[0])), 50.0) / 50.0
+            sep = min(de(plab, amb_lab), 60.0) / 60.0
+            sc = _PESO_ROUPA[nome] * (0.6 * c_l + 0.4 * sep) + 0.08 * rnd.rand()
+            if melhor is None or sc > melhor[0]:
+                melhor = (sc, nome, plab)
+        _, nome_alvo, alvo = melhor
+
+        # 3) máscara da camisa: mesmo matiz (a,b) da cor dominante, tolerando sombra/luz (L); sem pele/rosto
+        dab = np.hypot(lab[..., 1] - dom[1], lab[..., 2] - dom[2])
+        dl = np.abs(lab[..., 0] - dom[0])
+        R, G, B = crop[..., 0] * 255.0, crop[..., 1] * 255.0, crop[..., 2] * 255.0
+        ycc = cv2.cvtColor(crop, cv2.COLOR_RGB2YCrCb)
+        pele_cor = ((ycc[..., 1] * 255 >= 130) & (ycc[..., 1] * 255 <= 175) & (ycc[..., 2] * 255 >= 75)
+                    & (ycc[..., 2] * 255 <= 124) & (R > G) & (G >= B - 3) & ((R - B) > 15)).astype(np.uint8)
+        pele_cor = cv2.dilate(pele_cor, np.ones((9, 9), np.uint8)) > 0
+        # mesmo matiz com mais croma (sombras da própria camisa) também entra, se a camisa tem cor própria
+        ang = np.arctan2(lab[..., 2], lab[..., 1])
+        dang = np.abs(np.angle(np.exp(1j * (ang - float(np.arctan2(dom[2], dom[1]))))))
+        mesmo_matiz = (np.hypot(lab[..., 1], lab[..., 2]) > 4) & (dang < 0.45) if croma >= 9 else False
+        mascara = livre & (dl < 45) & (~pele_cor) & ((dab < 24) | mesmo_matiz)
+        # começa nos ombros (largura do corpo salta em relação à da cabeça): nunca recolore rosto/pescoço
+        larg = (a_c > 0.5).sum(axis=1).astype(np.float32)
+        ref = float(np.median(larg[: max(8, int(h * 0.05))][larg[: max(8, int(h * 0.05))] > 0])) \
+            if (larg[: max(8, int(h * 0.05))] > 0).any() else 0.0
+        ombro = None
+        if ref > 0:
+            for r in range(int(h * 0.03), int(h * 0.55)):
+                if larg[r] > ref * 1.45:
+                    ombro = r
+                    break
+        inicio = max(0, (ombro - 4) if ombro is not None else topo)
+        mascara[:inicio] = False
+        limite = int(h * (0.60 if corpo else 0.95))
+        mascara[limite:] = False
+        mascara = cv2.morphologyEx(mascara.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+        corpo_px = max(int((a_c > 0.5).sum()), 1)
+        frac = float(mascara.sum()) / corpo_px
+        if frac < 0.04 or frac > 0.75:  # máscara implausível: não mexe
+            return sub
+        m = cv2.GaussianBlur(mascara.astype(np.float32), (0, 0), 1.2) * (a_c > 0.3)
+
+        # 4) recolore preservando a luz/textura do tecido: L acompanha, a/b vão para o alvo
+        novo = lab.copy()
+        novo[..., 0] = np.clip(lab[..., 0] + (float(alvo[0]) - float(dom[0])) * 0.65, 4, 98)
+        novo[..., 1] = float(alvo[1]) + (lab[..., 1] - float(dom[1])) * 0.35
+        novo[..., 2] = float(alvo[2]) + (lab[..., 2] - float(dom[2])) * 0.35
+        rec = np.clip(cv2.cvtColor(novo, cv2.COLOR_LAB2RGB), 0, 1) * 255.0
+        out = sub.copy()
+        out[y_a:y_b, x_a:x_b] = sub[y_a:y_b, x_a:x_b] * (1 - m[..., None]) + rec * m[..., None]
+        print(f"[roupa] cor atual Lab=({dom[0]:.0f},{dom[1]:.0f},{dom[2]:.0f}) -> {nome_alvo}")
+        return out
+    except Exception as e:
+        print(f"[roupa] recoloracao ignorada: {e}")
+        return sub
+
+
 def _integrar_v58(fundo, recorte, estilo, seed):
     """Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca, x_esquerdo_do_corpo)."""
     import cv2
@@ -1145,20 +1309,28 @@ def _integrar_v58(fundo, recorte, estilo, seed):
         fm = cv2.GaussianBlur(fm, (0, 0), 5)
     ycc = cv2.cvtColor(np.clip(sub, 0, 255).astype(np.uint8), cv2.COLOR_RGB2YCrCb).astype(np.int32)
     Yc, Cr, Cb = ycc[..., 0], ycc[..., 1], ycc[..., 2]
-    pele = ((Cr >= 135) & (Cr <= 173) & (Cb >= 77) & (Cb <= 122) & (Yc > 45) & (Yc < 235)).astype(np.float32)
-    pele = cv2.GaussianBlur(cv2.morphologyEx(pele, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)), (0, 0), 3)
+    R, G, B = sub[..., 0], sub[..., 1], sub[..., 2]  # v64: mascara de pele mais robusta
+    pele = ((Cr >= 135) & (Cr <= 173) & (Cb >= 77) & (Cb <= 120) & (Yc > 45) & (Yc < 235)
+            & (R > G) & (G >= B - 3) & ((R - B) > 18) & (a_f > 0.5)).astype(np.uint8)
+    pele = cv2.morphologyEx(pele, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    pele = cv2.morphologyEx(pele, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    _n_c, _lab, _st, _ = cv2.connectedComponentsWithStats(pele)
+    _area_corpo = max(int((a_f > 0.5).sum()), 1)
+    for _k in range(1, _n_c):
+        if _st[_k, cv2.CC_STAT_AREA] > 0.06 * _area_corpo:
+            _comp = _lab == _k
+            if not (fm[_comp] > 0.3).any():  # mancha grande fora do rosto = roupa; rosto+pescoco ficam
+                pele[_comp] = 0
+    del _lab
+    pele = cv2.GaussianBlur(pele.astype(np.float32), (0, 0), 2)
     protege = np.clip(np.maximum(fm, pele), 0, 1) * np.clip(a_f * 1.5, 0, 1)
     protege = protege[..., None]
 
-    # 1) roupa/corpo: cor e exposição da cena (pele fica de fora depois)
-    media = sub[solido > 0].mean(axis=0)
-    ganho = (amb / max(amb.mean(), 1)) / (media / max(media.mean(), 1))
-    ganho = np.clip(1 + 0.42 * (ganho - 1), 0.78, 1.22)
-    expo = float(np.clip((amb.mean() + 55) / (media.mean() + 55), 0.58, 1.08))
-    sub = sub * ganho * (expo ** 0.85)
-    cinza = sub.mean(axis=2, keepdims=True)
-    sat = (sub.max(axis=2, keepdims=True) - sub.min(axis=2, keepdims=True)) / (sub.max(axis=2, keepdims=True) + 1.0)
-    sub = sub * (1 - 0.18 * np.clip(sat - 0.25, 0, 1)) + cinza * (0.18 * np.clip(sat - 0.25, 0, 1))
+    # 1) roupa/corpo: a cor so muda por recoloracao consciente (v65); depois so a exposicao acompanha a cena
+    sub = _recolorir_roupa(sub, a_f, protege[..., 0], amb, seed, corpo)
+    media_l = float(sub[solido > 0].mean())
+    expo = float(np.clip((amb.mean() + 55) / (media_l + 55), 0.62, 1.08))
+    sub = sub * (expo ** 0.6)
 
     # 2) luz direcional suave
     X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
