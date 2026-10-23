@@ -2173,7 +2173,19 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             cor_rect_f = _cor_principal
             cor_txt_f  = CORES_FUNDO_TEXTO.get(cor_rect_f, MARINHO)
             lns = _quebrar(txt, f_fundo, MAX_PX - 20)
-            blocos_render.append((lns, f_fundo, cor_txt_f, 0, est, cor_rect_f, False))
+            f_fundo_blk = f_fundo
+            # v66: destaque curto (ex.: "so aparecer") fica em UMA linha: reduz a fonte (ate 72%) antes de quebrar
+            if len(lns) > 1 and len(txt.split()) <= 4:
+                for _kf in (0.92, 0.85, 0.78, 0.72):
+                    try:
+                        _f_try = _fonte_agilera_para_modo(modo, max(30, int(tam_ag * _kf)))[0]
+                    except Exception:
+                        break
+                    _lns_try = _quebrar(txt, _f_try, MAX_PX - 20)
+                    if len(_lns_try) == 1:
+                        lns, f_fundo_blk = _lns_try, _f_try
+                        break
+            blocos_render.append((lns, f_fundo_blk, cor_txt_f, 0, est, cor_rect_f, False))
 
         else:  # normal — modo tipográfico aplicado
             txt_out = _texto_para_modo(modo, txt)

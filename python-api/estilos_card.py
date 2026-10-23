@@ -1211,11 +1211,10 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
         # 3) máscara da camisa: mesmo matiz (a,b) da cor dominante, tolerando sombra/luz (L); sem pele/rosto
         dab = np.hypot(lab[..., 1] - dom[1], lab[..., 2] - dom[2])
         dl = np.abs(lab[..., 0] - dom[0])
-        R, G, B = crop[..., 0] * 255.0, crop[..., 1] * 255.0, crop[..., 2] * 255.0
-        ycc = cv2.cvtColor(crop, cv2.COLOR_RGB2YCrCb)
-        pele_cor = ((ycc[..., 1] * 255 >= 130) & (ycc[..., 1] * 255 <= 175) & (ycc[..., 2] * 255 >= 75)
-                    & (ycc[..., 2] * 255 <= 124) & (R > G) & (G >= B - 3) & ((R - B) > 15)).astype(np.uint8)
-        pele_cor = cv2.dilate(pele_cor, np.ones((9, 9), np.uint8)) > 0
+        # pele por Lab (a 5..28, b 8..34): camisa vermelha/rosa/laranja NAO e pele
+        pele_cor = ((lab[..., 1] >= 5) & (lab[..., 1] <= 28) & (lab[..., 2] >= 8) & (lab[..., 2] <= 34)
+                    & (lab[..., 0] > 25) & (lab[..., 0] < 92)).astype(np.uint8)
+        pele_cor = cv2.dilate(pele_cor, np.ones((5, 5), np.uint8)) > 0
         # mesmo matiz com mais croma (sombras da própria camisa) também entra, se a camisa tem cor própria
         ang = np.arctan2(lab[..., 2], lab[..., 1])
         dang = np.abs(np.angle(np.exp(1j * (ang - float(np.arctan2(dom[2], dom[1]))))))
@@ -1231,12 +1230,11 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
                 if larg[r] > ref * 1.45:
                     ombro = r
                     break
-        inicio = max(0, (ombro - 4) if ombro is not None else topo)
-        mascara[:inicio] = False
-        limite = int(h * (0.60 if corpo else 0.95))
+        mascara[: int(h * 0.02)] = False  # v66: sem corte nos ombros/quadril; a protecao de rosto/pele ja exclui o resto
+        limite = int(h * (0.75 if corpo else 0.97))
         mascara[limite:] = False
         mascara = cv2.morphologyEx(mascara.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+        mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         corpo_px = max(int((a_c > 0.5).sum()), 1)
         frac = float(mascara.sum()) / corpo_px
         if frac < 0.04 or frac > 0.75:  # máscara implausível: não mexe
@@ -1281,6 +1279,17 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     a_s = cv2.resize(a_r, (nw, alt), interpolation=cv2.INTER_AREA)
     x0 = max(int(_W * 0.46), _W - nw - int(_W * 0.02))
     y0 = int(_H * 0.975) - alt if corpo else _H - alt
+    # v66: foto cortada na lateral (corte reto): dissolve a borda em vez de mostrar uma quina
+    try:
+        _n_r = min(90, nw // 3)
+        _ramp = np.ones(nw, np.float32)
+        if _corte_reto(a_s, "esq"):
+            _ramp[:_n_r] = np.linspace(0, 1, _n_r, dtype=np.float32) ** 1.5
+        if _corte_reto(a_s, "dir"):
+            _ramp[nw - _n_r:] = np.linspace(1, 0, _n_r, dtype=np.float32) ** 1.5
+        a_s = a_s * _ramp[None, :]
+    except Exception as e:
+        print(f"[ronilson] suavizar corte reto ignorado: {e}")
 
     sub = np.zeros((_H, _W, 3), np.float32)
     a_f = np.zeros((_H, _W), np.float32)
@@ -1309,9 +1318,16 @@ def _integrar_v58(fundo, recorte, estilo, seed):
         fm = cv2.GaussianBlur(fm, (0, 0), 5)
     ycc = cv2.cvtColor(np.clip(sub, 0, 255).astype(np.uint8), cv2.COLOR_RGB2YCrCb).astype(np.int32)
     Yc, Cr, Cb = ycc[..., 0], ycc[..., 1], ycc[..., 2]
-    R, G, B = sub[..., 0], sub[..., 1], sub[..., 2]  # v64: mascara de pele mais robusta
-    pele = ((Cr >= 135) & (Cr <= 173) & (Cb >= 77) & (Cb <= 120) & (Yc > 45) & (Yc < 235)
-            & (R > G) & (G >= B - 3) & ((R - B) > 18) & (a_f > 0.5)).astype(np.uint8)
+    # v66: pele por Lab (a 5..28, b 8..34): camisa vermelha/rosa/laranja NAO e pele
+    _ys, _xs = np.where(a_f > 0.5)
+    pele = np.zeros(a_f.shape, np.uint8)
+    if len(_ys):
+        _y0, _y1, _x0, _x1 = _ys.min(), _ys.max() + 1, _xs.min(), _xs.max() + 1
+        _lab = cv2.cvtColor(np.clip(sub[_y0:_y1, _x0:_x1], 0, 255).astype(np.float32) / 255.0, cv2.COLOR_RGB2LAB)
+        _sk = ((_lab[..., 1] >= 5) & (_lab[..., 1] <= 28) & (_lab[..., 2] >= 8) & (_lab[..., 2] <= 34)
+               & (_lab[..., 0] > 25) & (_lab[..., 0] < 92) & (a_f[_y0:_y1, _x0:_x1] > 0.5))
+        pele[_y0:_y1, _x0:_x1] = _sk.astype(np.uint8)
+        del _lab, _sk
     pele = cv2.morphologyEx(pele, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     pele = cv2.morphologyEx(pele, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     _n_c, _lab, _st, _ = cv2.connectedComponentsWithStats(pele)
@@ -2181,6 +2197,23 @@ def _integrar_v60(fundo, recorte, estilo, seed):
     return img, corpo, cab, info
 
 
+def _clarear_cenario(img):
+    """v66: cenario escuro demais (o Gemini ignora 'claro') ganha luz: eleva a mediana e o preto, sem estourar."""
+    try:
+        a = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        lum_d = a[:, int(a.shape[1] * 0.40):].mean(axis=2)  # area onde o corpo fica (60% da direita)
+        med = float(np.median(lum_d))
+        if med >= 0.30:
+            return img
+        g = float(np.clip(np.log(0.30) / np.log(max(med, 0.02)), 0.55, 1.0))
+        a = 0.07 + np.power(a, g) * 0.93
+        print(f"[cenario] escuro (mediana {med:.2f}); clareado com gamma {g:.2f}")
+        return Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8))
+    except Exception as e:
+        print(f"[cenario] clarear ignorado: {e}")
+        return img
+
+
 def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     """Card = cenário por estilo/tema + Ronilson (ronilson_sem_fundo) integrado + título."""
     rotulo = ESTILOS[estilo]["rotulo"] if estilo in ESTILOS else "Automático"
@@ -2190,6 +2223,7 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         recorte, pid = _carregar_recorte_ronilson()
         _ETAPA["v"] = "gerar cenario"
         fundo, aviso = _cenario_ronilson(estilo, tema, seed)
+        fundo = _clarear_cenario(fundo)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
         img, em_pe, cabeca, x_esq = _integrar_v58(fundo, recorte, estilo, seed)
         try:
