@@ -417,6 +417,17 @@ def _grupo_psi(tema, rnd):
     return rnd.choice(grupos) if grupos else "novo_dia"
 
 
+# v69: cadeiras/poltronas saiam demais e o fundo ficava gigante ao lado da pessoa (escala errada)
+_MOVEIS_GRANDES = ("chair", "armchair", "sofa", "bench", "stool")
+_REGRA_ESCALA_V69 = (
+    "NO chairs, armchairs, stools, benches or sofas anywhere in the frame, and no large furniture: the environment "
+    "is architectural (wall, floor, soft window light, gentle shadows) with at most one small plant or cup far in "
+    "the background. WIDE SHOT with a distant camera: everything in the scene looks small and far away, windows "
+    "and doors are modest in size (never a huge floor-to-ceiling feature filling the frame), so a standing adult "
+    "placed in the foreground will be clearly larger than any object in the scene."
+)
+
+
 def _enriquecer(estilo, tema, seed, sem_pessoas=False):
     """Texto extra do prompt: cena específica desta geração + leitura psicológica do tema."""
     try:
@@ -426,7 +437,10 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
         partes = []
 
         if estilo in ("cinematic", "showcase", "auto"):
-            partes.append(f"Setting (a psychological metaphor, never literal): {esc(_AMBIENTES_PSI[grupo])}.")
+            opcoes_amb = _AMBIENTES_PSI[grupo]
+            if sem_pessoas:  # v69: no Com Ronilson, ambientes com cadeira/poltrona/sofa ficam de fora
+                opcoes_amb = [o for o in opcoes_amb if not any(k in o for k in _MOVEIS_GRANDES)] or opcoes_amb
+            partes.append(f"Setting (a psychological metaphor, never literal): {esc(opcoes_amb)}.")
             if estilo in _TRATAMENTO:
                 partes.append(f"Treatment: {esc(_TRATAMENTO[estilo])}; {esc(_ATMOSFERA)}.")
             if estilo == "showcase":
@@ -465,6 +479,7 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
                           "human shapes, reflections of people, statues, mannequins or portraits anywhere, "
                           "especially not in the right-hand area.")
             partes.append(_REGRAS_PESSOA_ABSTRATO if estilo in _ESTILOS_ABSTRATOS else _REGRAS_PESSOA_DEPOIS)
+            partes.append(_REGRA_ESCALA_V69)  # v69
         return " ".join(partes)
     except Exception as e:
         print(f"[estilo] enriquecimento ignorado: {e}")
@@ -1235,6 +1250,18 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
         mascara[limite:] = False
         mascara = cv2.morphologyEx(mascara.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        # v69: areas claras da pele (rosto/maos) pareciam camisa clara e eram recoloridas (manchas azuladas).
+        # So e camisa o que NAO esta cercado de pele e pertence a um bloco continuo relevante.
+        dens_pele = cv2.blur(pele_cor.astype(np.float32), (41, 41))
+        mascara = np.where(dens_pele > 0.18, 0, mascara).astype(np.uint8)
+        n_cc, rot_cc, st_cc, _ = cv2.connectedComponentsWithStats(mascara)
+        if n_cc > 1:
+            area_max = int(st_cc[1:, cv2.CC_STAT_AREA].max())
+            manter = np.zeros(n_cc, dtype=bool)
+            for k in range(1, n_cc):
+                if int(st_cc[k, cv2.CC_STAT_AREA]) >= 0.06 * area_max:
+                    manter[k] = True
+            mascara = manter[rot_cc].astype(np.uint8)
         corpo_px = max(int((a_c > 0.5).sum()), 1)
         frac = float(mascara.sum()) / corpo_px
         if frac < 0.04 or frac > 0.75:  # máscara implausível: não mexe
