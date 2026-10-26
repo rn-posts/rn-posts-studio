@@ -1279,17 +1279,30 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     a_s = cv2.resize(a_r, (nw, alt), interpolation=cv2.INTER_AREA)
     x0 = max(int(_W * 0.46), _W - nw - int(_W * 0.02))
     y0 = int(_H * 0.975) - alt if corpo else _H - alt
-    # v66: foto cortada na lateral (corte reto): dissolve a borda em vez de mostrar uma quina
+    # v68: a sombra de estudio sob os sapatos (alpha parcial) aparece como "mancha": corta abaixo do ultimo pixel solido
+    if corpo:
+        try:
+            _lin = np.where((a_s > 0.85).sum(axis=1) > 2)[0]
+            if len(_lin):
+                a_s[min(alt, int(_lin.max()) + 4):, :] = 0.0
+        except Exception as e:
+            print(f"[ronilson] limpar sombra do estudio ignorado: {e}")
+    # v68: foto cortada na lateral (corte reto): a lateral reta encosta na borda do card e o titulo vai para o outro lado
+    lado_x = "dir"
     try:
+        _c_esq, _c_dir = _corte_reto(a_s, "esq"), _corte_reto(a_s, "dir")
         _n_r = min(90, nw // 3)
         _ramp = np.ones(nw, np.float32)
-        if _corte_reto(a_s, "esq"):
+        if _c_esq and not _c_dir:
+            x0, lado_x = -2, "esq"
+        elif _c_dir and not _c_esq:
+            x0 = _W - nw + 2
+        elif _c_esq and _c_dir:  # cortada nos dois lados: dissolve as duas bordas
             _ramp[:_n_r] = np.linspace(0, 1, _n_r, dtype=np.float32) ** 1.5
-        if _corte_reto(a_s, "dir"):
             _ramp[nw - _n_r:] = np.linspace(1, 0, _n_r, dtype=np.float32) ** 1.5
         a_s = a_s * _ramp[None, :]
     except Exception as e:
-        print(f"[ronilson] suavizar corte reto ignorado: {e}")
+        print(f"[ronilson] tratar corte reto ignorado: {e}")
 
     sub = np.zeros((_H, _W, 3), np.float32)
     a_f = np.zeros((_H, _W), np.float32)
@@ -1345,8 +1358,8 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     # 1) roupa/corpo: a cor so muda por recoloracao consciente (v65); depois so a exposicao acompanha a cena
     sub = _recolorir_roupa(sub, a_f, protege[..., 0], amb, seed, corpo)
     media_l = float(sub[solido > 0].mean())
-    expo = float(np.clip((amb.mean() + 55) / (media_l + 55), 0.62, 1.08))
-    sub = sub * (expo ** 0.6)
+    expo = float(np.clip((amb.mean() + 55) / (media_l + 55), 0.82, 1.06))
+    sub = sub * (expo ** 0.5)
 
     # 2) luz direcional suave
     X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
@@ -1372,14 +1385,29 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     desloc = np.float32([[1, 0, -luz_x * 42], [0, 1, 12]])
     sombra = cv2.warpAffine(sil, desloc, (_W, _H))
     sombra = sombra * (1 - np.clip(cv2.GaussianBlur(a_f, (0, 0), 2), 0, 1))
+    sombra = sombra * (0.0 if corpo else 0.5)  # v68: sem sombra projetada "fantasma" no fundo (corpo inteiro: so contato)
     if corpo:
-        base_y = int(y0 + alt - 4)
-        fx = np.where(a_f[max(0, base_y - 40):min(_H, base_y), :].max(axis=0) > 0.3)[0]
-        cx = int(fx.mean()) if len(fx) else x0 + nw // 2
         chao = np.zeros((_H, _W), np.float32)
-        cv2.ellipse(chao, (cx, base_y), (int(nw * 0.55), int(_H * 0.013) + 5), 0, 0, 360, 1.0, -1)
-        chao = cv2.GaussianBlur(chao, (0, 0), 12)
-        sombra = np.clip(sombra + 0.75 * chao, 0, 1)
+        _ys_s = np.where((a_f > 0.35).any(axis=1))[0]
+        base_y = int(_ys_s.max()) if len(_ys_s) else int(y0 + alt - 4)
+        banda_h = max(12, int(alt * 0.07))
+        yb0 = max(0, base_y - banda_h)
+        faixa = (a_f[yb0:base_y + 1] > 0.35).astype(np.uint8)
+        n_f, _, st_f, cen_f = cv2.connectedComponentsWithStats(faixa)
+        pes_l = [(int(cen_f[k][0]), yb0 + st_f[k, cv2.CC_STAT_TOP] + st_f[k, cv2.CC_STAT_HEIGHT],
+                  int(st_f[k, cv2.CC_STAT_WIDTH])) for k in range(1, n_f) if st_f[k, cv2.CC_STAT_AREA] >= 40]
+        if pes_l:  # uma sombra de contato por pe; pe levantado ganha sombra no chao logo abaixo
+            y_max = max(p[1] for p in pes_l)
+            for xk, ylow, wk in pes_l:
+                dif = y_max - ylow
+                yy_s = ylow - 2 if dif <= 10 else ylow + int(0.6 * dif) + 3
+                forca = 1.0 if dif <= 10 else 0.7
+                cv2.ellipse(chao, (xk, yy_s), (int(max(26, wk * 0.85)), int(_H * 0.011) + 5), 0, 0, 360, forca, -1)
+        else:
+            cx = x0 + nw // 2
+            cv2.ellipse(chao, (cx, base_y), (int(nw * 0.4), int(_H * 0.012) + 5), 0, 0, 360, 1.0, -1)
+        chao = cv2.GaussianBlur(chao, (0, 0), 10)
+        sombra = np.clip(sombra + 1.5 * chao, 0, 1)
         degrade = np.clip((np.arange(_H, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
         bg = bg * (1 - 0.18 * degrade)[:, None, None]
     s = (0.32 * sombra)[..., None]
@@ -1399,7 +1427,8 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     r0, r1 = int(_H * 0.35), int(_H * 0.92)
     cols = np.where((a_f[r0:r1] > 0.3).any(axis=0))[0]
     x_esq = int(cols.min()) if len(cols) else x0
-    return img, corpo, _caixa_cabeca(a_f), x_esq
+    x_dir = int(cols.max()) if len(cols) else x0 + nw
+    return img, corpo, _caixa_cabeca(a_f), x_esq, lado_x, x_dir
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2197,6 +2226,62 @@ def _integrar_v60(fundo, recorte, estilo, seed):
     return img, corpo, cab, info
 
 
+# v68: poses com gesto solto (dedos levantados, dedo na testa, apontando) nao combinam com o tema -> sorteia outra foto
+_cache_pose = {}  # public_id -> True se a pose tem gesto
+
+
+def _pose_tem_gesto(img, pid):
+    """Visao do Gemini (1 chamada por foto, com cache em memoria). Falha/sem chave = considera neutra."""
+    if pid in _cache_pose:
+        return _cache_pose[pid]
+    M = _m()
+    chave = getattr(M, "GEMINI_API_KEY", None)
+    if not chave:
+        return False
+    try:
+        rgba = img.convert("RGBA")
+        fundo_c = Image.new("RGB", rgba.size, (200, 200, 200))
+        fundo_c.paste(rgba, mask=rgba.split()[3])
+        fundo_c.thumbnail((360, 480))
+        buf = io.BytesIO()
+        fundo_c.save(buf, "JPEG", quality=75)
+        payload = {
+            "contents": [{"parts": [
+                {"text": "Look only at the person's hands and arms. Answer with exactly one word: GESTO if a hand is "
+                         "raised, fingers are counting or pointing, a hand is raised to the forehead/temple, the palm is "
+                         "presented or waving; NEUTRO if the arms are down, crossed, in pockets, resting, the hand rests "
+                         "on the chin, or the person holds an object naturally (tablet, pen, glasses)."},
+                {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()}},
+            ]}],
+            "generationConfig": {"temperature": 0},
+        }
+        r = requests.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+                          f"?key={chave}", json=payload, timeout=12)
+        if r.status_code >= 400:
+            return False
+        partes = r.json()["candidates"][0]["content"]["parts"]
+        txt = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip().upper()
+        resultado = txt.startswith("GESTO")
+        _cache_pose[pid] = resultado
+        print(f"[ronilson] pose {pid}: {'GESTO' if resultado else 'neutra'}")
+        return resultado
+    except Exception as e:
+        print(f"[ronilson] classificacao de pose ignorada: {e}")
+        return False
+
+
+def _carregar_recorte_neutro():
+    """Sorteia uma foto; se a pose tem gesto solto, sorteia outra (ate 4 tentativas)."""
+    ultimo = None
+    for _ in range(4):
+        recorte, pid = _carregar_recorte_ronilson_v60()
+        ultimo = (recorte, pid)
+        if not _pose_tem_gesto(recorte, pid):
+            return recorte, pid
+        print(f"[ronilson] pose com gesto ({pid}); sorteando outra")
+    return ultimo
+
+
 def _clarear_cenario(img):
     """v66: cenario escuro demais (o Gemini ignora 'claro') ganha luz: eleva a mediana e o preto, sem estourar."""
     try:
@@ -2220,12 +2305,12 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     aviso = None
     try:
         _ETAPA["v"] = "escolher recorte do Ronilson"
-        recorte, pid = _carregar_recorte_ronilson()
+        recorte, pid = _carregar_recorte_neutro()
         _ETAPA["v"] = "gerar cenario"
         fundo, aviso = _cenario_ronilson(estilo, tema, seed)
         fundo = _clarear_cenario(fundo)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
-        img, em_pe, cabeca, x_esq = _integrar_v58(fundo, recorte, estilo, seed)
+        img, em_pe, cabeca, x_esq, lado_x, x_dir = _integrar_v58(fundo, recorte, estilo, seed)
         try:
             haar = M._detectar_rosto(img)
             if haar:
@@ -2234,13 +2319,39 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             print(f"[ronilson] Haar ignorado: {e}")
         _ETAPA["v"] = "montar o card (titulo/layout)"
         cor_dest, cor_fundo_txt = M._escolher_cor_destaque(seed)
-        # v58: titulo maior e com mais respiro, limitado pela silhueta real do corpo
-        max_px = int(max(340, min(520, x_esq - getattr(M, "SAFE_MARGIN", 80) - 28)))
+        # v67: tamanho do bloco do titulo normalizado (~44% da largura do card), com mais respiro entre linhas
+        _margem = getattr(M, "SAFE_MARGIN", 80)
+        if lado_x == "esq":  # corpo encostado na esquerda: o titulo comeca depois dele
+            x_texto = int(min(_W * 0.62, x_dir + 36))
+            disponivel = int(max(300, _W - x_texto - 70))
+        else:
+            x_texto = None
+            disponivel = int(max(300, x_esq - _margem - 28))
+        max_px = int(max(340 if x_texto is None else 300, min(520, disponivel)))
         escala = max(0.72, min(0.95, 0.72 * max_px / 352.0))
-        card, _ = M.desenhar_titulo(
-            img, tema, seed, cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt,
-            cor_overlay=None, tem_pessoa=True, em_pe=em_pe, cabeca_bbox=cabeca,
-            max_px_pessoa=max_px, escala_pessoa=escala, respiro=1.22, gap_fator=0.14)
+        _kw = dict(cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt, cor_overlay=None, tem_pessoa=True,
+                   em_pe=em_pe, cabeca_bbox=cabeca, respiro=1.24, gap_fator=0.22, x_texto=x_texto)
+        try:  # passada de medicao: o motor desenha, medimos a largura real do bloco e corrigimos a escala
+            alvo = min(int(_W * 0.44), disponivel)
+            teste, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
+            dif = np.abs(np.asarray(teste.convert("RGB"), dtype=np.int16)
+                         - np.asarray(img.convert("RGB"), dtype=np.int16)).max(axis=2) > 45
+            if lado_x == "esq":
+                dif[:, :max(0, x_texto - 10)] = False  # so a area do texto (a direita), nunca o corpo
+            else:
+                dif[:, max(0, x_esq - 10):] = False  # so a area do texto, nunca o corpo
+            cols = np.where(dif.any(axis=0))[0]
+            del teste, dif
+            if len(cols) > 20:
+                largura = int(cols.max() - cols.min())
+                fator = alvo / max(largura, 1)
+                if fator < 0.88 or fator > 1.10:
+                    escala = float(np.clip(escala * fator, 0.55, 1.12))
+                    max_px = int(min(disponivel, max(300, alvo + 40)))
+                    print(f"[titulo] bloco {largura}px -> alvo {alvo}px; escala {escala:.2f}")
+        except Exception as e:
+            print(f"[titulo] normalizacao ignorada: {e}")
+        card, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()
         card.save(saida, format="JPEG", quality=93)
