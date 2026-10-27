@@ -1844,7 +1844,7 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
-                    respiro=1.10, gap_fator=0.06, x_texto=None):
+                    respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None):
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
@@ -1951,6 +1951,10 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
     Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = melhor
+    if zona_teto and Y_INI > int(zona_teto[0]):  # v69: opcional; so SOBE o texto quando a zona escolhida ficou baixa demais
+        Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = _avaliar_zona(
+            int(zona_teto[0]), int(zona_teto[1]))
+        print(f"[titulo] zona elevada pelo teto: Y_INI={Y_INI} Y_FIM={Y_FIM}")
     print(f"[titulo] zona ótima escolhida (busca ativa sempre, v17): "
           f"complexidade={complexidade_zona:.2f} lum={lum_zona_real:.2f}")
 

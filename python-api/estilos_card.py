@@ -1200,6 +1200,27 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
         _, rot, cent = cv2.kmeans(amostra, 3, None, crit, 3, cv2.KMEANS_PP_CENTERS)
         dom = cent[int(np.argmax(np.bincount(rot.ravel(), minlength=3)))]
 
+        # v69: a cor da camisa vem do PEITO (centro do tronco), nao do cluster mais frequente da faixa,
+        # que podia ser calca/sapato (no post 3 a calca e os sapatos foram tingidos).
+        semente = None
+        try:
+            rows_p = slice(int(h * 0.26), int(h * 0.40))
+            cols_ok = np.where(livre[rows_p].any(axis=0))[0]
+            if len(cols_ok) > 40:
+                cmed = int(np.median(cols_ok))
+                jan = max(20, int(0.08 * (x_b - x_a)))
+                sx0, sx1 = max(0, cmed - jan), min(lab.shape[1], cmed + jan)
+                am_p = lab[rows_p, sx0:sx1].reshape(-1, 3)
+                ok_p = livre[rows_p, sx0:sx1].reshape(-1)
+                sk_p = ((am_p[:, 1] >= 5) & (am_p[:, 1] <= 28) & (am_p[:, 2] >= 8) & (am_p[:, 2] <= 34)
+                        & (am_p[:, 0] > 25) & (am_p[:, 0] < 92))
+                am_p = am_p[ok_p & ~sk_p]
+                if len(am_p) > 400:
+                    dom = np.median(am_p, axis=0).astype(np.float32)
+                    semente = (rows_p, sx0, sx1)
+        except Exception as e:
+            print(f"[roupa] semente do peito ignorada: {e}")
+
         amb_lab = _lab_de_rgb(tuple(float(v) for v in np.clip(amb, 0, 255)))
         pal_lab = {k: _lab_de_rgb(v) for k, v in _PALETA_ROUPA.items()}
         de = lambda p, q: float(np.linalg.norm(p - q))
@@ -1256,12 +1277,26 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
         mascara = np.where(dens_pele > 0.18, 0, mascara).astype(np.uint8)
         n_cc, rot_cc, st_cc, _ = cv2.connectedComponentsWithStats(mascara)
         if n_cc > 1:
-            area_max = int(st_cc[1:, cv2.CC_STAT_AREA].max())
             manter = np.zeros(n_cc, dtype=bool)
-            for k in range(1, n_cc):
-                if int(st_cc[k, cv2.CC_STAT_AREA]) >= 0.06 * area_max:
-                    manter[k] = True
+            if semente is not None:  # so o bloco ligado ao peito e camisa (calca/sapato/manchas ficam de fora)
+                _r, _c0, _c1 = semente
+                _ids = np.unique(rot_cc[_r, _c0:_c1])
+                manter[_ids[_ids > 0]] = True
+            if not manter.any():
+                area_max = int(st_cc[1:, cv2.CC_STAT_AREA].max())
+                for k in range(1, n_cc):
+                    if int(st_cc[k, cv2.CC_STAT_AREA]) >= 0.06 * area_max:
+                        manter[k] = True
             mascara = manter[rot_cc].astype(np.uint8)
+        # v69: nunca recolorir pela metade (faixas): se a mascara cobre menos de 50% do corpo livre nas
+        # linhas da camisa, mantem a cor original.
+        _ys_m = np.where(mascara.any(axis=1))[0]
+        if len(_ys_m):
+            _r0, _r1 = int(_ys_m.min()), int(_ys_m.max()) + 1
+            _cob = float(mascara[_r0:_r1].sum()) / max(float(livre[_r0:_r1].sum()), 1.0)
+            if _cob < 0.50:
+                print(f"[roupa] cobertura {_cob:.2f} < 0.50: mantendo a cor original")
+                return sub
         corpo_px = max(int((a_c > 0.5).sum()), 1)
         frac = float(mascara.sum()) / corpo_px
         if frac < 0.04 or frac > 0.75:  # máscara implausível: não mexe
@@ -2277,7 +2312,9 @@ def _pose_tem_gesto(img, pid):
                 {"text": "Look only at the person's hands and arms. Answer with exactly one word: GESTO if a hand is "
                          "raised, fingers are counting or pointing, a hand is raised to the forehead/temple, the palm is "
                          "presented or waving; NEUTRO if the arms are down, crossed, in pockets, resting, the hand rests "
-                         "on the chin, or the person holds an object naturally (tablet, pen, glasses)."},
+                         "on the chin, or the person holds an object naturally (tablet, pen, glasses). "
+                         "BUT answer CADEIRA if the person is sitting, perched or leaning on anything, if the legs are "
+                         "crossed or lifted as if seated, or if any chair or furniture is visible in the image, even partially."},
                 {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()}},
             ]}],
             "generationConfig": {"temperature": 0},
@@ -2288,7 +2325,7 @@ def _pose_tem_gesto(img, pid):
             return False
         partes = r.json()["candidates"][0]["content"]["parts"]
         txt = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip().upper()
-        resultado = txt.startswith("GESTO")
+        resultado = txt.startswith("GESTO") or txt.startswith("CADEIRA")  # v69: sentado/apoiado/cadeira tambem descarta
         _cache_pose[pid] = resultado
         print(f"[ronilson] pose {pid}: {'GESTO' if resultado else 'neutra'}")
         return resultado
@@ -2300,7 +2337,7 @@ def _pose_tem_gesto(img, pid):
 def _carregar_recorte_neutro():
     """Sorteia uma foto; se a pose tem gesto solto, sorteia outra (ate 4 tentativas)."""
     ultimo = None
-    for _ in range(4):
+    for _ in range(6):  # v69: 6 tentativas (poses sentadas/com cadeira tambem sao descartadas)
         recorte, pid = _carregar_recorte_ronilson_v60()
         ultimo = (recorte, pid)
         if not _pose_tem_gesto(recorte, pid):
@@ -2352,14 +2389,15 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             x_texto = int(min(_W * 0.62, x_dir + 36))
             disponivel = int(max(300, _W - x_texto - 70))
         else:
-            x_texto = None
-            disponivel = int(max(300, x_esq - _margem - 28))
+            x_texto = int(_margem * 0.8)  # v69: texto um pouco mais a esquerda, cabe fonte maior
+            disponivel = int(max(300, x_esq - x_texto - 22))
         max_px = int(max(340 if x_texto is None else 300, min(520, disponivel)))
-        escala = max(0.72, min(0.95, 0.72 * max_px / 352.0))
+        escala = max(0.72, min(1.05, 0.72 * max_px / 352.0))  # v69: teto 0.95 -> 1.05
         _kw = dict(cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt, cor_overlay=None, tem_pessoa=True,
-                   em_pe=em_pe, cabeca_bbox=cabeca, respiro=1.24, gap_fator=0.22, x_texto=x_texto)
+                   em_pe=em_pe, cabeca_bbox=cabeca, respiro=1.30, gap_fator=0.30, x_texto=x_texto,
+                   zona_teto=(None if em_pe else (int(_H * 0.42), int(_H * 0.68))))  # v69: mais respiro; sobe o titulo se caiu baixo
         try:  # passada de medicao: o motor desenha, medimos a largura real do bloco e corrigimos a escala
-            alvo = min(int(_W * 0.44), disponivel)
+            alvo = min(int(_W * 0.47), disponivel)  # v69: 0.44 -> 0.47
             teste, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
             dif = np.abs(np.asarray(teste.convert("RGB"), dtype=np.int16)
                          - np.asarray(img.convert("RGB"), dtype=np.int16)).max(axis=2) > 45
