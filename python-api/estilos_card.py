@@ -420,12 +420,61 @@ def _grupo_psi(tema, rnd):
 # v69: cadeiras/poltronas saiam demais e o fundo ficava gigante ao lado da pessoa (escala errada)
 _MOVEIS_GRANDES = ("chair", "armchair", "sofa", "bench", "stool")
 _REGRA_ESCALA_V69 = (
-    "NO chairs, armchairs, stools, benches or sofas anywhere in the frame, and no large furniture: the environment "
-    "is architectural (wall, floor, soft window light, gentle shadows) with at most one small plant or cup far in "
-    "the background. WIDE SHOT with a distant camera: everything in the scene looks small and far away, windows "
-    "and doors are modest in size (never a huge floor-to-ceiling feature filling the frame), so a standing adult "
+    "NO chairs, armchairs, stools, benches or sofas anywhere in the frame, and no large furniture. "
+    "WIDE SHOT with a distant camera: everything in the scene looks small and far away, windows "
+    "and doors are modest in size (never a huge feature filling the frame), so a standing adult "
     "placed in the foreground will be clearly larger than any object in the scene."
 )
+
+# v70: o Com Ronilson caia quase sempre em "comodo vazio" (cara de anuncio de imovel). Agora cada geracao
+# usa um LUGAR diferente, em rodizio (baralho embaralhado: so repete depois de passar por todos).
+_LUGARES_V70 = {
+    "parque": "a quiet tree-lined park path in soft early-morning light, tall trees with sun rays through the leaves, "
+              "softly blurred green background, a paved or dirt path at the bottom of the frame",
+    "jardim": "a lush garden terrace with potted plants, flowering shrubs and a low stone wall, warm morning sun, soft bokeh",
+    "biblioteca": "a warm library wall of tall wooden bookshelves full of books, a soft reading-lamp glow, wooden floor, "
+                  "softly out of focus, intellectual and welcoming",
+    "cafe": "a cozy cafe terrace or cafe interior softly out of focus: warm string lights, wooden tables far in the "
+            "background, plants, golden bokeh",
+    "rua": "a calm tree-lined city street or small square at golden hour, out-of-focus buildings and trees, warm sun "
+           "flare, pedestrian-scale bokeh",
+    "varanda": "a terrace or rooftop with a light railing and a softly blurred city skyline at dawn, a few potted plants, "
+               "warm light",
+    "trilha": "a quiet forest trail with tall trees, light rays filtering through, gentle mist, an earthy path",
+    "campo": "an open meadow or gentle hillside with tall grass at sunrise, a big soft sky, no water",
+    "patio": "a calm university or clinic courtyard with trees, a light stone walkway and soft daylight",
+    "estufa": "a bright botanical greenhouse with lush tropical plants and glass-roof diffused light",
+    "galeria": "a minimalist art gallery wall with large soft abstract paintings, polished floor, gentle spotlights",
+    "consultorio": "a professional psychologist's study: wall of bookshelves with books and a framed diploma, warm lamp "
+                   "light, wooden floor, softly out of focus",
+    "outono": "an alley of trees with golden autumn leaves, soft low sun, leaves on the ground",
+    "escadaria": "an outdoor stone staircase with greenery on both sides and warm morning light",
+}
+_fila_lugares_v70 = []
+
+
+def _proximo_lugar_v70():
+    global _fila_lugares_v70
+    if not _fila_lugares_v70:
+        _fila_lugares_v70 = list(_LUGARES_V70.keys())
+        random.shuffle(_fila_lugares_v70)
+    chave = _fila_lugares_v70.pop()
+    print(f"[cenario] lugar da vez: {chave}")
+    return _LUGARES_V70[chave]
+
+
+_REGRAS_PESSOA_LUGAR_V70 = (
+    "RULES: a clear walkable ground surface (path, floor, grass, deck) at the bottom of the frame where a standing "
+    "adult could stand; soft diffused light from the left or the front, NEVER a sun disc, lamp, bright window or glare "
+    "directly behind the right-hand area; no water, sea, lake or wet reflective ground; the background is softly out "
+    "of focus (shallow depth of field) and the right-hand area stays calm and uncluttered; it must NOT look like an "
+    "empty room for sale or a real-estate photo. EXPOSURE: bright, airy, mid-to-high key, warm hopeful morning mood, "
+    "no large pure-black areas, never gloomy or heavy."
+)
+
+# v70: recolorir a camisa deixava restos da cor original (gola, punhos, barra) e pele clara tingida. Desligado:
+# a camisa fica com a cor real da foto. (True religa a funcao antiga.)
+_RECOLORIR_ROUPA = False
 
 
 def _enriquecer(estilo, tema, seed, sem_pessoas=False):
@@ -438,11 +487,17 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
 
         if estilo in ("cinematic", "showcase", "auto"):
             opcoes_amb = _AMBIENTES_PSI[grupo]
-            if sem_pessoas:  # v69: no Com Ronilson, ambientes com cadeira/poltrona/sofa ficam de fora
-                opcoes_amb = [o for o in opcoes_amb if not any(k in o for k in _MOVEIS_GRANDES)] or opcoes_amb
-            partes.append(f"Setting (a psychological metaphor, never literal): {esc(opcoes_amb)}.")
-            if estilo in _TRATAMENTO:
-                partes.append(f"Treatment: {esc(_TRATAMENTO[estilo])}; {esc(_ATMOSFERA)}.")
+            if sem_pessoas:  # v70: lugar real e diferente a cada geracao (rodizio), em vez de comodo vazio
+                partes.append("Setting (a REAL, varied place, never a generic empty room): " + _proximo_lugar_v70()
+                              + ". The emotional meaning of the theme comes only from the light and mood, never from literal props.")
+                _trat = [t for t in _TRATAMENTO.get(estilo, ()) if "window" not in t and "curtain" not in t] or list(_TRATAMENTO.get(estilo, ()))
+                _atm = [a for a in _ATMOSFERA if "window" not in a] or list(_ATMOSFERA)
+                if estilo in _TRATAMENTO and _trat:
+                    partes.append(f"Treatment: {esc(_trat)}; {esc(_atm)}.")
+            else:
+                partes.append(f"Setting (a psychological metaphor, never literal): {esc(opcoes_amb)}.")
+                if estilo in _TRATAMENTO:
+                    partes.append(f"Treatment: {esc(_TRATAMENTO[estilo])}; {esc(_ATMOSFERA)}.")
             if estilo == "showcase":
                 partes.append("Not an advertising or real-estate look: intimate, human, quiet.")
             partes.append("No sea, lake, beach or tourist-landscape imagery.")
@@ -478,7 +533,12 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
             partes.append("The scene is EMPTY of people: no figures, faces, hands, silhouettes, ghostly or blurred "
                           "human shapes, reflections of people, statues, mannequins or portraits anywhere, "
                           "especially not in the right-hand area.")
-            partes.append(_REGRAS_PESSOA_ABSTRATO if estilo in _ESTILOS_ABSTRATOS else _REGRAS_PESSOA_DEPOIS)
+            if estilo in _ESTILOS_ABSTRATOS:
+                partes.append(_REGRAS_PESSOA_ABSTRATO)
+            elif estilo in ("cinematic", "showcase", "auto"):
+                partes.append(_REGRAS_PESSOA_LUGAR_V70)  # v70
+            else:
+                partes.append(_REGRAS_PESSOA_DEPOIS)
             partes.append(_REGRA_ESCALA_V69)  # v69
         return " ".join(partes)
     except Exception as e:
@@ -1202,6 +1262,8 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
 
         # v69: a cor da camisa vem do PEITO (centro do tronco), nao do cluster mais frequente da faixa,
         # que podia ser calca/sapato (no post 3 a calca e os sapatos foram tingidos).
+        if not _RECOLORIR_ROUPA:  # v70: recoloracao desligada (deixava gola/punho/barra na cor original)
+            return sub
         semente = None
         try:
             rows_p = slice(int(h * 0.26), int(h * 0.40))
