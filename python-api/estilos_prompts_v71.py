@@ -717,3 +717,12 @@ def montar(estilo, grupo, leitura, seed):
     )
     print(f"[v71] estilo={estilo} grupo={grupo} familia={fam}")
     return d["conceito"], luz, " ".join(partes)
+
+
+# v72: estilos novos (estilos_novos_v72.py) entram no mesmo sistema de rodizio
+try:
+    from estilos_novos_v72 import ESTILOS_NOVOS as _NOVOS_V72
+    for _k, _v in _NOVOS_V72.items():
+        ESTILOS_V71[_k] = _v["v71"]
+except Exception as _e:
+    print(f"[v72] estilos novos nao carregados em v71: {_e}")

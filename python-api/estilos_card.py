@@ -525,6 +525,12 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
             elif estilo == "museum":
                 partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])}; "
                               f"{esc(v['parede'])}; {esc(v['luz'])}.")
+        elif estilo in _NOVOS_V72:  # v72: estilos novos tambem alimentam o cenario do Com Ronilson
+            try:
+                import estilos_prompts_v71 as _v71n
+                partes.append(_v71n.montar(estilo, grupo, _LEITURA_PSI[grupo], seed)[2])
+            except Exception as _exn:
+                print(f"[v72] cenario do estilo {estilo} sem v71: {_exn}")
 
         partes.append(f"Emotional reading of the image: {_LEITURA_PSI[grupo]}.")
         partes.append(f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997}); "
@@ -549,6 +555,20 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
 # v71: prompts extensos e alternados para os 7 estilos poeticos (estilos_prompts_v71.py). False = volta ao v61
 _PROMPTS_V71 = True
 _ESTILOS_V71 = ("gold", "smoke", "portal", "ice", "floating", "macro", "museum")
+
+# v72: 13 estilos novos (Broto, Raizes, Pedra, Hora azul, Sombra e luz, Abrigo de luz, Fio e tecido, Espelho,
+# Papel, Mosaico, Refugio, Caminho, Aquarela) entram em ESTILOS e usam o mesmo rodizio do v71
+_NOVOS_V72 = ()
+try:
+    import estilos_novos_v72 as _n72
+    for _k72, _d72 in _n72.ESTILOS_NOVOS.items():
+        ESTILOS[_k72] = {"tipo": "cena", "rotulo": _d72["rotulo"],
+                         "luz": _d72["v71"]["luz"][0], "cena": _d72["v71"]["conceito"]}
+    _NOVOS_V72 = tuple(_n72.ESTILOS_NOVOS.keys())
+    _ESTILOS_V71 = _ESTILOS_V71 + _NOVOS_V72
+    _ESTILOS_ABSTRATOS = _ESTILOS_ABSTRATOS + ("watercolor",)
+except Exception as _ex72:
+    print(f"[v72] estilos novos nao carregados: {_ex72}")
 
 
 def _prompt(estilo, tema="", variante=None, seed=None):
