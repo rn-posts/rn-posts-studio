@@ -546,6 +546,11 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
         return ""
 
 
+# v71: prompts extensos e alternados para os 7 estilos poeticos (estilos_prompts_v71.py). False = volta ao v61
+_PROMPTS_V71 = True
+_ESTILOS_V71 = ("gold", "smoke", "portal", "ice", "floating", "macro", "museum")
+
+
 def _prompt(estilo, tema="", variante=None, seed=None):
     e = ESTILOS[estilo]
     M = _m()
@@ -568,11 +573,22 @@ def _prompt(estilo, tema="", variante=None, seed=None):
     diretriz = (_DIRETRIZ_VARIANTE.get(variante, "") + " ") if variante else ""
     enriq = (_enriquecer(estilo, tema, seed) + " ") if seed is not None else ""  # v61
 
+    cena_txt, luz_txt = e["cena"], e["luz"]
+    if _PROMPTS_V71 and seed is not None and estilo in _ESTILOS_V71:  # v71
+        try:
+            import estilos_prompts_v71 as _v71
+            _g = _grupo_psi(tema, random.Random(int(seed) * 104729 + 71))
+            cena_txt, luz_txt, _enr = _v71.montar(estilo, _g, _LEITURA_PSI[_g], seed)
+            enriq = _enr + " "
+        except Exception as _ex:
+            print(f"[v71] ignorado, usando prompt anterior: {_ex}")
+            cena_txt, luz_txt = e["cena"], e["luz"]
+
     return (
         "Photorealistic editorial photograph for AlvoreSer, a Brazilian psychology clinic "
         "whose identity is dawn, hope, emotional care, healing and transformation. "
         f"{contexto_tema}"
-        f"Visual style and scene: {e['cena']}. Lighting: {e['luz']}. "
+        f"Visual style and scene: {cena_txt}. Lighting: {luz_txt}. "
         f"{enriq}"
         "Color palette strictly harmonious with clinic identity: deep navy #024059, petroleum teal #1B797D, "
         "soft sage #779993, solar orange #F9AB0B as accent light only, snow white haze #F4F6F8. "
