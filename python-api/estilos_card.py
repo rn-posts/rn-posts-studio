@@ -525,12 +525,8 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
             elif estilo == "museum":
                 partes.append(f"Specific scene (this takes priority over the generic description): {esc(v['sujeito'])}; "
                               f"{esc(v['parede'])}; {esc(v['luz'])}.")
-        elif estilo in _NOVOS_V72:  # v72: estilos novos tambem alimentam o cenario do Com Ronilson
-            try:
-                import estilos_prompts_v71 as _v71n
-                partes.append(_v71n.montar(estilo, grupo, _LEITURA_PSI[grupo], seed)[2])
-            except Exception as _exn:
-                print(f"[v72] cenario do estilo {estilo} sem v71: {_exn}")
+        elif estilo in _NOVOS_V72:  # v73: no Com Ronilson o cenario vem de cenario_ronilson_v73 (escala humana)
+            pass
 
         partes.append(f"Emotional reading of the image: {_LEITURA_PSI[grupo]}.")
         partes.append(f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997}); "
@@ -569,6 +565,9 @@ try:
     _ESTILOS_ABSTRATOS = _ESTILOS_ABSTRATOS + ("watercolor",)
 except Exception as _ex72:
     print(f"[v72] estilos novos nao carregados: {_ex72}")
+
+# v73: Cinematic e Showcase tambem entram no rodizio de variacoes (estilos_extras_v73.py)
+_ESTILOS_V71 = _ESTILOS_V71 + ("cinematic", "showcase")
 
 
 def _prompt(estilo, tema="", variante=None, seed=None):
@@ -929,6 +928,18 @@ _BLUR_CENARIO = {
     "gold": 2.4, "smoke": 2.2, "portal": 2.4, "ice": 2.2, "floating": 1.8, "museum": 2.0,
 }
 
+# v73: cenarios do Com Ronilson agora sao lugares em escala humana com foco profundo (cenario_ronilson_v73.py);
+# o desfoque extra cai para quase nada para o Ronilson nao ficar nitido demais sobre um fundo borrado. False = v72
+_CENARIO_HUMANO_V73 = True
+try:
+    import cenario_ronilson_v73 as _ch73
+    if _CENARIO_HUMANO_V73:
+        for _kb in _ch73.AMBIENTES:
+            _BLUR_CENARIO[_kb] = 0.9
+except Exception as _exh:
+    _ch73 = None
+    print(f"[v73] cenario humano nao carregado: {_exh}")
+
 
 def _listar_recortes_ronilson():
     """Lista (com cache de 10 min) os recortes PNG/WebP da pasta ronilson_sem_fundo."""
@@ -1027,6 +1038,12 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
         )
     e = ESTILOS[estilo]
     tema_limpo = M._texto_tema_limpo(tema) if hasattr(M, "_texto_tema_limpo") else (tema or "")
+    if _CENARIO_HUMANO_V73 and _ch73 is not None and estilo in _ch73.AMBIENTES:  # v73
+        try:
+            _gh = _grupo_psi(tema, random.Random(int(seed) * 104729 + 73))
+            return _ch73.prompt(estilo, tema_limpo, seed, _LEITURA_PSI[_gh])
+        except Exception as _exc:
+            print(f"[v73] cenario humano ignorado: {_exc}")
     contexto = f' Concept / emotional theme of this post: "{tema_limpo}". ' if tema_limpo else " "
     return (
         "Photorealistic editorial photograph of an EMPTY environment (no people) for AlvoreSer, a Brazilian "
@@ -1447,6 +1464,13 @@ def _integrar_v58(fundo, recorte, estilo, seed):
                 a_s[min(alt, int(_lin.max()) + 4):, :] = 0.0
         except Exception as e:
             print(f"[ronilson] limpar sombra do estudio ignorado: {e}")
+    # v73: o "tablado" cinza de estudio sob os sapatos (retangulo claro) denunciava a colagem: apaga so se for neutro/liso/largo
+    if corpo:
+        try:
+            import cenario_ronilson_v73 as _ch73b
+            a_s = _ch73b.remover_piso_estudio(rgb_s, a_s)
+        except Exception as e:
+            print(f"[ronilson] limpeza do piso de estudio ignorada: {e}")
     # v68: foto cortada na lateral (corte reto): a lateral reta encosta na borda do card e o titulo vai para o outro lado
     lado_x = "dir"
     try:
@@ -1520,6 +1544,12 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     media_l = float(sub[solido > 0].mean())
     expo = float(np.clip((amb.mean() + 55) / (media_l + 55), 0.82, 1.06))
     sub = sub * (expo ** 0.5)
+    try:  # v73: a roupa acompanha de leve a cor do ambiente (rosto/maos seguem protegidos abaixo)
+        _med_c = sub[solido > 0].mean(axis=0)
+        _gc = (amb / max(float(amb.mean()), 1.0)) / (_med_c / max(float(_med_c.mean()), 1.0))
+        sub = sub * np.clip(1 + 0.28 * (_gc - 1), 0.88, 1.12).astype(np.float32)
+    except Exception as e:
+        print(f"[ronilson] cor do ambiente ignorada: {e}")
 
     # 2) luz direcional suave
     X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]

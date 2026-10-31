@@ -703,7 +703,7 @@ def montar(estilo, grupo, leitura, seed):
     cor = _COR[_baralho((estilo, "cor"), len(_COR))]
 
     partes = [
-        f"MAIN SUBJECT (render exactly this; do NOT replace it with the most obvious cliché of the style): {sujeito}."
+        f"{d.get('rotulo_sujeito', 'MAIN SUBJECT (render exactly this; do NOT replace it with the most obvious cliché of the style)')}: {sujeito}."
     ]
     for eixo, rotulo in _ROTULOS:
         banco = d.get(eixo)
@@ -711,7 +711,7 @@ def montar(estilo, grupo, leitura, seed):
             partes.append(f"{rotulo}: {banco[_baralho((estilo, eixo), len(banco))]}.")
     partes.append(f"Color story: {cor}.")
     partes.append(f"Emotional reading of the image: {leitura}.")
-    partes.append(_REGRA_GERAL)
+    partes.append(d.get("regra", _REGRA_GERAL))
     partes.append(
         f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997})."
     )
@@ -726,3 +726,13 @@ try:
         ESTILOS_V71[_k] = _v["v71"]
 except Exception as _e:
     print(f"[v72] estilos novos nao carregados em v71: {_e}")
+
+# v73: familias extras nos estilos antigos + Cinematic/Showcase no mesmo rodizio
+try:
+    from estilos_extras_v73 import EXTRAS_FAMILIAS as _EXTRAS_V73, ESTILOS_V73 as _NOVOS_V73
+    for _k, _fams in _EXTRAS_V73.items():
+        if _k in ESTILOS_V71:
+            ESTILOS_V71[_k]["familias"].update(_fams)
+    ESTILOS_V71.update(_NOVOS_V73)
+except Exception as _e:
+    print(f"[v73] extras nao carregados em v71: {_e}")
