@@ -501,6 +501,8 @@ def _enriquecer(estilo, tema, seed, sem_pessoas=False):
             if estilo == "showcase":
                 partes.append("Not an advertising or real-estate look: intimate, human, quiet.")
             partes.append("No sea, lake, beach or tourist-landscape imagery.")
+        elif sem_pessoas and _retrato_v74(estilo, grupo, partes, seed):  # v74
+            pass
         elif estilo in _VAR:
             v = _VAR[estilo]
             if estilo == "gold":
@@ -930,7 +932,35 @@ _BLUR_CENARIO = {
 
 # v73: cenarios do Com Ronilson agora sao lugares em escala humana com foco profundo (cenario_ronilson_v73.py);
 # o desfoque extra cai para quase nada para o Ronilson nao ficar nitido demais sobre um fundo borrado. False = v72
-_CENARIO_HUMANO_V73 = True
+_CENARIO_HUMANO_V73 = False  # v74: desligado (os lugares em escala humana descaracterizavam o estilo)
+_CENARIO_RETRATO_V74 = True  # v74: no Com Ronilson o estilo manda; sujeito variado entra como fundo de retrato
+
+
+def _retrato_v74(estilo, grupo, partes, seed):
+    """Acrescenta a cena do estilo (sujeito em rodizio como fundo de retrato). True se acrescentou."""
+    if not _CENARIO_RETRATO_V74:
+        return False
+    try:
+        import cenario_ronilson_v73 as _c
+        txt = _c.texto_retrato(estilo, grupo)
+        if not txt:
+            return False
+        partes.append(txt)
+        return True
+    except Exception as _er:
+        print(f"[v74] retrato ignorado: {_er}")
+        return False
+
+
+def _pose_suspeita_v74(recorte):
+    """True se o recorte parece sentado/com cadeira pela geometria (integracao_v74.pose_suspeita)."""
+    try:
+        import integracao_v74 as _i
+        return bool(_i.pose_suspeita(recorte))
+    except Exception as _ep:
+        print(f"[v74] filtro de pose ignorado: {_ep}")
+        return False
+
 try:
     import cenario_ronilson_v73 as _ch73
     if _CENARIO_HUMANO_V73:
@@ -1548,6 +1578,7 @@ def _integrar_v58(fundo, recorte, estilo, seed):
         _med_c = sub[solido > 0].mean(axis=0)
         _gc = (amb / max(float(amb.mean()), 1.0)) / (_med_c / max(float(_med_c.mean()), 1.0))
         sub = sub * np.clip(1 + 0.28 * (_gc - 1), 0.88, 1.12).astype(np.float32)
+        sub = sub * 0.93 + cv2.GaussianBlur(bg, (0, 0), 20) * 0.07  # v74: luz de preenchimento do ambiente
     except Exception as e:
         print(f"[ronilson] cor do ambiente ignorada: {e}")
 
@@ -1565,7 +1596,7 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     sub = sub * (1 - 0.20 * borda) + bg_suave * 0.20 * borda
     lado = np.clip(1 - t * 2.0, 0, 1)[..., None]
     rim = np.array([255, 205, 130], np.float32) * 0.5 + amb * 0.6
-    sub = sub + 0.12 * borda * lado * rim * (1 - sub / 255.0)
+    sub = sub + 0.20 * borda * lado * rim * (1 - sub / 255.0)
 
     # rosto/mãos: pixels originais, sem nenhum ajuste
     sub = sub * (1 - protege) + orig * protege
@@ -1598,6 +1629,11 @@ def _integrar_v58(fundo, recorte, estilo, seed):
             cv2.ellipse(chao, (cx, base_y), (int(nw * 0.4), int(_H * 0.012) + 5), 0, 0, 360, 1.0, -1)
         chao = cv2.GaussianBlur(chao, (0, 0), 10)
         sombra = np.clip(sombra + 1.5 * chao, 0, 1)
+        try:  # v74: sombra projetada no chao, oposta a luz da cena (antes so havia sombra de contato nos pes)
+            import integracao_v74 as _i74
+            sombra = np.clip(sombra + 0.9 * _i74.sombra_projetada(a_f, base_y, luz_x, lum), 0, 1)
+        except Exception as e:
+            print(f"[ronilson] sombra projetada ignorada: {e}")
         degrade = np.clip((np.arange(_H, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
         bg = bg * (1 - 0.18 * degrade)[:, None, None]
     s = (0.32 * sombra)[..., None]
@@ -2468,7 +2504,7 @@ def _carregar_recorte_neutro():
     for _ in range(6):  # v69: 6 tentativas (poses sentadas/com cadeira tambem sao descartadas)
         recorte, pid = _carregar_recorte_ronilson_v60()
         ultimo = (recorte, pid)
-        if not _pose_tem_gesto(recorte, pid):
+        if not _pose_tem_gesto(recorte, pid) and not _pose_suspeita_v74(recorte):
             return recorte, pid
         print(f"[ronilson] pose com gesto ({pid}); sorteando outra")
     return ultimo

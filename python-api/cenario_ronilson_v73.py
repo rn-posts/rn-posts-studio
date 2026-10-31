@@ -205,6 +205,38 @@ def prompt(estilo, tema_limpo, seed, leitura, tentativa=0):
     return p
 
 
+# v74: no Com Ronilson o estilo manda: o sujeito vem das familias do v71 (variado e nao literal), mas entra como
+# elemento do FUNDO de um retrato (desfocado, a meia distancia), nunca como close, nunca ocupando o quadro.
+_ESCALA_RETRATO = {
+    "macro": ("Render it as a creamy macro-photography BACKDROP: sharp subject detail only in the left-middle part, "
+              "melting into smooth, calm bokeh toward the right and the bottom."),
+    "watercolor": ("Render it as an abstract soft backdrop of translucent washes, calmer and emptier toward the right."),
+    "smoke": ("Render it as soft drifting forms in the left half, thinning to clear calm air on the right."),
+}
+_ESCALA_PADRAO = ("It is a softly out-of-focus element of the BACKGROUND, small to medium in size and at mid-distance in "
+                  "the lower-left or centre-left, never a macro close-up, never filling the frame and never placed on a "
+                  "bed, table or any soft furnishing; a visible ground plane or a smooth soft backdrop lies below it.")
+
+
+def texto_retrato(estilo, grupo):
+    """Texto de cena (sujeito em rodizio + escala de fundo) para o Com Ronilson; None se o estilo nao tem familias."""
+    try:
+        import estilos_prompts_v71 as v71
+        d = v71.ESTILOS_V71.get(estilo)
+        if not d or estilo in ("cinematic", "showcase"):
+            return None
+        fam = v71._proxima_familia(estilo, grupo)
+        suj = d["familias"][fam]["s"]
+        sujeito = suj[v71._baralho((estilo, fam), len(suj))]
+        luz = d["luz"][v71._baralho((estilo, "luz_retrato"), len(d["luz"]))]
+        print(f"[v74] retrato estilo={estilo} grupo={grupo} familia={fam}")
+        return ("Specific scene (this takes priority over the generic description; keep the identity of the style, "
+                f"only the idea varies): {sujeito}. {_ESCALA_RETRATO.get(estilo, _ESCALA_PADRAO)} Light: {luz}.")
+    except Exception as e:
+        print(f"[v74] texto_retrato falhou: {e}")
+        return None
+
+
 def remover_piso_estudio(rgb, a):
     """Remove o 'tablado' cinza do estúdio sob os sapatos do recorte (retângulo claro, liso e opaco na base).
     Heurística conservadora: só apaga blocos neutros, uniformes, largos e encostados na base do corpo."""
