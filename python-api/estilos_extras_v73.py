@@ -88,7 +88,13 @@ ESTILOS_V73 = {
         "rotulo_sujeito": "SETTING AND MOOD (follow it closely; a person may appear only as the Subject directive above allows)",
         "regra": (
             "Premium film-still quality: physically plausible light, authentic texture, no stock-photo look, no "
-            "CGI sheen, never gloomy. Keep generous calm space in the upper-left third for typography."
+            "CGI sheen, never gloomy. Keep generous calm space in the upper-left third for typography. "
+            "If a person appears: place them in the RIGHT 45% of the frame with the head in the upper right, never "
+            "centered; the LEFT half stays calm negative space (soft shadow, blurred foliage or gentle light) with no "
+            "face, hands or bright highlights. Hands, smiles, open mouths and expressive gestures are all welcome, but "
+            "anatomy must be flawless: every visible hand has exactly five fingers with natural proportions, joints and "
+            "pose, and no extra or fused fingers, limbs or hands (count them); teeth, when visible, are natural, "
+            "slightly shadowed and matte, with no glowing or specular glare on teeth, eyes or lips; natural skin."
         ),
         "conceito": (
             "a sophisticated cinematic film still, film composition, professional framing, immersive atmosphere, "
@@ -147,7 +153,11 @@ ESTILOS_V73 = {
         "rotulo_sujeito": "SETTING AND SUBJECT (follow it closely; a person may appear only as the Subject directive above allows)",
         "regra": (
             "Premium campaign-quality finish but intimate and human, never an advertising or real-estate look: clean "
-            "composition, calm backdrop, no stock-photo feel. Keep generous calm space in the upper-left third for typography."
+            "composition, calm backdrop, no stock-photo feel. Keep generous calm space in the upper-left third for typography. "
+            "If a person appears: place them in the RIGHT 45% of the frame, never centered, the LEFT half calm. Hands, "
+            "smiles and expressive gestures are all welcome, but anatomy must be flawless: every visible hand has exactly "
+            "five fingers with natural proportions and pose, no extra or fused fingers or limbs (count them); teeth, when "
+            "visible, are natural and matte with no glowing glare on teeth, eyes or lips."
         ),
         "conceito": (
             "a premium showcase presentation of one symbolic element, clean and sophisticated composition, absolute focus "

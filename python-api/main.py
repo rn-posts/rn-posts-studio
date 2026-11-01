@@ -1895,6 +1895,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     if not tem_pessoa:
         _zona_default     = (int(H * 0.30), int(H * 0.68))
         _candidatas_zona  = [
+            (int(H * 0.07), int(H * 0.28)),   # v75: faixa alta (livre quando o sujeito ocupa o meio)
             (int(H * 0.08), int(H * 0.36)),   # topo
             (int(H * 0.14), int(H * 0.44)),   # topo-meio
             (int(H * 0.22), int(H * 0.52)),   # meio-alto
@@ -1948,6 +1949,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         if _intersecta_cabeca(MARGIN, yi, MARGIN + MAX_PX, yf):
             score += 10.0
+        try:  # v75: prefere zonas com largura livre (o sujeito pode nao ter sido detectado como rosto)
+            import titulo_inteligente_v75 as _t75
+            score += _t75.penalidade_largura(_t75.limite_sujeito_x(img_rgba, yi, yf) - MARGIN, W)
+        except Exception as _e75:
+            print(f"[titulo75] penalidade ignorada: {_e75}")
         if melhor is None or score < melhor_score:
             melhor, melhor_score = cand, score
     Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = melhor
@@ -1972,6 +1978,15 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             Y_INI = min(SAFE_BOTTOM - 150, max(Y_INI, cby1 + 10))
             print(f"[titulo] zona empurrada pra baixo da cabeca: Y_INI={Y_INI}")
         Y_INI, Y_FIM, lum_zona_real, complexidade_zona, cor_zona_real, cor_zona_grid = _avaliar_zona(Y_INI, Y_FIM)
+
+    try:  # v75: o texto nunca invade o sujeito (rosto/silhueta), mesmo sem deteccao de rosto
+        import titulo_inteligente_v75 as _t75b
+        _lim_x = _t75b.limite_sujeito_x(img_rgba, Y_INI, Y_FIM)
+        if _lim_x - MARGIN >= 300 and _lim_x - MARGIN - 24 < MAX_PX:
+            MAX_PX = _lim_x - MARGIN - 24
+            print(f"[titulo75] MAX_PX limitado pelo sujeito: {MAX_PX}")
+    except Exception as _e75b:
+        print(f"[titulo75] limite do sujeito ignorado: {_e75b}")
 
     # Editorial: desfoca suavemente a faixa de leitura, sem retângulo colorido
     # e sem aplicar o efeito sobre o recorte de pessoa/rosto.
@@ -2153,6 +2168,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             fa_est, tem_liga_est = _fonte_agilera_est_garantida(tam_est)
             txt_out = _aplicar_ligaturas(txt) if tem_liga_est and _LIGA_SUBST else txt
             lns     = _quebrar(txt_out, fa_est, MAX_PX, sp_est)
+            if len(lns) > 1 and len(txt) <= 34:  # v75: a linha do usuario fica em UMA linha (reduz a fonte antes de quebrar)
+                for _kf in (0.92, 0.85, 0.78, 0.72, 0.66, 0.60):
+                    _t = max(30, int(tam_est * _kf))
+                    _f, _tl = _fonte_agilera_est_garantida(_t)
+                    _sp = _sp_para_modo(sub_modo, _t)
+                    _tx = _aplicar_ligaturas(txt) if _tl and _LIGA_SUBST else txt
+                    _l = _quebrar(_tx, _f, MAX_PX, _sp)
+                    if len(_l) == 1:
+                        fa_est, tem_liga_est, sp_est, lns = _f, _tl, _sp, _l
+                        break
             blocos_render.append((lns, fa_est, cor_b, sp_est, est, None, tem_liga_est))
 
         elif est == "malgun":
@@ -2170,7 +2195,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     if _contraste_real_ok(_cand):
                         cor_ml = _cand
                         break
-            blocos_render.append((_quebrar(txt, fb, MAX_PX), fb, cor_ml, 0, est, None, False))
+            _lns_ml, _fb_blk = _quebrar(txt, fb, MAX_PX), fb
+            if len(_lns_ml) > 1 and len(txt) <= 40:  # v75: uma linha do usuario = uma linha no card (reduz antes de quebrar)
+                for _kf in (0.92, 0.85, 0.78, 0.72, 0.66, 0.60):
+                    _t = max(24, int(tam_ml * _kf))
+                    _f = (f_bold(_t) if estrategia_leg == "peso_fonte"
+                          else [f_bold, f_corpo, f_light][(seed // 6) % 3](_t))
+                    _l = _quebrar(txt, _f, MAX_PX)
+                    if len(_l) == 1:
+                        _lns_ml, _fb_blk = _l, _f
+                        break
+            blocos_render.append((_lns_ml, _fb_blk, cor_ml, 0, est, None, False))
 
         elif est == "fundo":
             # Retângulo justo — padding reduzido para ficar colado à palavra
@@ -2179,8 +2214,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             lns = _quebrar(txt, f_fundo, MAX_PX - 20)
             f_fundo_blk = f_fundo
             # v66: destaque curto (ex.: "so aparecer") fica em UMA linha: reduz a fonte (ate 72%) antes de quebrar
-            if len(lns) > 1 and len(txt.split()) <= 4:
-                for _kf in (0.92, 0.85, 0.78, 0.72):
+            if len(lns) > 1 and len(txt.split()) <= 6:
+                for _kf in (0.92, 0.85, 0.78, 0.72, 0.66, 0.60):
                     try:
                         _f_try = _fonte_agilera_para_modo(modo, max(30, int(tam_ag * _kf)))[0]
                     except Exception:
@@ -2194,7 +2229,17 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         else:  # normal — modo tipográfico aplicado
             txt_out = _texto_para_modo(modo, txt)
             lns     = _quebrar(txt_out, fa, MAX_PX, ag_sp)
-            blocos_render.append((lns, fa, cor_b, ag_sp, est, None, tem_liga_base))
+            _fa_blk, _liga_blk, _sp_blk = fa, tem_liga_base, ag_sp
+            if len(lns) > 1 and len(txt) <= 34:  # v75: uma linha do usuario = uma linha no card
+                for _kf in (0.92, 0.85, 0.78, 0.72, 0.66, 0.60):
+                    _t = max(30, int(tam_ag * _kf))
+                    _f, _tl = _fonte_agilera_para_modo(modo, _t)
+                    _sp = _sp_para_modo(modo, _t)
+                    _l = _quebrar(_texto_para_modo(modo, txt), _f, MAX_PX, _sp)
+                    if len(_l) == 1:
+                        lns, _fa_blk, _liga_blk, _sp_blk = _l, _f, _tl, _sp
+                        break
+            blocos_render.append((lns, _fa_blk, cor_b, _sp_blk, est, None, _liga_blk))
 
     if not blocos_render:
         return img_rgba.convert("RGB"), layout
@@ -2227,6 +2272,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         return grupos
 
     grupos = _agrupar_linhas_compostas(blocos_render, MAX_PX, fb)
+    if len([_l for _l in tema.split("\n") if _l.strip()]) > 1:  # v75: cada linha digitada = uma linha no card (sem fundir malgun+fundo)
+        grupos = [[_b] for _b in blocos_render]
     h_total = 0
     for grupo in grupos:
         alt = max(int(_altura_linha(f) * respiro) for _, f, *_ in grupo)
