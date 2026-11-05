@@ -127,6 +127,14 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [estilo,         setEstilo]        = useState("");
   const [comRonilson,    setComRonilson]   = useState(false);
 
+  // v76: revisão automática + ajuste manual do título
+  const [qa,            setQa]            = useState(null);
+  const [ajustavel,     setAjustavel]     = useState(false);
+  const [caixa,         setCaixa]         = useState(null);
+  const [ajuste,        setAjuste]        = useState({ escala: 1, dx: 0, dy: 0, cor: "" });
+  const [loadingAjuste, setLoadingAjuste] = useState(false);
+  const [arrasto,       setArrasto]       = useState(null);
+
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
   const [loadingAprovar, setLoadingAprovar] = useState(false);
@@ -176,6 +184,10 @@ export default function PostEditor({ post, onClose, onNotify }) {
       if (!res.ok) throw new Error(data.erro || "Erro ao gerar card");
       setDadosCard(data);
       setPreviewUrl(data.preview_url);
+      setQa(data.qa || null);                 // v76
+      setAjustavel(Boolean(data.ajustavel));
+      setCaixa(data.caixa || null);
+      setAjuste({ escala: 1, dx: 0, dy: 0, cor: "" });
       setLegenda(data.legenda);
       if (data.aviso_estilo) onNotify(data.aviso_estilo, "error");
       else if (data.aviso_legenda) onNotify("Card gerado, mas a legenda automática falhou: " + String(data.aviso_legenda).slice(0, 220), "error");
@@ -186,6 +198,69 @@ export default function PostEditor({ post, onClose, onNotify }) {
       setLoadingCard(false);
     }
   };
+
+  // v76: reenvia o título ao servidor com o ajuste pedido (tamanho/cor/posição) ou sorteia outra composição
+  const ajustarCard = async (patch, acao = "ajustar") => {
+    if (!dadosCard || loadingAjuste) return;
+    const proximo = acao === "novo_texto"
+      ? { escala: 1, dx: 0, dy: 0, cor: "" }
+      : { ...ajuste, ...patch };
+    setLoadingAjuste(true);
+    try {
+      const res = await fetch(`${RENDER_URL}/ajustar-card`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ card_id: dadosCard.card_id, acao, ...proximo }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.erro || "Erro ao ajustar o título");
+      setPreviewUrl(data.preview_url);
+      setQa(data.qa || null);
+      setCaixa(data.caixa || null);
+      setAjuste(proximo);
+    } catch (e) {
+      onNotify(e.message, "error");
+    } finally {
+      setLoadingAjuste(false);
+    }
+  };
+
+  const iniciarArrasto = (e) => {
+    if (!ajustavel || loadingAjuste) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+    const larg = e.currentTarget.parentElement.getBoundingClientRect().width || 1;
+    setArrasto({ x0: e.clientX, y0: e.clientY, dx: 0, dy: 0, fator: 1080 / larg });
+  };
+  const moverArrasto = (e) => {
+    if (!arrasto) return;
+    setArrasto(a => (a ? { ...a, dx: e.clientX - a.x0, dy: e.clientY - a.y0 } : a));
+  };
+  const soltarArrasto = () => {
+    if (!arrasto) return;
+    const { dx, dy, fator } = arrasto;
+    setArrasto(null);
+    if (Math.abs(dx) + Math.abs(dy) < 4) return;
+    ajustarCard({ dx: Math.round(ajuste.dx + dx * fator), dy: Math.round(ajuste.dy + dy * fator) });
+  };
+
+  const estiloBtnAj = (ativo = false) => ({
+    fontSize: "0.76rem", padding: "3px 10px", borderRadius: 999,
+    cursor: loadingAjuste ? "wait" : "pointer",
+    border: ativo ? "1.5px solid var(--laranja, #F9AB0B)" : "1px solid var(--creme-escuro, #ddd)",
+    background: ativo ? "var(--marinho, #024059)" : "var(--creme, #faf6f0)",
+    color: ativo ? "#fff" : "var(--marinho, #024059)",
+    fontWeight: ativo ? 700 : 500,
+  });
+  const CORES_AJUSTE = [
+    { id: "branco",  hex: "#F4F6F8", nome: "Branco" },
+    { id: "marinho", hex: "#024059", nome: "Marinho" },
+    { id: "amarelo", hex: "#FFDD00", nome: "Amarelo" },
+    { id: "laranja", hex: "#F9AB0B", nome: "Laranja" },
+    { id: "teal",    hex: "#049DBF", nome: "Teal" },
+    { id: "citrico", hex: "#92CC1D", nome: "Verde" },
+  ];
 
   const handleAprovar = async () => {
     if (!dadosCard) { onNotify("Gere o card antes de aprovar.", "error"); return; }
@@ -410,12 +485,37 @@ export default function PostEditor({ post, onClose, onNotify }) {
                 marginBottom: "0.75rem",
                 boxShadow: "var(--sombra-media)",
                 border: "2px solid var(--creme-escuro)",
-                cursor: "zoom-in",
+                cursor: "zoom-in", position: "relative",
               }}
               onClick={() => abrirTamanhoReal(previewUrl)}
               title="Clique para ver em tamanho real (1080×1350)"
             >
               <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
+              {ajustavel && caixa && (
+                <div
+                  onPointerDown={iniciarArrasto}
+                  onPointerMove={moverArrasto}
+                  onPointerUp={soltarArrasto}
+                  onPointerCancel={() => setArrasto(null)}
+                  onClick={e => e.stopPropagation()}
+                  title="Arraste para mover o título"
+                  style={{
+                    position: "absolute",
+                    left: `${(caixa.x / 1080) * 100}%`, top: `${(caixa.y / 1350) * 100}%`,
+                    width: `${(caixa.w / 1080) * 100}%`, height: `${(caixa.h / 1350) * 100}%`,
+                    border: "1.5px dashed rgba(249,171,11,0.95)", borderRadius: 6,
+                    cursor: arrasto ? "grabbing" : "grab", touchAction: "none",
+                    transform: arrasto ? `translate(${arrasto.dx}px, ${arrasto.dy}px)` : "none",
+                    background: arrasto ? "rgba(249,171,11,0.12)" : "transparent",
+                  }}
+                />
+              )}
+              {loadingAjuste && (
+                <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.35)",
+                              display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="spinner" />
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
@@ -432,6 +532,77 @@ export default function PostEditor({ post, onClose, onNotify }) {
                 🗑 Descartar
               </button>
             </div>
+
+            {/* v76: revisão automática */}
+            {qa && (
+              <div style={{
+                marginTop: "0.75rem", padding: "0.6rem 0.8rem", borderRadius: 8, fontSize: "0.78rem", maxWidth: 420,
+                background: qa.ok ? "rgba(46,125,50,0.10)" : "rgba(249,171,11,0.14)",
+                border: `1px solid ${qa.ok ? "rgba(46,125,50,0.35)" : "rgba(249,171,11,0.55)"}`,
+              }}>
+                <strong>{qa.ok ? "✓ Passou na revisão automática" : "⚠ Revise antes de aprovar"}</strong>
+                {typeof qa.nota === "number" && (
+                  <span style={{ marginLeft: 6, color: "var(--texto-suave)" }}>
+                    (nota {qa.nota}/100{qa.tentativas > 1 ? ` · ${qa.tentativas} tentativas` : ""})
+                  </span>
+                )}
+                {qa.problemas && qa.problemas.length > 0 && (
+                  <ul style={{ margin: "0.35rem 0 0", paddingLeft: "1.1rem" }}>
+                    {qa.problemas.map((p, i) => <li key={i}>{p}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {/* v76: ajuste do título (tamanho, cor, posição) */}
+            {ajustavel && (
+              <div style={{ marginTop: "0.75rem", maxWidth: 420, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <div style={{ fontSize: "0.68rem", color: "var(--texto-suave)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Ajustar título — arraste a caixa tracejada sobre o card para mover
+                </div>
+                <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Tamanho</span>
+                  <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                    onClick={() => ajustarCard({ escala: Math.max(0.5, +(ajuste.escala - 0.08).toFixed(2)) })}>A−</button>
+                  {[["P", 0.85], ["M", 1], ["G", 1.2]].map(([rot, v]) => (
+                    <button key={rot} type="button" disabled={loadingAjuste}
+                      style={estiloBtnAj(Math.abs(ajuste.escala - v) < 0.02)}
+                      onClick={() => ajustarCard({ escala: v })}>{rot}</button>
+                  ))}
+                  <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                    onClick={() => ajustarCard({ escala: Math.min(1.6, +(ajuste.escala + 0.08).toFixed(2)) })}>A+</button>
+                </div>
+                <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Cor</span>
+                  <button type="button" disabled={loadingAjuste} style={estiloBtnAj(ajuste.cor === "")}
+                    onClick={() => ajustarCard({ cor: "" })}>Auto</button>
+                  {CORES_AJUSTE.map(c => (
+                    <button key={c.id} type="button" disabled={loadingAjuste} title={c.nome}
+                      onClick={() => ajustarCard({ cor: c.id })}
+                      style={{
+                        width: 24, height: 24, borderRadius: "50%", cursor: loadingAjuste ? "wait" : "pointer",
+                        background: c.hex, padding: 0,
+                        border: ajuste.cor === c.id ? "2.5px solid var(--laranja, #F9AB0B)" : "1px solid #9aa",
+                      }} />
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Posição</span>
+                  {[["←", -24, 0], ["↑", 0, -24], ["↓", 0, 24], ["→", 24, 0]].map(([rot, ddx, ddy]) => (
+                    <button key={rot} type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                      onClick={() => ajustarCard({ dx: ajuste.dx + ddx, dy: ajuste.dy + ddy })}>{rot}</button>
+                  ))}
+                  <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                    onClick={() => ajustarCard({ escala: 1, dx: 0, dy: 0, cor: "" })}>↩ Restaurar</button>
+                </div>
+                <div>
+                  <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                    onClick={() => ajustarCard({}, "novo_texto")}>
+                    🔁 Novo texto (mantém o fundo)
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

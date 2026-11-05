@@ -2580,7 +2580,12 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
                     print(f"[titulo] bloco {largura}px -> alvo {alvo}px; escala {escala:.2f}")
         except Exception as e:
             print(f"[titulo] normalizacao ignorada: {e}")
-        card, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
+        try:  # v76: portão de qualidade (se falhar, segue como antes)
+            import qualidade_card as _qa
+            card = _qa.renderizar_titulo(M, img, tema, seed, dict(_kw, max_px_pessoa=max_px, escala_pessoa=escala))
+        except Exception as _eqa:
+            print(f"[qa] portao de qualidade indisponivel: {_eqa}")
+            card, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
         card_id = f"preview_{uuid.uuid4().hex[:10]}"
         saida = io.BytesIO()
         card.save(saida, format="JPEG", quality=93)
@@ -2589,6 +2594,12 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             "tema": tema, "legenda": legenda, "imagem_fundo": "",
             "pid_fundo": f"ronilson_sem_fundo:{estilo}:{pid}", "card_bytes": card_bytes,
         }
+        try:  # v76
+            import qualidade_card as _qa
+            _qa_resp = _qa.registrar(card_id, card)
+        except Exception as _eqa:
+            _qa_resp = None
+            print(f"[qa] registro ignorado: {_eqa}")
     except ErroEstilo as e:
         return jsonify({"erro": f"Com Ronilson ({rotulo}): {e}"}), 502
     except Exception as e:
@@ -2600,6 +2611,8 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         "preview_url": f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}",
         "legenda": legenda, "imagem_fundo": "", "foto_ronilson": pid,
     }
+    if _qa_resp:  # v76
+        resp.update(_qa_resp)
     if erros_leg:
         resp["aviso_legenda"] = erros_leg
     if aviso:
@@ -2686,6 +2699,12 @@ def rota_preview_card_estilo():
             "pid_fundo": f"estilo:{estilo}",
             "card_bytes": card_bytes,
         }
+        try:  # v76 (cards do titulo inteligente nao tem geometria registrada: registrar devolve None)
+            import qualidade_card as _qa
+            _qa_resp = _qa.registrar(card_id, card)
+        except Exception as _eqa:
+            _qa_resp = None
+            print(f"[qa] registro ignorado: {_eqa}")
     except ErroEstilo as e:
         return jsonify({"erro": f"Estilo {ESTILOS[estilo]['rotulo']}: {e}"}), 502
     except Exception as e:
@@ -2716,6 +2735,8 @@ def rota_preview_card_estilo():
         resp["aviso_legenda"] = erros_leg
     if _ETAPA.get("variante") and _ETAPA["variante"] != "-":
         resp["variante"] = _ETAPA["variante"]
+    if _qa_resp:  # v76
+        resp.update(_qa_resp)
     if aviso:
         resp["aviso_estilo"] = aviso
     return jsonify(resp)

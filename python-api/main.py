@@ -288,6 +288,9 @@ def _escolher_cor_overlay(hist_cores, cor_destaque_texto, seed=0):
 
 _cards_pendentes = {}
 
+import threading as _threading
+_TL = _threading.local()  # v76: geometria do último título desenhado (portão de qualidade / ajuste manual)
+
 MAPA_PASTAS = {
     "autismo":        "Banco de Imagens/Autismo",
     "ansiedade":      "Banco de Imagens/Ansiedade e Estresse",
@@ -1844,17 +1847,24 @@ def _renderizar_linha_agilera(draw, img_rgba, x, y, texto, fonte, cor, sp,
 def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cor_overlay=None, tem_pessoa=False, em_pe=True,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
-                    respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None):
+                    respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None,
+                    escala_fonte=1.0, cor_forcada=None, y_forcado=None,
+                    estrategia_fixa=None, forma_fixa=None):  # v76: ajuste manual (padrões não mudam nada)
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
+    _TL.info = None  # v76
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
     MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     if tem_pessoa and max_px_pessoa:  # v58: opcional (modo Com Ronilson); padrao inalterado
         MAX_PX = int(max_px_pessoa)
+    if x_texto and not (tem_pessoa and max_px_pessoa):  # v76: só entra no ajuste manual
+        if tem_pessoa:
+            MAX_PX = max(300, int(W * 0.40) - SAFE_MARGIN)
+        MAX_PX = max(240, min(MAX_PX, SAFE_RIGHT - MARGIN))
     layout   = seed % 5
 
     # Estratégia de legibilidade da vez
-    estrategia_leg = _proxima_estrategia_legibilidade(seed)
+    estrategia_leg = estrategia_fixa or _proxima_estrategia_legibilidade(seed)  # v76
     print(f"[titulo] estrategia_legibilidade={estrategia_leg}")
 
     if cor_dest is None:
@@ -2028,6 +2038,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # Quando pessoa está presente, reduz fonte para caber na metade esquerda
     if tem_pessoa:
         tam_ag = max(44, int(tam_ag * escala_pessoa))
+    if escala_fonte and abs(float(escala_fonte) - 1.0) > 0.005:  # v76: tamanho escolhido no editor
+        tam_ag = max(28, int(tam_ag * float(escala_fonte)))
 
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
@@ -2042,7 +2054,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # Forma do preenchimento ("-palavra"): percorre a rotação fixa (sem
     # sorteio), uma forma por geração — mas fica a MESMA em toda a imagem
     # (todas as palavras com "-" usam a mesma forma aqui)
-    forma_fundo = _proxima_forma_fundo()
+    forma_fundo = forma_fixa or _proxima_forma_fundo()  # v76
     print(f"[titulo] forma_fundo={forma_fundo}")
 
     # Fonte AGILERA base com variação de modo
@@ -2139,6 +2151,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _cor_sec = BRANCO if lum_zona_real < 0.5 else MARINHO
         print(f"[titulo] cor secundária ajustada por baixo contraste real: {_cor_sec}")
 
+    if cor_forcada:  # v76: cor escolhida no editor vale para todas as linhas
+        _cor_principal = _cor_sec = tuple(int(_c) for _c in cor_forcada)
     _paleta_blocos = [_cor_principal, _cor_sec, _cor_principal,
                       _cor_sec, _cor_principal, _cor_sec,
                       _cor_principal, _cor_sec, _cor_principal]
@@ -2156,7 +2170,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         cor_b = _cor_b(idx_b, est)
         if (estrategia_leg == "peso_fonte" and idx_b == len(blocos) - 1
                 and not any(b["estilo"] == "malgun" for b in blocos)):
-            if _contraste_real_ok(cor_dest):
+            if _contraste_real_ok(cor_dest) and not cor_forcada:  # v76
                 cor_b = cor_dest
 
         if est == "agilera_est":
@@ -2182,7 +2196,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
         elif est == "malgun":
             lum_b  = _LUM_COR.get(cor_b, 0.5)
-            cor_ml = cor_b if lum_b > 0.42 else BRANCO
+            cor_ml = cor_b if (lum_b > 0.42 or cor_forcada) else BRANCO  # v76
             # v29: valida a cor do MALGUN individualmente contra o fundo real
             # — antes so o par principal (_cor_principal/_cor_sec) passava
             # pela guarda de contraste; um bloco malgun especifico (ex.
@@ -2190,7 +2204,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             # cair em branco-no-branco/verde-no-verde quando aquele bloco
             # caia sobre uma parte da foto (camisa, parede) diferente da
             # zona amostrada pro par principal.
-            if not _contraste_real_ok(cor_ml):
+            if not cor_forcada and not _contraste_real_ok(cor_ml):  # v76
                 for _cand in (BRANCO, MARINHO, AMARELO, TEAL, PETROLEO):
                     if _contraste_real_ok(_cand):
                         cor_ml = _cand
@@ -2284,6 +2298,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     y    = Y_INI + max(0, (zona - h_total) // 2)
     y    = max(Y_INI, min(y, Y_FIM - h_total - 8))
     y    = max(SAFE_TOP + 20, min(y, SAFE_BOTTOM - h_total - 20))
+    if y_forcado is not None:  # v76: posição vertical escolhida no editor
+        y = max(SAFE_TOP + 20, min(int(y_forcado), SAFE_BOTTOM - h_total - 20))
 
     # Legibilidade do título — a ESTRATÉGIA ATIVA nesta geração decide como o
     # texto se destaca do fundo (contorno, glow, sombra dupla/adaptativa, ou
@@ -2309,6 +2325,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     except Exception as e:
         intensidade_sombra = 0.5
         print(f"[legibilidade] erro: {e}")
+
+    _qa_grupos = []
+    try:  # v76: geometria do título para o portão de qualidade e para o ajuste manual
+        _TL.info = {"estrategia": estrategia_leg, "forma": forma_fundo, "x": int(MARGIN), "y": int(y),
+                    "w": int(largura_titulo), "h": int(h_total), "tam_ag": int(tam_ag),
+                    "grupos": _qa_grupos, "y_fim": int(y)}
+    except Exception as _eqa:
+        print(f"[qa] geometria nao registrada: {_eqa}")
 
     # (contador _idx_cor_linha removido — cor_por_linha substituida por posicao_criteriosa)
     _palavra_destaque_rect = None  # (x,y,largura,altura) da PALAVRA VENCEDORA
@@ -2344,6 +2368,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         if gi > 0: y += gap_bloco
         lns0, f0, *_ = grupo[0]
         esp = int(_altura_linha(f0) * respiro)
+        try:  # v76
+            _qa_grupos.append({"y": int(y), "alt": int(_altura_linha(f0)), "est": grupo[0][4],
+                               "cores": [tuple(int(_v) for _v in (_g[5] or _g[2])) for _g in grupo]})
+        except Exception:
+            pass
 
         if len(grupo) == 1:
             lns, fonte, cor_txt, sp, est, cor_rect, tem_liga = grupo[0]
@@ -2716,6 +2745,11 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 _ultima_linha_tem_liga = _gi_last_tem_liga
                 y += esp
 
+    try:  # v76
+        _TL.info["y_fim"] = int(y)
+    except Exception:
+        pass
+
     # v25: entre todos os blocos agilera_est desta geracao, o acento_grafico
     # ancora na palavra MAIS LARGA renderizada (nunca na ultima processada) —
     # corrige o caso de um numero/palavra curta ("2") virar a ancora sozinho.
@@ -2933,6 +2967,15 @@ def gerar_card_imagem(tema, legenda, imagem_url, pid="", seed=None):
     # especulativa em cima de algo que ja se mostrou pior.
     cor_ov_usada = None
 
+    try:  # v76: portão de qualidade (se falhar, segue exatamente como antes)
+        import qualidade_card as _qa
+        import sys as _sys
+        return _qa.renderizar_titulo(
+            _sys.modules[__name__], base, tema, seed,
+            dict(cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt, cor_overlay=cor_ov_usada,
+                 tem_pessoa=tem_pessoa, em_pe=em_pe, cabeca_bbox=cabeca_bbox))
+    except Exception as _eqa:
+        print(f"[qa] portao de qualidade indisponivel, seguindo sem ele: {_eqa}")
     base, _ = desenhar_titulo(base, tema, seed,
                               cor_dest=cor_dest,
                               cor_fundo_txt=cor_fundo_txt,
@@ -3144,6 +3187,12 @@ def rota_preview_card():
             "tema": tema, "legenda": legenda,
             "imagem_fundo": url_img, "pid_fundo": pid,
             "card_bytes": card_bytes}
+        try:  # v76
+            import qualidade_card as _qa
+            _qa_resp = _qa.registrar(card_id, card)
+        except Exception as _eqa:
+            _qa_resp = None
+            print(f"[qa] registro ignorado: {_eqa}")
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"erro": f"Erro ao gerar card: {e}"}), 500
@@ -3151,6 +3200,7 @@ def rota_preview_card():
     resp = {"card_id": card_id, "preview_url": preview_url,
             "legenda": legenda, "imagem_fundo": url_img}
     if erros_leg: resp["aviso_legenda"] = erros_leg
+    if _qa_resp: resp.update(_qa_resp)  # v76
     return jsonify(resp)
 
 @app.route("/aprovar-card", methods=["POST"])
@@ -3189,6 +3239,13 @@ try:
     app.register_blueprint(_estilos_bp)
 except Exception as _e:
     print(f"[estilos] modulo indisponivel: {_e}")
+
+# v76: portão de qualidade + ajuste manual do título (módulo separado; se falhar, o resto segue normal)
+try:
+    from qualidade_card import bp as _qa_bp
+    app.register_blueprint(_qa_bp)
+except Exception as _e:
+    print(f"[qa] modulo indisponivel: {_e}")
 
 @app.route("/atualizar-status", methods=["POST"])
 def rota_atualizar_status():
