@@ -31,7 +31,7 @@ W, H = 1080, 1350
 SAFE_LEFT, SAFE_RIGHT, SAFE_TOP, SAFE_BOTTOM = 34, 1046, 60, 1290
 
 MAX_TENTATIVAS = 3
-ORCAMENTO_SEG = 28.0          # tempo máximo gasto com novas tentativas
+ORCAMENTO_SEG = 40.0          # tempo máximo (contado desde o início do portão) para tentar de novo
 NOTA_OK = 72                  # abaixo disso o card é considerado "com problema"
 MAX_REGISTROS = 8             # quantos cards ficam disponíveis para ajuste
 
@@ -104,17 +104,20 @@ class AvaliadorCard:
             out = []
             try:
                 import cv2
-                g = cv2.cvtColor(self.base, cv2.COLOR_RGB2GRAY)
-                lado = int(self.w * 0.07)
+                g0 = cv2.cvtColor(self.base, cv2.COLOR_RGB2GRAY)
+                f = 0.5  # detecta em metade da resolução: ~4x mais rápido (o Render free é lento)
+                g = cv2.resize(g0, (int(self.w * f), int(self.h * f)), interpolation=cv2.INTER_AREA)
+                lado = int(g.shape[1] * 0.07)
                 kw = dict(scaleFactor=1.1, minNeighbors=6, minSize=(lado, lado))
+                gw = g.shape[1]
                 fr = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
                 for (x, y, w, h) in fr.detectMultiScale(g, **kw):
-                    out.append((int(x), int(y), int(x + w), int(y + h)))
+                    out.append((int(x / f), int(y / f), int((x + w) / f), int((y + h) / f)))
                 pf = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
                 for (x, y, w, h) in pf.detectMultiScale(g, **kw):
-                    out.append((int(x), int(y), int(x + w), int(y + h)))
+                    out.append((int(x / f), int(y / f), int((x + w) / f), int((y + h) / f)))
                 for (x, y, w, h) in pf.detectMultiScale(g[:, ::-1].copy(), **kw):
-                    out.append((int(self.w - (x + w)), int(y), int(self.w - x), int(y + h)))
+                    out.append((int((gw - (x + w)) / f), int(y / f), int((gw - x) / f), int((y + h) / f)))
             except Exception as e:
                 print(f"[qa] rostos indisponivel: {e}")
             self._rostos = out
@@ -234,8 +237,16 @@ def _render(M, base, tema, seed, kw):
     kw2 = dict(kw)
     if kw2.get("cor_dest") is not None:
         kw2["cor_dest"], kw2["cor_fundo_txt"] = M._escolher_cor_destaque(seed)
-    card, _ = M.desenhar_titulo(base, tema, seed, **kw2)
-    return card, kw2, _info_motor(M)
+    try:
+        card, _ = M.desenhar_titulo(base, tema, seed, **kw2)
+        info = _info_motor(M)
+    finally:  # v78: o estilo por palavra vale só para este render (não vaza para outros desenhos na mesma thread)
+        try:
+            M._TL.palavras = {}
+            M._TL.fundo_pendente = False
+        except Exception:
+            pass
+    return card, kw2, info
 
 
 def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS):
@@ -249,13 +260,14 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS):
         sd = seed if i == 0 else (int(seed) + i * 7919) % 999983
         try:
             card, kw_usado, info = _render(M, base, tema, sd, kw)
-        except Exception:
+        except Exception as _e:
             if melhor is None:
                 raise
+            print(f"[qa] tentativa {i + 1} falhou: {type(_e).__name__}: {_e}")
             break
         n += 1
         rel = av.avaliar(card, info)
-        print(f"[qa] tentativa {n}: nota={rel['nota']} ok={rel['ok']} problemas={len(rel['problemas'])}")
+        print(f"[qa] tentativa {n}: nota={rel['nota']} ok={rel['ok']} problemas={len(rel['problemas'])} t={time.time() - inicio:.1f}s")
         if melhor is None or (rel["nota"] or 0) > (melhor[1]["nota"] or 0):
             melhor = (card, rel, sd, kw_usado, info)
         if rel["ok"] or rel["nota"] is None:
@@ -299,7 +311,7 @@ def registrar(card_id, card):
         while len(_REG) > MAX_REGISTROS:
             _REG.popitem(last=False)
     return {"qa": _publico(getattr(card, "qa_relatorio", None)), "ajustavel": bool(reg.get("info")),
-            "caixa": _caixa(reg.get("info"))}
+            "caixa": _caixa(reg.get("info")), "palavras": (reg.get("info") or {}).get("palavras", [])}
 
 
 def _clamp(v, lo, hi):
@@ -344,6 +356,25 @@ def rota_ajustar_card():
             cor = (data.get("cor") or "").strip().lower()
             if cor in PALETA_AJUSTE:
                 kw["cor_forcada"] = PALETA_AJUSTE[cor]
+            # v78: cor/tamanho por palavra ({chave: {"cor": nome, "escala": 1.2}}), sempre relativo ao original
+            pal_estilo = {}
+            for chave, o in (data.get("palavras") or {}).items():
+                if not isinstance(o, dict) or not isinstance(chave, str):
+                    continue
+                item = {}
+                cnome = (o.get("cor") or "").strip().lower()
+                if cnome in PALETA_AJUSTE:
+                    item["cor"] = PALETA_AJUSTE[cnome]
+                try:
+                    esc = float(o.get("escala") or 1.0)
+                except (TypeError, ValueError):
+                    esc = 1.0
+                if abs(esc - 1.0) > 0.01:
+                    item["escala"] = _clamp(esc, 0.6, 1.8)
+                if item:
+                    pal_estilo[chave[:40]] = item
+            if pal_estilo:
+                kw["palavras_estilo"] = pal_estilo
             card, kw_usado, info_novo = _render(M, base, reg["tema"], reg["seed"], kw)
             rel = AvaliadorCard(base).avaliar(card, info_novo)
             rel["tentativas"] = 1
@@ -361,4 +392,5 @@ def rota_ajustar_card():
         "preview_url": f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}",
         "qa": _publico(rel),
         "caixa": _caixa(info_vis),
+        "palavras": (info_vis or {}).get("palavras", []),
     })

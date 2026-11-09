@@ -443,6 +443,13 @@ def f_display_est(t):
 
 def _linha_est(draw, x, y, texto, fonte, cor, stroke_width=0, stroke_fill=None):
     """Renderiza com ligaturas e glifos alternativos via RAQM ou fallback."""
+    _pal = _overrides_linha(texto)  # v78: cor/tamanho por palavra vindos do editor
+    if _pal is not None:
+        try:
+            _desenhar_linha_palavras(draw, x, y, texto, fonte, cor, 0, stroke_width, stroke_fill, _pal, liga=True)
+            return
+        except Exception as _ep:
+            print(f"[palavras] fallback para o desenho normal: {_ep}")
     if _RAQM_OK:
         try:
             draw.text((x, y), texto, font=fonte, fill=cor,
@@ -708,6 +715,7 @@ def _desenhar_forma_fundo(img_rgba, xy, fill, forma="bandeira", pad_x=14, pad_y=
       flamula   — lado esquerdo reto, lado direito termina em ponta
     """
     (x1, y1), (x2, y2) = xy
+    _TL.fundo_pendente = True  # v78: o próximo texto desenhado é o de dentro do fundo; não recebe estilo por palavra
     x1i, y1i = int(round(x1)), int(round(y1))
     x2i, y2i = int(round(x2)), int(round(y2))
     w, h = x2i - x1i, y2i - y1i
@@ -1584,7 +1592,119 @@ def _sombra(img_rgba, texto, fonte, x, y, sp=0, forte=False, dupla=False,
         layer = layer.filter(ImageFilter.GaussianBlur(blur))
         img_rgba.paste(layer, (0, 0), layer)
 
+# v78: estilo por palavra (cor/tamanho) vindo do editor — chave = palavra normalizada (sem pontuação, minúscula)
+def _chave_palavra(p):
+    try:
+        if _LIGA_SUBST:
+            for _seq, _ch in _LIGA_SUBST.items():
+                p = p.replace(_ch, _seq)
+    except Exception:
+        pass
+    return "".join(c for c in p.lower() if c.isalnum())
+
+def _palavras_editaveis(tema):
+    """Palavras do título que o editor pode recolorir/redimensionar (fora dos '-palavra' com fundo).
+    Lê o tema digitado: remove os símbolos '*' e ':' e ignora as palavras marcadas com '-'."""
+    out = []
+    try:
+        vistos = set()
+        for w in str(tema).replace("\n", " ").split():
+            if w.startswith("-"):
+                continue
+            w = w.lstrip("*:")
+            k = _chave_palavra(w)
+            if k and k not in vistos:
+                vistos.add(k)
+                out.append({"id": k, "texto": w.strip(".,;:!?“”\"()[]")})
+    except Exception:
+        return []
+    return out
+
+def _overrides_linha(texto):
+    """Devolve o mapa de estilos por palavra se esta linha tem alguma palavra ajustada (ou None)."""
+    if getattr(_TL, "fundo_pendente", False):  # o texto logo depois de um fundo '-palavra' não é alterado
+        _TL.fundo_pendente = False
+        return None
+    pal = getattr(_TL, "palavras", None)
+    if not pal:
+        return None
+    if not any(_chave_palavra(w) in pal for w in texto.split()):
+        return None
+    return pal
+
+def _desenhar_linha_palavras(draw, x, y, texto, fonte, cor, sp, stroke_width, stroke_fill, pal, liga=False):
+    """Desenha a linha palavra por palavra aplicando cor/tamanho por palavra (v78). A cor só vale no
+    preenchimento (alpha 255); sombra e glow usam o mesmo tamanho/posição da palavra, sem trocar de cor."""
+    import re as _re
+    feats = ["+liga", "+aalt", "+calt", "+dlig"]
+    try:
+        asc_base = fonte.getmetrics()[0]
+    except Exception:
+        asc_base = _altura_linha(fonte)
+    opaco = len(cor) == 4 and cor[3] == 255
+    cx = float(x)
+    for parte in _re.split(r"(\s+)", texto):
+        if not parte:
+            continue
+        if parte.isspace():
+            try:
+                cx += fonte.getlength(parte) + (sp or 0)
+            except Exception:
+                cx += 20
+            continue
+        o = pal.get(_chave_palavra(parte)) or {}
+        f = fonte
+        esc = o.get("escala")
+        if esc and abs(float(esc) - 1.0) > 0.01:
+            try:
+                f = fonte.font_variant(size=max(12, int(fonte.size * float(esc))))
+            except Exception:
+                f = fonte
+        c, sf = cor, stroke_fill
+        if o.get("cor") and opaco:
+            c = (*o["cor"], 255)
+            if stroke_width:  # borda de contraste para a nova cor (escura em cor clara, clara em cor escura)
+                _lm = 0.299 * o["cor"][0] + 0.587 * o["cor"][1] + 0.114 * o["cor"][2]
+                sf = (2, 64, 89, 255) if _lm > 140 else (244, 246, 248, 255)
+        try:
+            yy = y + asc_base - f.getmetrics()[0]  # alinha pela linha de base
+        except Exception:
+            yy = y
+        if sp:
+            cur = cx
+            for ch in parte:
+                if stroke_width:
+                    draw.text((cur, yy), ch, font=f, fill=c, stroke_width=stroke_width, stroke_fill=sf)
+                else:
+                    draw.text((cur, yy), ch, font=f, fill=c)
+                try:
+                    bb = f.getbbox(ch)
+                    cur += (bb[2] - bb[0]) + sp
+                except Exception:
+                    cur += 30 + sp
+            cx = cur
+        else:
+            kw = dict(font=f, fill=c)
+            if stroke_width:
+                kw.update(stroke_width=stroke_width, stroke_fill=sf)
+            if liga and _RAQM_OK:
+                try:
+                    draw.text((cx, yy), parte, features=feats, **kw)
+                    cx += f.getlength(parte, features=feats)
+                    continue
+                except Exception:
+                    pass
+            draw.text((cx, yy), parte, **kw)
+            cx += f.getlength(parte)
+
 def _linha(draw, x, y, texto, fonte, cor, sp=0, stroke_width=0, stroke_fill=None):
+    _pal = _overrides_linha(texto)  # v78
+    if _pal is not None:
+        try:
+            _desenhar_linha_palavras(draw, x, y, texto, fonte, cor, sp, stroke_width, stroke_fill, _pal)
+            return
+        except Exception as _ep:
+            print(f"[palavras] fallback para o desenho normal: {_ep}")
     if sp == 0:
         if stroke_width:
             draw.text((x, y), texto, font=fonte, fill=cor,
@@ -1849,10 +1969,12 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
                     respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None,
                     escala_fonte=1.0, cor_forcada=None, y_forcado=None,
-                    estrategia_fixa=None, forma_fixa=None):  # v76: ajuste manual (padrões não mudam nada)
+                    estrategia_fixa=None, forma_fixa=None, palavras_estilo=None):  # v76: ajuste manual (padrões não mudam nada)
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
     _TL.info = None  # v76
+    _TL.palavras = dict(palavras_estilo) if palavras_estilo else {}  # v78: cor/tamanho por palavra (editor)
+    _TL.fundo_pendente = False
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
     MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     if tem_pessoa and max_px_pessoa:  # v58: opcional (modo Com Ronilson); padrao inalterado
@@ -2330,7 +2452,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     try:  # v76: geometria do título para o portão de qualidade e para o ajuste manual
         _TL.info = {"estrategia": estrategia_leg, "forma": forma_fundo, "x": int(MARGIN), "y": int(y),
                     "w": int(largura_titulo), "h": int(h_total), "tam_ag": int(tam_ag),
-                    "grupos": _qa_grupos, "y_fim": int(y)}
+                    "grupos": _qa_grupos, "y_fim": int(y),
+                    "palavras": _palavras_editaveis(tema)}
     except Exception as _eqa:
         print(f"[qa] geometria nao registrada: {_eqa}")
 

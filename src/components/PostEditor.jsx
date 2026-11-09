@@ -131,9 +131,12 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [qa,            setQa]            = useState(null);
   const [ajustavel,     setAjustavel]     = useState(false);
   const [caixa,         setCaixa]         = useState(null);
-  const [ajuste,        setAjuste]        = useState({ escala: 1, dx: 0, dy: 0, cor: "" });
+  const [ajuste,        setAjuste]        = useState({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {} });
   const [loadingAjuste, setLoadingAjuste] = useState(false);
   const [arrasto,       setArrasto]       = useState(null);
+  const [redim,         setRedim]         = useState(null);  // v77: redimensionar a caixa do título
+  const [palavras,      setPalavras]      = useState([]);    // v78: palavras do título (cor/tamanho por palavra)
+  const [palavraSel,    setPalavraSel]    = useState("");
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
@@ -187,7 +190,9 @@ export default function PostEditor({ post, onClose, onNotify }) {
       setQa(data.qa || null);                 // v76
       setAjustavel(Boolean(data.ajustavel));
       setCaixa(data.caixa || null);
-      setAjuste({ escala: 1, dx: 0, dy: 0, cor: "" });
+      setAjuste({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {} });
+      setPalavras(data.palavras || []);
+      setPalavraSel("");
       setLegenda(data.legenda);
       if (data.aviso_estilo) onNotify(data.aviso_estilo, "error");
       else if (data.aviso_legenda) onNotify("Card gerado, mas a legenda automática falhou: " + String(data.aviso_legenda).slice(0, 220), "error");
@@ -203,7 +208,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const ajustarCard = async (patch, acao = "ajustar") => {
     if (!dadosCard || loadingAjuste) return;
     const proximo = acao === "novo_texto"
-      ? { escala: 1, dx: 0, dy: 0, cor: "" }
+      ? { escala: 1, dx: 0, dy: 0, cor: "", palavras: {} }
       : { ...ajuste, ...patch };
     setLoadingAjuste(true);
     try {
@@ -217,6 +222,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
       setPreviewUrl(data.preview_url);
       setQa(data.qa || null);
       setCaixa(data.caixa || null);
+      if (data.palavras) setPalavras(data.palavras);
       setAjuste(proximo);
     } catch (e) {
       onNotify(e.message, "error");
@@ -243,6 +249,61 @@ export default function PostEditor({ post, onClose, onNotify }) {
     setArrasto(null);
     if (Math.abs(dx) + Math.abs(dy) < 4) return;
     ajustarCard({ dx: Math.round(ajuste.dx + dx * fator), dy: Math.round(ajuste.dy + dy * fator) });
+  };
+
+  // v77: redimensionar a caixa do título pelas abas e quinas (o texto cresce/encolhe junto)
+  const calcRedim = (r, cx) => {
+    const ddx = r.dx * r.fator, ddy = r.dy * r.fator;
+    const { x, y, w, h } = cx;
+    const hd = r.h;
+    const sx = hd.includes("e") ? (w + ddx) / w : hd.includes("w") ? (w - ddx) / w : null;
+    const sy = hd.includes("s") ? (h + ddy) / h : hd.includes("n") ? (h - ddy) / h : null;
+    let s = (sx !== null && sy !== null)
+      ? Math.sqrt(Math.max(0.05, sx) * Math.max(0.05, sy))
+      : (sx !== null ? sx : sy);
+    s = Math.min(2, Math.max(0.5, s || 1));
+    return {
+      x: hd.includes("w") ? x + w - w * s : x,
+      y: hd.includes("n") ? y + h - h * s : y,
+      w: w * s, h: h * s, s,
+    };
+  };
+  const iniciarRedim = (hd) => (e) => {
+    if (!ajustavel || loadingAjuste) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+    const larg = e.currentTarget.parentElement.parentElement.getBoundingClientRect().width || 1;
+    setRedim({ h: hd, x0: e.clientX, y0: e.clientY, dx: 0, dy: 0, fator: 1080 / larg });
+  };
+  const moverRedim = (e) => {
+    if (!redim) return;
+    setRedim(r => (r ? { ...r, dx: e.clientX - r.x0, dy: e.clientY - r.y0 } : r));
+  };
+  const soltarRedim = () => {
+    if (!redim || !caixa) return;
+    const nb = calcRedim(redim, caixa);
+    setRedim(null);
+    if (Math.abs(nb.s - 1) < 0.02) return;
+    ajustarCard({
+      escala: Math.min(1.6, Math.max(0.5, +(ajuste.escala * nb.s).toFixed(3))),
+      dx: Math.round(ajuste.dx + (nb.x - caixa.x)),
+      dy: Math.round(ajuste.dy + (nb.y - caixa.y)),
+    });
+  };
+  const caixaVisivel = (redim && caixa) ? calcRedim(redim, caixa) : caixa;
+  const CURSOR_REDIM = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+                        n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize" };
+
+  // v78: cor/tamanho de UMA palavra do título (vale para todas as ocorrências dela)
+  const setEstiloPalavra = (chave, patch) => {
+    const mapa = { ...(ajuste.palavras || {}) };
+    const novo = { ...(mapa[chave] || {}), ...patch };
+    const semCor = !novo.cor;
+    const semEscala = !novo.escala || Math.abs(novo.escala - 1) < 0.01;
+    if (semCor && semEscala) delete mapa[chave];
+    else mapa[chave] = novo;
+    ajustarCard({ palavras: mapa });
   };
 
   const estiloBtnAj = (ativo = false) => ({
@@ -501,14 +562,31 @@ export default function PostEditor({ post, onClose, onNotify }) {
                   title="Arraste para mover o título"
                   style={{
                     position: "absolute",
-                    left: `${(caixa.x / 1080) * 100}%`, top: `${(caixa.y / 1350) * 100}%`,
-                    width: `${(caixa.w / 1080) * 100}%`, height: `${(caixa.h / 1350) * 100}%`,
+                    left: `${(caixaVisivel.x / 1080) * 100}%`, top: `${(caixaVisivel.y / 1350) * 100}%`,
+                    width: `${(caixaVisivel.w / 1080) * 100}%`, height: `${(caixaVisivel.h / 1350) * 100}%`,
                     border: "1.5px dashed rgba(249,171,11,0.95)", borderRadius: 6,
                     cursor: arrasto ? "grabbing" : "grab", touchAction: "none",
                     transform: arrasto ? `translate(${arrasto.dx}px, ${arrasto.dy}px)` : "none",
                     background: arrasto ? "rgba(249,171,11,0.12)" : "transparent",
                   }}
-                />
+                >
+                  {[["nw", 0, 0], ["n", 50, 0], ["ne", 100, 0], ["e", 100, 50],
+                    ["se", 100, 100], ["s", 50, 100], ["sw", 0, 100], ["w", 0, 50]].map(([hd, lx, ly]) => (
+                    <div key={hd}
+                      onPointerDown={iniciarRedim(hd)}
+                      onPointerMove={moverRedim}
+                      onPointerUp={soltarRedim}
+                      onPointerCancel={() => setRedim(null)}
+                      onClick={e => e.stopPropagation()}
+                      title="Arraste para aumentar ou diminuir o texto"
+                      style={{
+                        position: "absolute", left: `${lx}%`, top: `${ly}%`, width: 12, height: 12,
+                        transform: "translate(-50%, -50%)", background: "#fff",
+                        border: "2px solid #F9AB0B", borderRadius: 3, zIndex: 2,
+                        cursor: CURSOR_REDIM[hd], touchAction: "none",
+                      }} />
+                  ))}
+                </div>
               )}
               {loadingAjuste && (
                 <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.35)",
@@ -593,8 +671,60 @@ export default function PostEditor({ post, onClose, onNotify }) {
                       onClick={() => ajustarCard({ dx: ajuste.dx + ddx, dy: ajuste.dy + ddy })}>{rot}</button>
                   ))}
                   <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
-                    onClick={() => ajustarCard({ escala: 1, dx: 0, dy: 0, cor: "" })}>↩ Restaurar</button>
+                    onClick={() => ajustarCard({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {} })}>↩ Restaurar</button>
                 </div>
+                {palavras.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                    <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Palavra</span>
+                      {palavras.map(p => {
+                        const o = (ajuste.palavras || {})[p.id];
+                        return (
+                          <button key={p.id} type="button" disabled={loadingAjuste}
+                            style={{ ...estiloBtnAj(palavraSel === p.id),
+                                     textDecoration: o ? "underline" : "none" }}
+                            onClick={() => setPalavraSel(palavraSel === p.id ? "" : p.id)}>
+                            {p.texto}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {palavraSel && (() => {
+                      const o = (ajuste.palavras || {})[palavraSel] || {};
+                      const esc = o.escala || 1;
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem",
+                                      padding: "0.5rem 0.6rem", borderRadius: 8,
+                                      border: "1px dashed var(--creme-escuro, #ddd)" }}>
+                          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Cor</span>
+                            <button type="button" disabled={loadingAjuste} style={estiloBtnAj(!o.cor)}
+                              onClick={() => setEstiloPalavra(palavraSel, { cor: "" })}>Padrão</button>
+                            {CORES_AJUSTE.map(c => (
+                              <button key={c.id} type="button" disabled={loadingAjuste} title={c.nome}
+                                onClick={() => setEstiloPalavra(palavraSel, { cor: c.id })}
+                                style={{
+                                  width: 22, height: 22, borderRadius: "50%", padding: 0,
+                                  cursor: loadingAjuste ? "wait" : "pointer", background: c.hex,
+                                  border: o.cor === c.id ? "2.5px solid var(--laranja, #F9AB0B)" : "1px solid #9aa",
+                                }} />
+                            ))}
+                          </div>
+                          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                            <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Tamanho</span>
+                            <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                              onClick={() => setEstiloPalavra(palavraSel, { escala: Math.max(0.6, +(esc - 0.1).toFixed(2)) })}>A−</button>
+                            <span style={{ fontSize: "0.74rem", minWidth: 36, textAlign: "center" }}>{Math.round(esc * 100)}%</span>
+                            <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                              onClick={() => setEstiloPalavra(palavraSel, { escala: Math.min(1.8, +(esc + 0.1).toFixed(2)) })}>A+</button>
+                            <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
+                              onClick={() => setEstiloPalavra(palavraSel, { cor: "", escala: 1 })}>↩ Limpar palavra</button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
                 <div>
                   <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
                     onClick={() => ajustarCard({}, "novo_texto")}>
