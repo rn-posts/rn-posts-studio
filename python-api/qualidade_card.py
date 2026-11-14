@@ -244,6 +244,7 @@ def _render(M, base, tema, seed, kw):
         try:
             M._TL.palavras = {}
             M._TL.fundo_pendente = False
+            M._TL.linhas_pos = None
         except Exception:
             pass
     return card, kw2, info
@@ -292,10 +293,40 @@ def _publico(rel):
 
 
 def _caixa(info):
+    """Caixa visível do título em px do card. Usa as palavras realmente desenhadas; sem elas, a estimativa do motor."""
     if not info:
         return None
+    try:
+        lns = info.get("linhas_pos") or []
+        if lns:
+            x0 = min(p["x0"] for l in lns for p in l["palavras"])
+            x1 = max(p["x1"] for l in lns for p in l["palavras"])
+            y0 = min(l["y"] for l in lns)
+            y1 = max(l["y"] + l["h"] for l in lns)
+            pad = 10
+            x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+            x1, y1 = min(W, x1 + pad), min(H, y1 + pad)
+            if x1 - x0 > 20 and y1 - y0 > 20:
+                return {"x": int(x0), "y": int(y0), "w": int(x1 - x0), "h": int(y1 - y0)}
+    except Exception:
+        pass
     return {"x": int(info.get("x", 0)), "y": int(info.get("y", 0)),
             "w": int(info.get("w", 0)), "h": int(max(1, info.get("y_fim", 0) - info.get("y", 0)))}
+
+
+def _palavras_pos(info):
+    """Retângulos (px do card) das palavras editáveis, para o editor local clicar nelas."""
+    out = []
+    try:
+        ids = {p["id"] for p in (info.get("palavras") or [])}
+        for l in (info.get("linhas_pos") or []):
+            for p in l["palavras"]:
+                if p["k"] in ids:
+                    out.append({"k": p["k"], "t": p["t"], "x": p["x0"], "y": l["y"],
+                                "w": round(p["x1"] - p["x0"], 1), "h": l["h"], "cor": p["cor"]})
+    except Exception:
+        pass
+    return out
 
 
 def registrar(card_id, card):
@@ -307,7 +338,7 @@ def registrar(card_id, card):
     reg["base"].convert("RGB").save(buf, format="JPEG", quality=97, subsampling=0)
     with _LOCK:
         _REG[card_id] = {"base_jpg": buf.getvalue(), "kw": reg["kw"], "tema": reg["tema"],
-                         "seed": reg["seed"], "info": reg["info"]}
+                         "seed": reg["seed"], "info": reg["info"], "info_atual": reg["info"]}
         while len(_REG) > MAX_REGISTROS:
             _REG.popitem(last=False)
     return {"qa": _publico(getattr(card, "qa_relatorio", None)), "ajustavel": bool(reg.get("info")),
@@ -337,7 +368,7 @@ def rota_ajustar_card():
             novo = card.qa_registro
             with _LOCK:
                 _REG[card_id] = {"base_jpg": reg["base_jpg"], "kw": novo["kw"], "tema": reg["tema"],
-                                 "seed": novo["seed"], "info": novo["info"]}
+                                 "seed": novo["seed"], "info": novo["info"], "info_atual": novo["info"]}
             info_vis, rel = novo["info"], card.qa_relatorio
         else:
             info = reg["info"] or {}
@@ -379,6 +410,9 @@ def rota_ajustar_card():
             rel = AvaliadorCard(base).avaliar(card, info_novo)
             rel["tentativas"] = 1
             info_vis = info_novo
+            with _LOCK:
+                if card_id in _REG:
+                    _REG[card_id]["info_atual"] = info_novo
         buf = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
         card_bytes = buf.getvalue()
@@ -393,4 +427,52 @@ def rota_ajustar_card():
         "qa": _publico(rel),
         "caixa": _caixa(info_vis),
         "palavras": (info_vis or {}).get("palavras", []),
+    })
+
+
+@bp.route("/camada-titulo", methods=["POST"])
+def rota_camada_titulo():
+    """v79: entrega o card SEM o título (fundo limpo) e o título como camada transparente (recorte em volta da
+    caixa), mais a posição de cada palavra. O editor local move/aumenta a camada no navegador, sem ir ao servidor.
+    A camada é extraída da diferença entre o card atual e o fundo; sobrepor camada + fundo reproduz o card."""
+    M = _m()
+    data = request.get_json() or {}
+    card_id = data.get("card_id", "")
+    with _LOCK:
+        reg = _REG.get(card_id)
+    pend = M._cards_pendentes.get(card_id)
+    if not reg or not pend:
+        return jsonify({"erro": "Esse card saiu da memória do servidor (reinício ou muitos cards novos). Gere novamente."}), 410
+    try:
+        info = reg.get("info_atual") or reg.get("info") or {}
+        caixa = _caixa(info)
+        if not caixa:
+            return jsonify({"erro": "Este card não tem a geometria do título registrada."}), 422
+        base = np.asarray(Image.open(io.BytesIO(reg["base_jpg"])).convert("RGB")).astype(np.int16)
+        atual = np.asarray(Image.open(io.BytesIO(pend["card_bytes"])).convert("RGB")).astype(np.int16)
+        if base.shape != atual.shape:
+            return jsonify({"erro": "Tamanhos diferentes entre o fundo e o card."}), 422
+        x0, y0 = max(0, caixa["x"] - 90), max(0, caixa["y"] - 70)
+        x1 = min(base.shape[1], caixa["x"] + caixa["w"] + 90)
+        y1 = min(base.shape[0], caixa["y"] + caixa["h"] + 90)
+        B = base[y0:y1, x0:x1]
+        F = atual[y0:y1, x0:x1]
+        D = np.abs(F - B).max(axis=2).astype(np.float32)
+        alfa = np.clip((D - 6.0) / 26.0, 0.0, 1.0)            # ignora o ruído de JPEG (<6)
+        cor = np.clip(B + (F - B) / np.maximum(alfa, 1e-3)[..., None], 0, 255)
+        rgba = np.dstack([cor, alfa * 255.0]).astype(np.uint8)
+        buf_png = io.BytesIO()
+        Image.fromarray(rgba, "RGBA").save(buf_png, format="PNG")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"erro": f"Erro ao preparar o editor do título: {type(e).__name__}: {str(e)[:160]}"}), 500
+    return jsonify({
+        "card_id": card_id,
+        "base_url": "data:image/jpeg;base64," + base64.b64encode(reg["base_jpg"]).decode(),
+        "camada_url": "data:image/png;base64," + base64.b64encode(buf_png.getvalue()).decode(),
+        "origem": {"x": int(x0), "y": int(y0), "w": int(x1 - x0), "h": int(y1 - y0)},
+        "caixa": caixa,
+        "ancora": {"x": int(info.get("x", caixa["x"])), "y": int(info.get("y", caixa["y"]))},
+        "palavras_pos": _palavras_pos(info),
     })

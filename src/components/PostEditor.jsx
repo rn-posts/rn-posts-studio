@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import TituloEditor from "./TituloEditor";  // v79: editor local do título
 import { db } from "../firebase";
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from "firebase/firestore";
 
@@ -137,6 +138,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const [redim,         setRedim]         = useState(null);  // v77: redimensionar a caixa do título
   const [palavras,      setPalavras]      = useState([]);    // v78: palavras do título (cor/tamanho por palavra)
   const [palavraSel,    setPalavraSel]    = useState("");
+  const [editando,      setEditando]      = useState(false); // v79: editor local do título aberto
 
   const [loadingCard,    setLoadingCard]    = useState(false);
   const [loadingLegenda, setLoadingLegenda] = useState(false);
@@ -294,6 +296,12 @@ export default function PostEditor({ post, onClose, onNotify }) {
   const caixaVisivel = (redim && caixa) ? calcRedim(redim, caixa) : caixa;
   const CURSOR_REDIM = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
                         n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize" };
+
+  // v79: clicar na caixa tracejada abre o editor local (mover, alças, cor/tamanho por palavra; aplica ao clicar fora)
+  const abrirEditor = (e) => {
+    if (e && e.preventDefault) { e.preventDefault(); e.stopPropagation(); }
+    if (ajustavel && !loadingAjuste) setEditando(true);
+  };
 
   // v78: cor/tamanho de UMA palavra do título (vale para todas as ocorrências dela)
   const setEstiloPalavra = (chave, patch) => {
@@ -552,9 +560,9 @@ export default function PostEditor({ post, onClose, onNotify }) {
               title="Clique para ver em tamanho real (1080×1350)"
             >
               <img src={previewUrl} alt="card preview" style={{ width: "100%", display: "block" }} />
-              {ajustavel && caixa && (
+              {ajustavel && caixa && !editando && (
                 <div
-                  onPointerDown={iniciarArrasto}
+                  onPointerDown={abrirEditor}
                   onPointerMove={moverArrasto}
                   onPointerUp={soltarArrasto}
                   onPointerCancel={() => setArrasto(null)}
@@ -573,7 +581,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
                   {[["nw", 0, 0], ["n", 50, 0], ["ne", 100, 0], ["e", 100, 50],
                     ["se", 100, 100], ["s", 50, 100], ["sw", 0, 100], ["w", 0, 50]].map(([hd, lx, ly]) => (
                     <div key={hd}
-                      onPointerDown={iniciarRedim(hd)}
+                      onPointerDown={abrirEditor}
                       onPointerMove={moverRedim}
                       onPointerUp={soltarRedim}
                       onPointerCancel={() => setRedim(null)}
@@ -593,6 +601,16 @@ export default function PostEditor({ post, onClose, onNotify }) {
                               display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <span className="spinner" />
                 </div>
+              )}
+              {editando && dadosCard && (
+                <TituloEditor
+                  renderUrl={RENDER_URL}
+                  cardId={dadosCard.card_id}
+                  ajuste={ajuste}
+                  onAplicar={ajustarCard}
+                  onFechar={() => setEditando(false)}
+                  onNotify={onNotify}
+                />
               )}
             </div>
 
@@ -636,7 +654,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
             {ajustavel && (
               <div style={{ marginTop: "0.75rem", maxWidth: 420, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                 <div style={{ fontSize: "0.68rem", color: "var(--texto-suave)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Ajustar título — arraste a caixa tracejada sobre o card para mover
+                  Editar título — clique na caixa tracejada sobre o card: arraste, puxe as alças, clique numa palavra; clique fora para aplicar
                 </div>
                 <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
                   <span style={{ fontSize: "0.74rem", minWidth: 52 }}>Tamanho</span>

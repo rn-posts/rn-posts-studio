@@ -443,6 +443,7 @@ def f_display_est(t):
 
 def _linha_est(draw, x, y, texto, fonte, cor, stroke_width=0, stroke_fill=None):
     """Renderiza com ligaturas e glifos alternativos via RAQM ou fallback."""
+    _registrar_linha_pos(x, y, texto, fonte, cor, 0)  # v79
     _pal = _overrides_linha(texto)  # v78: cor/tamanho por palavra vindos do editor
     if _pal is not None:
         try:
@@ -1697,7 +1698,36 @@ def _desenhar_linha_palavras(draw, x, y, texto, fonte, cor, sp, stroke_width, st
             draw.text((cx, yy), parte, **kw)
             cx += f.getlength(parte)
 
+def _registrar_linha_pos(x, y, texto, fonte, cor, sp=0):
+    """v79: guarda onde cada palavra foi desenhada (só no preenchimento opaco) para o editor local do título."""
+    try:
+        lst = getattr(_TL, "linhas_pos", None)
+        if lst is None or not (len(cor) == 4 and cor[3] == 255):
+            return
+        import re as _re
+        pal = getattr(_TL, "palavras", None) or {}
+        asc, desc = fonte.getmetrics()
+        palavras = []
+        for m in _re.finditer(r"\S+", texto):
+            pre = texto[:m.start()]
+            x0 = float(x) + (fonte.getlength(pre) if pre else 0.0) + (sp or 0) * len(pre)
+            x1 = x0 + fonte.getlength(m.group()) + (sp or 0) * len(m.group())
+            k = _chave_palavra(m.group())
+            c = (pal.get(k) or {}).get("cor") or tuple(cor[:3])
+            palavras.append({"k": k, "t": m.group().strip(".,;:!?“”\"()[]"),
+                             "x0": round(x0, 1), "x1": round(x1, 1), "cor": [int(v) for v in c]})
+        if not palavras:
+            return
+        chave = (int(round(y)), palavras[0]["k"], int(round(palavras[0]["x0"])))
+        for l in lst:
+            if (int(round(l["y"])), l["palavras"][0]["k"], int(round(l["palavras"][0]["x0"]))) == chave:
+                return
+        lst.append({"y": round(float(y), 1), "h": int(asc + desc), "palavras": palavras})
+    except Exception:
+        pass
+
 def _linha(draw, x, y, texto, fonte, cor, sp=0, stroke_width=0, stroke_fill=None):
+    _registrar_linha_pos(x, y, texto, fonte, cor, sp)  # v79
     _pal = _overrides_linha(texto)  # v78
     if _pal is not None:
         try:
@@ -1975,6 +2005,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     _TL.info = None  # v76
     _TL.palavras = dict(palavras_estilo) if palavras_estilo else {}  # v78: cor/tamanho por palavra (editor)
     _TL.fundo_pendente = False
+    _TL.linhas_pos = []  # v79: onde cada palavra foi desenhada (editor local do título)
     # Para fotos com pessoa: texto estritamente restrito à coluna esquerda livre (40% da largura)
     MAX_PX   = (int(W * 0.40) - MARGIN) if tem_pessoa else SAFE_MAX_PX
     if tem_pessoa and max_px_pessoa:  # v58: opcional (modo Com Ronilson); padrao inalterado
@@ -2453,7 +2484,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _TL.info = {"estrategia": estrategia_leg, "forma": forma_fundo, "x": int(MARGIN), "y": int(y),
                     "w": int(largura_titulo), "h": int(h_total), "tam_ag": int(tam_ag),
                     "grupos": _qa_grupos, "y_fim": int(y),
-                    "palavras": _palavras_editaveis(tema)}
+                    "palavras": _palavras_editaveis(tema),
+                    "linhas_pos": _TL.linhas_pos}
     except Exception as _eqa:
         print(f"[qa] geometria nao registrada: {_eqa}")
 
