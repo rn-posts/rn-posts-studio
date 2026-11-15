@@ -314,6 +314,20 @@ def _caixa(info):
             "w": int(info.get("w", 0)), "h": int(max(1, info.get("y_fim", 0) - info.get("y", 0)))}
 
 
+def _linhas_pub(info):
+    """Linhas e palavras realmente desenhadas (px do card), para o editor reorganizar o texto ao vivo."""
+    out = []
+    try:
+        ids = {p["id"] for p in (info.get("palavras") or [])}
+        for l in (info.get("linhas_pos") or []):
+            out.append({"y": l["y"], "h": l["h"], "palavras": [
+                {"k": p["k"], "t": p["t"], "x0": p["x0"], "x1": p["x1"], "cor": p["cor"], "ed": p["k"] in ids}
+                for p in l["palavras"]]})
+    except Exception:
+        return []
+    return out
+
+
 def _palavras_pos(info):
     """Retângulos (px do card) das palavras editáveis, para o editor local clicar nelas."""
     out = []
@@ -487,4 +501,8 @@ def rota_camada_titulo():
         "caixa": caixa,
         "ancora": {"x": int(info.get("x", caixa["x"])), "y": int(info.get("y", caixa["y"]))},
         "palavras_pos": _palavras_pos(info),
+        "linhas": _linhas_pub(info),
+        "grupos": [{"y": g["y"], "alt": g["alt"], "est": g.get("est"), "n": len(g.get("cores") or [])}
+                   for g in (info.get("grupos") or [])],
+        "max_px": int(info.get("max_px") or 0),
     })

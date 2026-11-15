@@ -1,16 +1,19 @@
-// v79/v80 — Editor local do título.
-// Abre sobre o card: fundo sem título + título como camada. Mover, mexer nas alças e trocar cor/tamanho de palavras
-// acontecem só aqui, na tela. Nada vai ao servidor até clicar FORA da caixa (ou em "Aplicar"): aí é UM pedido ao
-// /ajustar-card e o card final é refeito pelo motor de título de verdade.
+// v81 — Editor local do título (edição direta no card).
+// Abre sobre o card: fundo sem título + o título real recortado em "peças" (uma por palavra). Tudo é feito na tela e
+// o texto se reorganiza AO VIVO dentro da caixa, com o mesmo visual do motor (sombra, contorno, fonte). Nada vai ao
+// servidor até clicar FORA da caixa (ou em "Aplicar"): aí é UM pedido e o card final é refeito pelo motor.
 //
-// Alças:  quinas = aumentam/diminuem o TEXTO (o texto acompanha ao vivo)
-//         laterais (esquerda/direita) = mudam só a LARGURA (as linhas se reorganizam ao aplicar)
-//         topo/base = mudam só o ESPAÇO entre as linhas (aparece ao aplicar)
-// Teclado (com uma palavra selecionada):  Enter = começa uma nova linha nessa palavra
-//                                          Backspace = junta a linha da palavra com a de cima
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+// Caixa:   arrastar = mover
+//          quinas = aumentar/diminuir o TEXTO
+//          laterais = LARGURA (as palavras reorganizam nas linhas, ao vivo)
+//          topo/base = ESPAÇO entre as linhas (ao vivo)
+// Palavra: clicar seleciona; a alça no canto dela muda o tamanho só dessa palavra; a tira fina (fora do texto)
+//          troca a cor. Enter = nova linha nessa palavra; Backspace = junta com a linha de cima.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const W = 1080;
+const H = 1350;
+const PADBOX = 10;
 
 const PALETA = {
   branco:  { rgb: [244, 246, 248], hex: "#F4F6F8", nome: "Branco" },
@@ -48,6 +51,113 @@ function acharToken(temaTxt, k, rank) {
   return null;
 }
 
+// ── organiza o que o servidor desenhou em blocos de palavras ──
+function montarBlocos(dados) {
+  const brutas = dados.linhas || [];
+  const linhas = [];
+  brutas.forEach(l => {                                   // descarta redesenhos duplicados na mesma posição
+    const dup = linhas.some(e => Math.abs(e.y - l.y) < 3
+      && l.palavras.every(w => e.palavras.some(v => w.x0 < v.x1 && w.x1 > v.x0)));
+    if (!dup) linhas.push(l);
+  });
+  const grupos = (dados.grupos && dados.grupos.length) ? dados.grupos : [{ y: -1e9, est: "normal", n: 2 }];
+  const blocos = grupos.map((g, i) => ({ gi: i, g, linhas: [], reflui: g.est !== "fundo" && g.n === 1 }));
+  linhas.forEach(l => {
+    let gi = 0;
+    for (let i = 0; i < grupos.length; i++) if (l.y >= grupos[i].y - 6) gi = i;
+    blocos[gi].linhas.push(l);
+  });
+  let n = 0;
+  const lista = blocos.filter(b => b.linhas.length);
+  lista.forEach(b => {
+    b.linhas.sort((p, q) => p.y - q.y);
+    b.palavras = [];
+    b.linhas.forEach((l, li) => l.palavras.forEach(w => b.palavras.push({ ...w, y: l.y, h: l.h, li, gid: n++ })));
+  });
+  return lista;
+}
+
+// ── posição de cada palavra: igual ao original, ou reorganizada pela largura/espaço/quebras/tamanho da palavra ──
+function calcularLayout(blocos, { lim, hf, escalaPal, quebras }) {
+  const out = [];
+  let yCur = null;
+  let baseAnt = null;
+  blocos.forEach((b, bi) => {
+    const topo0 = b.linhas[0].y;
+    const ult = b.linhas[b.linhas.length - 1];
+    const base0 = ult.y + ult.h;
+    const gap = baseAnt === null ? 0 : topo0 - baseAnt;
+    const topo = yCur === null ? topo0 : yCur + gap;
+    let fundo;
+    if (!b.reflui) {                                       // fundos '-palavra' e linhas lado a lado: só acompanham a posição
+      const dy = topo - topo0;
+      b.palavras.forEach((w, i) => out.push({
+        ...w, sx: w.x0, sy: w.y, sw: w.x1 - w.x0, sh: w.h, x: w.x0, y: w.y + dy, w: w.x1 - w.x0, h: w.h,
+        ini: i === 0 || w.li !== b.palavras[i - 1].li, primeiro: i === 0, bi, fixo: true, esp: 20, x0b: w.x0,
+      }));
+      fundo = base0 + dy;
+    } else {
+      const x0 = b.linhas[0].palavras[0].x0;
+      const altLinha = b.linhas[0].h;
+      const passo = Math.max(10, (b.linhas.length > 1 ? (b.linhas[1].y - b.linhas[0].y) : altLinha * 1.1) * hf);
+      const vaos = [];
+      b.linhas.forEach(l => { for (let i = 1; i < l.palavras.length; i++) vaos.push(l.palavras[i].x0 - l.palavras[i - 1].x1); });
+      vaos.sort((p, q) => p - q);
+      const espaco = vaos.length ? vaos[Math.floor(vaos.length / 2)] : altLinha * 0.28;
+      let x = 0;
+      let linhaN = 0;
+      b.palavras.forEach((w, i) => {
+        const esc = escalaPal[w.k] || 1;
+        const ww = (w.x1 - w.x0) * esc;
+        const hh = w.h * esc;
+        let ini = i === 0;
+        if (i > 0) {
+          const forca = quebras.has(w.gid);
+          const quebra = lim !== null ? (x > 0 && x + ww > lim) : (w.li !== b.palavras[i - 1].li);
+          if (forca || quebra) { x = 0; linhaN++; ini = true; }
+        }
+        out.push({
+          ...w, sx: w.x0, sy: w.y, sw: w.x1 - w.x0, sh: w.h,
+          x: x0 + x, y: topo + linhaN * passo + (altLinha - hh), w: ww, h: hh,
+          ini, primeiro: i === 0, bi, fixo: false, esp: espaco, x0b: x0,
+        });
+        x += ww + espaco;
+      });
+      fundo = topo + linhaN * passo + altLinha;
+    }
+    yCur = fundo;
+    baseAnt = base0;
+  });
+  return out;
+}
+
+function caixaDoLayout(lay) {
+  if (!lay.length) return null;
+  const x0 = Math.min(...lay.map(p => p.x));
+  const x1 = Math.max(...lay.map(p => p.x + p.w));
+  const y0 = Math.min(...lay.map(p => p.y));
+  const y1 = Math.max(...lay.map(p => p.y + p.h));
+  return { x: x0 - PADBOX, y: y0 - PADBOX, w: x1 - x0 + 2 * PADBOX, h: y1 - y0 + 2 * PADBOX };
+}
+
+function recolorir(ctx, x, y, w, h, corOrig, alvo) {
+  const rx = Math.max(0, Math.round(x));
+  const ry = Math.max(0, Math.round(y));
+  const rw = Math.min(ctx.canvas.width - rx, Math.round(w));
+  const rh = Math.min(ctx.canvas.height - ry, Math.round(h));
+  if (rw <= 0 || rh <= 0) return;
+  const img = ctx.getImageData(rx, ry, rw, rh);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 100) continue;
+    const dr = d[i] - corOrig[0];
+    const dg = d[i + 1] - corOrig[1];
+    const db = d[i + 2] - corOrig[2];
+    if (dr * dr + dg * dg + db * db < 90 * 90) { d[i] = alvo[0]; d[i + 1] = alvo[1]; d[i + 2] = alvo[2]; }
+  }
+  ctx.putImageData(img, rx, ry);
+}
+
 export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplicar, onFechar, onNotify }) {
   const raiz = useRef(null);
   const canvasRef = useRef(null);
@@ -55,19 +165,19 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
 
   const [larg, setLarg] = useState(420);
   const [dados, setDados] = useState(null);
-  const [local, setLocal] = useState({ dx: 0, dy: 0, s: 1, wf: 1, hf: 1 }); // mudanças locais, relativas ao card atual
-  const [cores, setCores] = useState({});                        // chave da palavra -> nome da cor ("" = padrão)
-  const [escalas, setEscalas] = useState({});                    // chave da palavra -> escala absoluta
-  const [sel, setSel] = useState("");                            // chave da palavra selecionada
-  const [selIdx, setSelIdx] = useState(-1);                      // qual retângulo foi clicado (para Enter/Backspace)
-  const [temaNovo, setTemaNovo] = useState(null);                // tema com linhas divididas/juntas (aplica ao final)
+  // mudanças locais, relativas ao card atual: deslocamento, tamanho do texto (s), largura da caixa (lim), espaço entre linhas (hf)
+  const [local, setLocal] = useState({ dx: 0, dy: 0, s: 1, lim: null, hf: 1 });
+  const [cores, setCores] = useState({});          // chave da palavra -> nome da cor ("" = padrão)
+  const [wsPal, setWsPal] = useState({});          // chave da palavra -> fator de tamanho (relativo ao card atual)
+  const [quebras, setQuebras] = useState([]);      // palavras que começam linha nova (Enter)
+  const [selGid, setSelGid] = useState(-1);        // palavra selecionada (id no layout)
+  const [temaNovo, setTemaNovo] = useState(null);  // tema com linhas divididas/juntas (aplica ao final)
   const [aviso, setAviso] = useState("");
   const [gesto, setGesto] = useState(null);
   const [aplicando, setAplicando] = useState(false);
 
   const f = larg / W;
 
-  // largura exibida do card (para converter px do card em px da tela)
   useLayoutEffect(() => {
     const el = raiz.current;
     if (!el) return undefined;
@@ -78,7 +188,7 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
     return () => ro.disconnect();
   }, [dados]);
 
-  // busca o fundo limpo + a camada do título
+  // busca o fundo limpo + o título
   useEffect(() => {
     let vivo = true;
     (async () => {
@@ -91,11 +201,7 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
         const d = await res.json();
         if (!res.ok) throw new Error(d.erro || "Erro ao abrir o editor do título");
         const im = new Image();
-        im.onload = () => {
-          if (!vivo) return;
-          imgCamada.current = im;
-          setDados(d);
-        };
+        im.onload = () => { if (vivo) { imgCamada.current = im; setDados(d); } };
         im.src = d.camada_url;
       } catch (e) {
         if (!vivo) return;
@@ -107,43 +213,50 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // devolve o foco ao editor para o teclado (Enter/Backspace/Esc) funcionar
   useEffect(() => { if (dados && raiz.current) raiz.current.focus(); }, [dados]);
 
-  // desenha a camada e recolore, em tempo real, as palavras que mudaram de cor
+  const blocos = useMemo(() => (dados ? montarBlocos(dados) : []), [dados]);
+  const lay = useMemo(
+    () => calcularLayout(blocos, { lim: local.lim, hf: local.hf, escalaPal: wsPal, quebras: new Set(quebras) }),
+    [blocos, local.lim, local.hf, wsPal, quebras],
+  );
+  const modif = local.lim !== null || Math.abs(local.hf - 1) > 0.005 || quebras.length > 0
+    || Object.values(wsPal).some(v => Math.abs(v - 1) > 0.005);
+
+  // desenha o título: original, ou palavra por palavra nas novas posições; recolore ao vivo
   useEffect(() => {
     if (!dados || !canvasRef.current || !imgCamada.current) return;
     const cv = canvasRef.current;
     const ctx = cv.getContext("2d", { willReadFrequently: true });
     const { origem } = dados;
-    cv.width = origem.w;
-    cv.height = origem.h;
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    ctx.drawImage(imgCamada.current, 0, 0);
-    Object.entries(cores).forEach(([k, nome]) => {
-      const alvo = nome && PALETA[nome] ? PALETA[nome].rgb : null;
-      if (!alvo) return;                    // "Padrão": o preview não desfaz; volta ao aplicar
-      dados.palavras_pos.filter(p => p.k === k).forEach(p => {
-        const rx = Math.max(0, Math.round(p.x - origem.x));
-        const ry = Math.max(0, Math.round(p.y - origem.y));
-        const rw = Math.min(cv.width - rx, Math.round(p.w));
-        const rh = Math.min(cv.height - ry, Math.round(p.h));
-        if (rw <= 0 || rh <= 0) return;
-        const img = ctx.getImageData(rx, ry, rw, rh);
-        const d = img.data;
-        for (let i = 0; i < d.length; i += 4) {
-          if (d[i + 3] < 100) continue;
-          const dr = d[i] - p.cor[0];
-          const dg = d[i + 1] - p.cor[1];
-          const db = d[i + 2] - p.cor[2];
-          if (dr * dr + dg * dg + db * db < 90 * 90) {
-            d[i] = alvo[0]; d[i + 1] = alvo[1]; d[i + 2] = alvo[2];
-          }
-        }
-        ctx.putImageData(img, rx, ry);
+    cv.width = W;
+    cv.height = H;
+    ctx.clearRect(0, 0, W, H);
+    if (!modif) {
+      ctx.drawImage(imgCamada.current, origem.x, origem.y);
+      lay.forEach(p => {
+        const nome = cores[p.k];
+        if (nome && PALETA[nome]) recolorir(ctx, p.sx, p.sy, p.sw, p.sh, p.cor, PALETA[nome].rgb);
       });
+      return;
+    }
+    const tmp = document.createElement("canvas");
+    lay.forEach(p => {
+      const padX = limitar(Math.floor(p.esp / 2) - 1, 3, 20);   // não pega as letras vizinhas
+      const padY = 6;
+      const sw = p.sw + 2 * padX;
+      const sh = p.sh + 2 * padY;
+      tmp.width = sw;
+      tmp.height = sh;
+      const tc = tmp.getContext("2d", { willReadFrequently: true });
+      tc.clearRect(0, 0, sw, sh);
+      tc.drawImage(imgCamada.current, p.sx - padX - origem.x, p.sy - padY - origem.y, sw, sh, 0, 0, sw, sh);
+      const nome = cores[p.k];
+      if (nome && PALETA[nome]) recolorir(tc, padX, padY, p.sw, p.sh, p.cor, PALETA[nome].rgb);
+      const esc = p.sw > 0 ? p.w / p.sw : 1;
+      ctx.drawImage(tmp, 0, 0, sw, sh, p.x - padX * esc, p.y - padY * esc, sw * esc, sh * esc);
     });
-  }, [dados, cores]);
+  }, [dados, cores, lay, modif]);
 
   if (!dados) {
     return (
@@ -157,13 +270,20 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
 
   const A = dados.ancora;
   const C = dados.caixa;
-  const Acur = { x: A.x + local.dx, y: A.y + local.dy };     // âncora (canto de partida do texto) já deslocada
-  const caixa = {                                            // caixa visível, com a mudança local aplicada
-    x: Acur.x + (C.x - A.x) * local.s,
-    y: Acur.y + (C.y - A.y) * local.s,
-    w: C.w * local.s * local.wf,
-    h: C.h * local.s * local.hf,
+  const Acur = { x: A.x + local.dx, y: A.y + local.dy };       // âncora (canto de partida do texto) já deslocada
+  const bb = modif ? caixaDoLayout(lay) : null;
+  const base = bb
+    ? { x: bb.x, y: bb.y, w: local.lim !== null ? local.lim + 2 * PADBOX : bb.w, h: bb.h }
+    : C;
+  const caixa = {
+    x: Acur.x + (base.x - A.x) * local.s,
+    y: Acur.y + (base.y - A.y) * local.s,
+    w: base.w * local.s,
+    h: base.h * local.s,
   };
+  const paraTela = (px, py) => ({ x: Acur.x + (px - A.x) * local.s, y: Acur.y + (py - A.y) * local.s });
+  const instSel = lay.find(p => p.gid === selGid) || null;
+  const sel = instSel ? instSel.k : "";
 
   const ponto = (e) => {
     const r = raiz.current.getBoundingClientRect();
@@ -173,23 +293,21 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
   const acharAlca = (p) => {
     const tol = 16 / f;
     for (const [id, lx, ly] of ALCAS) {
-      const ax = caixa.x + lx * caixa.w;
-      const ay = caixa.y + ly * caixa.h;
-      if (Math.abs(p.x - ax) <= tol && Math.abs(p.y - ay) <= tol) return id;
+      if (Math.abs(p.x - (caixa.x + lx * caixa.w)) <= tol && Math.abs(p.y - (caixa.y + ly * caixa.h)) <= tol) return id;
     }
     return "";
   };
-  // índice da palavra sob o ponto (desfaz a mudança local para achar o retângulo original)
-  const palavraEm = (p) => {
+  const instEm = (p) => {                                       // palavra sob o ponto (desfaz mover/tamanho local)
     const q = { x: A.x + (p.x - Acur.x) / local.s, y: A.y + (p.y - Acur.y) / local.s };
-    return dados.palavras_pos.findIndex(w => q.x >= w.x && q.x <= w.x + w.w && q.y >= w.y && q.y <= w.y + w.h);
+    return lay.find(w => w.ed && q.x >= w.x && q.x <= w.x + w.w && q.y >= w.y && q.y <= w.y + w.h) || null;
   };
+  // alça de tamanho da palavra selecionada (canto inferior direito dela)
+  const alcaPalavra = instSel && !instSel.fixo ? paraTela(instSel.x + instSel.w, instSel.y + instSel.h) : null;
 
   const aplicar = async () => {
     if (aplicando) return;
-    const mudouGeo = Math.abs(local.dx) > 0.5 || Math.abs(local.dy) > 0.5 || Math.abs(local.s - 1) > 0.01
-      || Math.abs(local.wf - 1) > 0.01 || Math.abs(local.hf - 1) > 0.01;
-    const chaves = new Set([...Object.keys(cores), ...Object.keys(escalas)]);
+    const mudouGeo = Math.abs(local.dx) > 0.5 || Math.abs(local.dy) > 0.5 || Math.abs(local.s - 1) > 0.01 || modif;
+    const chaves = new Set([...Object.keys(cores), ...Object.keys(wsPal)]);
     if (!mudouGeo && chaves.size === 0 && temaNovo === null) { onFechar(); return; }
     setAplicando(true);
     const previas = ajuste.palavras || {};
@@ -197,14 +315,15 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
     chaves.forEach(k => {
       const o = { ...(previas[k] || {}) };
       if (k in cores) o.cor = cores[k];
-      if (k in escalas) o.escala = escalas[k];
+      if (k in wsPal) o.escala = limitar(+(((previas[k] && previas[k].escala) || 1) * wsPal[k]).toFixed(3), 0.6, 1.8);
       if (!o.cor && (!o.escala || Math.abs(o.escala - 1) < 0.01)) delete mapa[k];
       else mapa[k] = o;
     });
+    const wf = (local.lim !== null && dados.max_px) ? local.lim / dados.max_px : 1;
     try {
       await onAplicar({
         escala: limitar(+((ajuste.escala || 1) * local.s).toFixed(3), 0.5, 1.6),
-        largura: limitar(+((ajuste.largura || 1) * local.wf).toFixed(3), 0.4, 2.5),
+        largura: limitar(+((ajuste.largura || 1) * wf).toFixed(3), 0.4, 2.5),
         espaco: limitar(+((ajuste.espaco || 1) * local.hf).toFixed(3), 0.6, 2.2),
         dx: Math.round(ajuste.dx + local.dx),
         dy: Math.round(ajuste.dy + local.dy),
@@ -218,11 +337,16 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
 
   const aoPressionar = (e) => {
     if (aplicando) return;
-    if (e.target.closest("[data-barra]")) return;           // clique nas barras de ferramentas não conta
+    if (e.target.closest("[data-barra]")) return;             // clique na tira de ferramentas não conta
     e.preventDefault();
     e.stopPropagation();
     if (raiz.current) raiz.current.focus();
     const p = ponto(e);
+    if (alcaPalavra && Math.abs(p.x - alcaPalavra.x) <= 16 / f && Math.abs(p.y - alcaPalavra.y) <= 16 / f) {
+      raiz.current.setPointerCapture(e.pointerId);
+      setGesto({ tipo: "palavra", p0: p, k: instSel.k, ws0: wsPal[instSel.k] || 1, w0: instSel.w, s0: local.s });
+      return;
+    }
     const alca = acharAlca(p);
     if (alca) {
       raiz.current.setPointerCapture(e.pointerId);
@@ -231,7 +355,7 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
       raiz.current.setPointerCapture(e.pointerId);
       setGesto({ tipo: "mover", p0: p, local0: { ...local }, moveu: false });
     } else {
-      aplicar();                                            // clicou fora da caixa: aplica
+      aplicar();                                              // clicou fora da caixa: aplica
     }
   };
 
@@ -245,23 +369,32 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
       setLocal({ ...gesto.local0, dx: gesto.local0.dx + ddx, dy: gesto.local0.dy + ddy });
       return;
     }
+    if (gesto.tipo === "palavra") {                           // tamanho só da palavra selecionada
+      const novaW = Math.max(8, gesto.w0 + ddx / gesto.s0);
+      const ws = limitar(gesto.ws0 * (novaW / gesto.w0), 0.6, 1.8);
+      setWsPal(m => ({ ...m, [gesto.k]: +ws.toFixed(3) }));
+      return;
+    }
     const b0 = gesto.caixa0;
     const l0 = gesto.local0;
     const a = gesto.alca;
 
-    if (a === "e" || a === "w") {                           // laterais: só a largura (as linhas se reorganizam ao aplicar)
-      const fator = a === "e" ? (b0.w + ddx) / b0.w : (b0.w - ddx) / b0.w;
-      const wf = limitar(l0.wf * Math.max(0.05, fator), 0.4, 2.5);
-      const novoW = C.w * l0.s * wf;
-      const extraDx = a === "w" ? (b0.x + b0.w - novoW) - b0.x : 0;   // 'w': a borda direita fica parada
-      setLocal({ ...l0, wf, dx: l0.dx + extraDx });
+    if (a === "e" || a === "w") {                             // laterais: largura; as palavras reorganizam ao vivo
+      const novaCaixaW = a === "e" ? b0.w + ddx : b0.w - ddx;
+      const lim = limitar(novaCaixaW / l0.s - 2 * PADBOX, 80, 1000);
+      const extraDx = a === "w" ? b0.w - (lim + 2 * PADBOX) * l0.s : 0;   // 'w': a borda direita fica parada
+      setLocal({ ...l0, lim, dx: l0.dx + extraDx });
       return;
     }
-    if (a === "n" || a === "s") {                           // topo/base: só o espaço entre as linhas
+    if (a === "n" || a === "s") {                             // topo/base: espaço entre as linhas, ao vivo
       const fator = a === "s" ? (b0.h + ddy) / b0.h : (b0.h - ddy) / b0.h;
-      const hf = limitar(l0.hf * Math.max(0.05, fator), 0.6, 2.2);
-      const novoH = C.h * l0.s * hf;
-      const extraDy = a === "n" ? (b0.y + b0.h - novoH) - b0.y : 0;   // 'n': a borda de baixo fica parada
+      const hf = limitar(l0.hf * Math.max(0.05, fator), 0.5, 2.5);
+      let extraDy = 0;
+      if (a === "n") {
+        const lay2 = calcularLayout(blocos, { lim: l0.lim, hf, escalaPal: wsPal, quebras: new Set(quebras) });
+        const bb2 = caixaDoLayout(lay2);
+        if (bb2) extraDy = b0.h - bb2.h * l0.s;                // 'n': a borda de baixo fica parada
+      }
       setLocal({ ...l0, hf, dy: l0.dy + extraDy });
       return;
     }
@@ -281,12 +414,9 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
 
   const aoSoltar = (e) => {
     if (!gesto) return;
-    const p = ponto(e);
-    if (gesto.tipo === "mover" && !gesto.moveu) {            // foi um clique, não um arraste: seleciona a palavra
-      const i = palavraEm(p);
-      if (i >= 0 && dados.palavras_pos[i].k !== sel) { setSel(dados.palavras_pos[i].k); setSelIdx(i); }
-      else if (i >= 0) { setSelIdx(i); }
-      else { setSel(""); setSelIdx(-1); }
+    if (gesto.tipo === "mover" && !gesto.moveu) {              // foi um clique: seleciona a palavra
+      const w = instEm(ponto(e));
+      setSelGid(w ? w.gid : -1);
       setAviso("");
     }
     setGesto(null);
@@ -294,42 +424,60 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
 
   // ── linhas: Enter divide, Backspace junta ──
   const localizar = () => {
-    if (selIdx < 0 || !dados.palavras_pos[selIdx]) { setAviso("Clique numa palavra primeiro."); return null; }
-    const k = dados.palavras_pos[selIdx].k;
-    const rank = dados.palavras_pos.slice(0, selIdx).filter(p => p.k === k).length;
-    const r = acharToken(temaNovo !== null ? temaNovo : tema, k, rank);
-    if (!r) setAviso("Não achei essa palavra no texto do tema.");
-    return r;
+    if (!instSel) { setAviso("Clique numa palavra primeiro."); return null; }
+    const idx = lay.findIndex(p => p.gid === instSel.gid);
+    const rank = lay.slice(0, idx).filter(p => p.ed && p.k === instSel.k).length;
+    return acharToken(temaNovo !== null ? temaNovo : tema, instSel.k, rank);
+  };
+  const editarTema = (r, modo) => {
+    if (!r) return false;
+    const { linhas, li, ti, toks } = r;
+    if (modo === "dividir") {
+      if (ti === 0) return false;
+      const ini = (linhas[li].trim()[0]) || "";
+      const simb = (ini === ":" || ini === "*") ? ini : "";
+      const a = toks.slice(0, ti).join(" ");
+      let b = toks.slice(ti).join(" ");
+      if (simb && !/^[:*-]/.test(b)) b = simb + b;             // a nova linha mantém o estilo da anterior
+      linhas.splice(li, 1, a, b);
+    } else {
+      if (ti !== 0 || li === 0) return false;
+      const prev = linhas[li - 1].trim();
+      let cur = linhas[li].trim();
+      if ((cur[0] === ":" || cur[0] === "*") && cur[0] === prev[0]) cur = cur.slice(1);
+      linhas.splice(li - 1, 2, `${prev} ${cur}`.trim());
+    }
+    setTemaNovo(linhas.join("\n"));
+    return true;
   };
   const dividirLinha = () => {
-    const r = localizar();
-    if (!r) return;
-    const { linhas, li, ti, toks } = r;
-    if (ti === 0) { setAviso("Essa palavra já começa uma linha."); return; }
-    const ini = (linhas[li].trim()[0]) || "";
-    const simb = (ini === ":" || ini === "*") ? ini : "";
-    const a = toks.slice(0, ti).join(" ");
-    let b = toks.slice(ti).join(" ");
-    if (simb && !/^[:*-]/.test(b)) b = simb + b;               // a nova linha mantém o estilo da anterior
-    linhas.splice(li, 1, a, b);
-    setTemaNovo(linhas.join("\n"));
-    setAviso("Linha dividida — aparece ao aplicar.");
+    if (!instSel) { setAviso("Clique numa palavra primeiro."); return; }
+    if (instSel.primeiro) { setAviso("Essa palavra já começa um bloco."); return; }
+    if (instSel.fixo) { setAviso("Essa linha tem estilo especial e não se divide aqui."); return; }
+    setQuebras(q => (q.includes(instSel.gid) ? q : [...q, instSel.gid]));
+    editarTema(localizar(), "dividir");
+    setAviso("Nova linha criada.");
   };
   const juntarLinha = () => {
-    const r = localizar();
-    if (!r) return;
-    const { linhas, li, ti } = r;
-    if (ti !== 0) {
-      setAviso("Backspace junta quando a palavra começa uma linha. Para juntar linhas quebradas pela largura, puxe a alça lateral da caixa.");
+    if (!instSel) { setAviso("Clique numa palavra primeiro."); return; }
+    if (!instSel.ini) { setAviso("Backspace junta quando a palavra começa uma linha."); return; }
+    if (instSel.primeiro) {                                     // início de bloco: junta os blocos do tema (aparece ao aplicar)
+      setAviso(editarTema(localizar(), "juntar") ? "Linhas juntadas — aparece ao aplicar." : "Essa já é a primeira linha.");
       return;
     }
-    if (li === 0) { setAviso("Essa já é a primeira linha."); return; }
-    const prev = linhas[li - 1].trim();
-    let cur = linhas[li].trim();
-    if ((cur[0] === ":" || cur[0] === "*") && cur[0] === prev[0]) cur = cur.slice(1);
-    linhas.splice(li - 1, 2, `${prev} ${cur}`.trim());
-    setTemaNovo(linhas.join("\n"));
-    setAviso("Linhas juntadas — aparece ao aplicar.");
+    if (quebras.includes(instSel.gid)) {                        // desfaz a nova linha criada por Enter
+      setQuebras(q => q.filter(g => g !== instSel.gid));
+      editarTema(localizar(), "juntar");
+      setAviso("Linhas juntadas.");
+      return;
+    }
+    const idx = lay.findIndex(p => p.gid === instSel.gid);      // quebra automática: alarga a caixa para caber
+    const ant = lay[idx - 1];
+    if (!ant) return;
+    const precisa = (ant.x + ant.w - instSel.x0b) + instSel.esp + instSel.w;
+    const atual = local.lim !== null ? local.lim : Math.max(...lay.map(p => p.x + p.w - p.x0b));
+    setLocal(l => ({ ...l, lim: Math.max(atual, precisa) }));
+    setAviso("Caixa alargada para a palavra caber na linha de cima.");
   };
   const aoTeclar = (e) => {
     if (e.key === "Escape") { onFechar(); return; }
@@ -339,30 +487,28 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
   };
 
   const mudarCor = (nome) => { if (sel) setCores(c => ({ ...c, [sel]: nome })); };
-  const escalaAtual = (k) => (k in escalas
-    ? escalas[k]
-    : ((ajuste.palavras && ajuste.palavras[k] && ajuste.palavras[k].escala) || 1));
-  const mudarEscala = (delta) => {
+  const mudarEscalaPalavra = (delta) => {
     if (!sel) return;
-    setEscalas(s => ({ ...s, [sel]: limitar(+(escalaAtual(sel) + delta).toFixed(2), 0.6, 1.8) }));
+    setWsPal(m => ({ ...m, [sel]: limitar(+(((m[sel] || 1)) + delta).toFixed(3), 0.6, 1.8) }));
   };
   const limparPalavra = () => {
     if (!sel) return;
     setCores(c => ({ ...c, [sel]: "" }));
-    setEscalas(s => ({ ...s, [sel]: 1 }));
+    setWsPal(m => { const n = { ...m }; delete n[sel]; return n; });
   };
 
-  const palavraSel = dados.palavras_pos.find(w => w.k === sel);
   const corSel = sel in cores
     ? cores[sel]
     : ((ajuste.palavras && ajuste.palavras[sel] && ajuste.palavras[sel].cor) || "");
-  const barraEmCima = caixa.y * f - 62 > 4;
-  const topoBarra = barraEmCima ? caixa.y * f - 62 : (caixa.y + caixa.h) * f + 8;
-  const esquerdaBarra = limitar(caixa.x * f, 4, Math.max(4, larg - 270));
-  const pendenteReflow = Math.abs(local.wf - 1) > 0.01 || Math.abs(local.hf - 1) > 0.01;
+  const pctSel = Math.round((((ajuste.palavras && ajuste.palavras[sel] && ajuste.palavras[sel].escala) || 1) * (wsPal[sel] || 1)) * 100);
 
-  const estiloBtn = (ativo = false) => ({
-    fontSize: "0.72rem", padding: "2px 9px", borderRadius: 999, cursor: "pointer",
+  // tira de ferramentas: fica FORA do texto (acima da caixa; abaixo se não houver espaço)
+  const tiraEmCima = caixa.y * f > 70;
+  const tiraTopo = tiraEmCima ? caixa.y * f - 5 : (caixa.y + caixa.h) * f + 6;
+  const tiraEsq = limitar(caixa.x * f, 4, Math.max(4, larg - 120));
+
+  const btn = (ativo = false) => ({
+    fontSize: "0.7rem", padding: "1px 8px", borderRadius: 999, cursor: "pointer", lineHeight: 1.5,
     border: ativo ? "1.5px solid #F9AB0B" : "1px solid #ccc",
     background: ativo ? "#024059" : "#faf6f0", color: ativo ? "#fff" : "#024059", fontWeight: ativo ? 700 : 500,
   });
@@ -383,19 +529,16 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
       {/* fundo sem título */}
       <img src={dados.base_url} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block" }} />
 
-      {/* título (camada), acompanha mover e o tamanho (quinas) em tempo real */}
-      <div style={{ position: "absolute", left: A.x * f, top: A.y * f, width: 0, height: 0,
-                    transformOrigin: "0 0",
+      {/* título: acompanha mover e o tamanho do texto; as palavras se reorganizam dentro do canvas */}
+      <div style={{ position: "absolute", left: A.x * f, top: A.y * f, width: 0, height: 0, transformOrigin: "0 0",
                     transform: `translate(${local.dx * f}px, ${local.dy * f}px) scale(${local.s})` }}>
         <canvas ref={canvasRef}
-          style={{ position: "absolute", left: (dados.origem.x - A.x) * f, top: (dados.origem.y - A.y) * f,
-                   width: dados.origem.w * f, height: dados.origem.h * f, pointerEvents: "none" }} />
-        {palavraSel && dados.palavras_pos.map((w, i) => (w.k === sel ? (
-          <div key={i} style={{ position: "absolute", left: (w.x - A.x) * f, top: (w.y - A.y) * f,
-                                width: w.w * f, height: w.h * f,
-                                border: i === selIdx ? "2px solid #049DBF" : "1px dashed #049DBF",
-                                background: i === selIdx ? "rgba(4,157,191,0.20)" : "rgba(4,157,191,0.08)",
-                                borderRadius: 4, pointerEvents: "none" }} />
+          style={{ position: "absolute", left: -A.x * f, top: -A.y * f, width: W * f, height: H * f, pointerEvents: "none" }} />
+        {lay.map(w => (w.k === sel && !w.fixo ? (
+          <div key={w.gid} style={{ position: "absolute", left: (w.x - A.x) * f, top: (w.y - A.y) * f,
+                                    width: w.w * f, height: w.h * f, borderRadius: 4, pointerEvents: "none",
+                                    border: w.gid === selGid ? "2px solid #049DBF" : "1px dashed #049DBF",
+                                    background: w.gid === selGid ? "rgba(4,157,191,0.18)" : "rgba(4,157,191,0.07)" }} />
         ) : null))}
       </div>
 
@@ -406,59 +549,57 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
           <div key={id} style={{ position: "absolute", left: `${lx * 100}%`, top: `${ly * 100}%`,
                                  width: id.length === 2 ? 12 : 10, height: id.length === 2 ? 12 : 10,
                                  transform: "translate(-50%, -50%)", background: id.length === 2 ? "#fff" : "#F9AB0B",
-                                 border: "2px solid #F9AB0B", borderRadius: id.length === 2 ? 3 : 6,
-                                 cursor: CURSOR[id] }} />
+                                 border: "2px solid #F9AB0B", borderRadius: id.length === 2 ? 3 : 6, cursor: CURSOR[id] }} />
         ))}
       </div>
 
-      {/* ferramentas da palavra selecionada, coladas na caixa */}
-      {sel && palavraSel && (
+      {/* alça de tamanho da palavra selecionada */}
+      {alcaPalavra && (
+        <div title="Arraste para aumentar/diminuir esta palavra"
+          style={{ position: "absolute", left: alcaPalavra.x * f, top: alcaPalavra.y * f, width: 12, height: 12,
+                   transform: "translate(-50%, -50%)", background: "#049DBF", border: "2px solid #fff",
+                   borderRadius: "50%", cursor: "nwse-resize", pointerEvents: "none", boxShadow: "0 0 0 1px #049DBF" }} />
+      )}
+
+      {/* tira fina de ferramentas da palavra (fora do texto) */}
+      {instSel && (
         <div data-barra="1" onClick={e => e.stopPropagation()}
-          style={{ position: "absolute", left: esquerdaBarra, top: topoBarra, width: 262, padding: "6px 8px",
-                   background: "rgba(255,255,255,0.97)", border: "1px solid #ddd", borderRadius: 10,
-                   boxShadow: "0 2px 10px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", gap: 5,
-                   fontSize: "0.72rem", color: "#024059" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-            <strong style={{ marginRight: 4 }}>“{palavraSel.t}”</strong>
-            <button type="button" style={estiloBtn(!corSel)} onClick={() => mudarCor("")}>Padrão</button>
-            {Object.entries(PALETA).map(([id, c]) => (
-              <button key={id} type="button" title={c.nome} onClick={() => mudarCor(id)}
-                style={{ width: 20, height: 20, borderRadius: "50%", padding: 0, cursor: "pointer", background: c.hex,
-                         border: corSel === id ? "2.5px solid #F9AB0B" : "1px solid #9aa" }} />
-            ))}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span>Tamanho</span>
-            <button type="button" style={estiloBtn()} onClick={() => mudarEscala(-0.1)}>A−</button>
-            <span style={{ minWidth: 34, textAlign: "center" }}>{Math.round(escalaAtual(sel) * 100)}%</span>
-            <button type="button" style={estiloBtn()} onClick={() => mudarEscala(0.1)}>A+</button>
-            <button type="button" style={estiloBtn()} onClick={limparPalavra}>↩ Limpar</button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <button type="button" style={estiloBtn()} onClick={dividirLinha}>↵ Nova linha aqui</button>
-            <button type="button" style={estiloBtn()} onClick={juntarLinha}>⌫ Juntar com a de cima</button>
-          </div>
-          <div style={{ color: "#6b7c85" }}>
-            A cor aparece na hora; tamanho da palavra e linhas aparecem ao aplicar. Teclas: Enter / Backspace.
-          </div>
+          style={{ position: "absolute", left: tiraEsq, top: tiraTopo, maxWidth: larg - 8,
+                   transform: tiraEmCima ? "translateY(-100%)" : "none",
+                   display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", padding: "3px 7px",
+                   background: "rgba(255,255,255,0.97)", border: "1px solid #ddd", borderRadius: 14,
+                   boxShadow: "0 1px 6px rgba(0,0,0,0.2)", fontSize: "0.7rem", color: "#024059" }}>
+          <strong style={{ marginRight: 2 }}>“{instSel.t}”</strong>
+          <button type="button" style={btn(!corSel)} onClick={() => mudarCor("")}>Padrão</button>
+          {Object.entries(PALETA).map(([id, c]) => (
+            <button key={id} type="button" title={c.nome} onClick={() => mudarCor(id)}
+              style={{ width: 17, height: 17, borderRadius: "50%", padding: 0, cursor: "pointer", background: c.hex,
+                       border: corSel === id ? "2.5px solid #F9AB0B" : "1px solid #9aa" }} />
+          ))}
+          <span style={{ color: "#aaa" }}>|</span>
+          <button type="button" style={btn()} onClick={() => mudarEscalaPalavra(-0.1)}>A−</button>
+          <span style={{ minWidth: 28, textAlign: "center" }}>{pctSel}%</span>
+          <button type="button" style={btn()} onClick={() => mudarEscalaPalavra(0.1)}>A+</button>
+          <span style={{ color: "#aaa" }}>|</span>
+          <button type="button" title="Nova linha aqui (Enter)" style={btn()} onClick={dividirLinha}>↵</button>
+          <button type="button" title="Juntar com a linha de cima (Backspace)" style={btn()} onClick={juntarLinha}>⌫</button>
+          <button type="button" title="Voltar esta palavra ao padrão" style={btn()} onClick={limparPalavra}>↩</button>
         </div>
       )}
 
       {/* aplicar / cancelar */}
       <div data-barra="1" onClick={e => e.stopPropagation()}
         style={{ position: "absolute", right: 6, bottom: 6, display: "flex", gap: 6 }}>
-        <button type="button" style={{ ...estiloBtn(false), background: "rgba(255,255,255,0.95)" }}
+        <button type="button" style={{ ...btn(false), background: "rgba(255,255,255,0.95)" }}
           onClick={onFechar} disabled={aplicando}>✕ Cancelar</button>
-        <button type="button" style={estiloBtn(true)} onClick={aplicar} disabled={aplicando}>
+        <button type="button" style={btn(true)} onClick={aplicar} disabled={aplicando}>
           {aplicando ? "Aplicando…" : "✓ Aplicar"}
         </button>
       </div>
-      <div style={{ position: "absolute", left: 6, bottom: 6, maxWidth: "62%", fontSize: "0.64rem", color: "#fff",
+      <div style={{ position: "absolute", left: 6, bottom: 6, maxWidth: "58%", fontSize: "0.62rem", color: "#fff",
                     background: "rgba(2,64,89,0.78)", padding: "3px 9px", borderRadius: 10, pointerEvents: "none",
                     lineHeight: 1.35 }}>
-        {aviso
-          || (pendenteReflow ? "Largura/espaço: as linhas se reorganizam ao aplicar."
-            : "Quinas = tamanho • laterais = largura • topo/base = espaço • clique numa palavra • clique fora aplica")}
+        {aviso || "Quinas = tamanho • laterais = largura • topo/base = espaço • clique numa palavra • clique fora aplica"}
       </div>
     </div>
   );
