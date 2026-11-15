@@ -380,6 +380,17 @@ def rota_ajustar_card():
             dy = int(_clamp(float(data.get("dy", 0)), -900, 900))
             if abs(escala - 1.0) > 0.005:
                 kw["escala_fonte"] = escala
+            # v80: largura (o texto reflui) e espaçamento entre linhas; a largura acompanha o tamanho para manter as quebras
+            largura = _clamp(float(data.get("largura") or 1.0), 0.4, 2.5)
+            espaco = _clamp(float(data.get("espaco") or 1.0), 0.6, 2.2)
+            max_px0 = info.get("max_px")
+            if max_px0 and (abs(escala - 1.0) > 0.005 or abs(largura - 1.0) > 0.005):
+                kw["largura_px"] = int(max_px0 * escala * largura)
+            if abs(espaco - 1.0) > 0.005:
+                kw["respiro"] = _clamp(float(kw.get("respiro") or 1.10) * espaco, 0.8, 2.4)
+            tema_novo = data.get("tema")
+            tema_uso = (tema_novo.strip() if isinstance(tema_novo, str) and tema_novo.strip()
+                        and len(tema_novo) <= 600 else reg["tema"])
             kw["x_texto"] = int(_clamp(info.get("x", SAFE_LEFT + 46) + dx, SAFE_LEFT, SAFE_RIGHT - 200))
             kw["y_forcado"] = int(info.get("y", SAFE_TOP + 20) + dy)
             if kw.get("max_px_pessoa"):   # título arrastado para a direita não pode passar da zona segura
@@ -406,13 +417,14 @@ def rota_ajustar_card():
                     pal_estilo[chave[:40]] = item
             if pal_estilo:
                 kw["palavras_estilo"] = pal_estilo
-            card, kw_usado, info_novo = _render(M, base, reg["tema"], reg["seed"], kw)
+            card, kw_usado, info_novo = _render(M, base, tema_uso, reg["seed"], kw)
             rel = AvaliadorCard(base).avaliar(card, info_novo)
             rel["tentativas"] = 1
             info_vis = info_novo
             with _LOCK:
                 if card_id in _REG:
                     _REG[card_id]["info_atual"] = info_novo
+                    _REG[card_id]["tema"] = tema_uso
         buf = io.BytesIO()
         card.save(buf, format="JPEG", quality=93)
         card_bytes = buf.getvalue()

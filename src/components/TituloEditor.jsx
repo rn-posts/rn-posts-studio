@@ -1,7 +1,13 @@
-// v79 — Editor local do título.
-// Abre sobre o card: fundo sem título + título como camada. Mover, aumentar (alças) e trocar cor/tamanho de palavras
-// acontecem só aqui, na tela, e o texto acompanha na hora. Nada vai ao servidor até clicar FORA da caixa (ou em
-// "Aplicar"): aí é UM pedido ao /ajustar-card e o card final é refeito pelo motor de título de verdade.
+// v79/v80 — Editor local do título.
+// Abre sobre o card: fundo sem título + título como camada. Mover, mexer nas alças e trocar cor/tamanho de palavras
+// acontecem só aqui, na tela. Nada vai ao servidor até clicar FORA da caixa (ou em "Aplicar"): aí é UM pedido ao
+// /ajustar-card e o card final é refeito pelo motor de título de verdade.
+//
+// Alças:  quinas = aumentam/diminuem o TEXTO (o texto acompanha ao vivo)
+//         laterais (esquerda/direita) = mudam só a LARGURA (as linhas se reorganizam ao aplicar)
+//         topo/base = mudam só o ESPAÇO entre as linhas (aparece ao aplicar)
+// Teclado (com uma palavra selecionada):  Enter = começa uma nova linha nessa palavra
+//                                          Backspace = junta a linha da palavra com a de cima
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const W = 1080;
@@ -22,17 +28,40 @@ const CURSOR = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "n
 
 const limitar = (v, min, max) => Math.max(min, Math.min(max, v));
 
-export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onFechar, onNotify }) {
+// mesma normalização do servidor (minúscula, só letras e números, sem os símbolos * e : do início)
+const chaveJs = (t) => t.replace(/^[*:]+/, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+// acha, no texto do tema, a N-ésima ocorrência (rank) da palavra de chave k
+function acharToken(temaTxt, k, rank) {
+  const linhas = String(temaTxt || "").split("\n");
+  let n = 0;
+  for (let li = 0; li < linhas.length; li++) {
+    const toks = linhas[li].split(/\s+/).filter(Boolean);
+    for (let ti = 0; ti < toks.length; ti++) {
+      if (toks[ti].startsWith("-")) continue;          // palavras de fundo '-palavra' não são editáveis
+      if (chaveJs(toks[ti]) === k) {
+        if (n === rank) return { linhas, li, ti, toks };
+        n++;
+      }
+    }
+  }
+  return null;
+}
+
+export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplicar, onFechar, onNotify }) {
   const raiz = useRef(null);
   const canvasRef = useRef(null);
   const imgCamada = useRef(null);
 
   const [larg, setLarg] = useState(420);
   const [dados, setDados] = useState(null);
-  const [local, setLocal] = useState({ dx: 0, dy: 0, s: 1 });   // mudanças locais, relativas ao card atual
+  const [local, setLocal] = useState({ dx: 0, dy: 0, s: 1, wf: 1, hf: 1 }); // mudanças locais, relativas ao card atual
   const [cores, setCores] = useState({});                        // chave da palavra -> nome da cor ("" = padrão)
   const [escalas, setEscalas] = useState({});                    // chave da palavra -> escala absoluta
-  const [sel, setSel] = useState("");                            // palavra selecionada
+  const [sel, setSel] = useState("");                            // chave da palavra selecionada
+  const [selIdx, setSelIdx] = useState(-1);                      // qual retângulo foi clicado (para Enter/Backspace)
+  const [temaNovo, setTemaNovo] = useState(null);                // tema com linhas divididas/juntas (aplica ao final)
+  const [aviso, setAviso] = useState("");
   const [gesto, setGesto] = useState(null);
   const [aplicando, setAplicando] = useState(false);
 
@@ -77,6 +106,9 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
     return () => { vivo = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // devolve o foco ao editor para o teclado (Enter/Backspace/Esc) funcionar
+  useEffect(() => { if (dados && raiz.current) raiz.current.focus(); }, [dados]);
 
   // desenha a camada e recolore, em tempo real, as palavras que mudaram de cor
   useEffect(() => {
@@ -129,8 +161,8 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
   const caixa = {                                            // caixa visível, com a mudança local aplicada
     x: Acur.x + (C.x - A.x) * local.s,
     y: Acur.y + (C.y - A.y) * local.s,
-    w: C.w * local.s,
-    h: C.h * local.s,
+    w: C.w * local.s * local.wf,
+    h: C.h * local.s * local.hf,
   };
 
   const ponto = (e) => {
@@ -147,18 +179,18 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
     }
     return "";
   };
-  // palavra sob o ponto (desfaz a mudança local para achar o retângulo original)
+  // índice da palavra sob o ponto (desfaz a mudança local para achar o retângulo original)
   const palavraEm = (p) => {
     const q = { x: A.x + (p.x - Acur.x) / local.s, y: A.y + (p.y - Acur.y) / local.s };
-    const achada = dados.palavras_pos.find(w => q.x >= w.x && q.x <= w.x + w.w && q.y >= w.y && q.y <= w.y + w.h);
-    return achada ? achada.k : "";
+    return dados.palavras_pos.findIndex(w => q.x >= w.x && q.x <= w.x + w.w && q.y >= w.y && q.y <= w.y + w.h);
   };
 
   const aplicar = async () => {
     if (aplicando) return;
-    const mudouGeo = Math.abs(local.dx) > 0.5 || Math.abs(local.dy) > 0.5 || Math.abs(local.s - 1) > 0.01;
+    const mudouGeo = Math.abs(local.dx) > 0.5 || Math.abs(local.dy) > 0.5 || Math.abs(local.s - 1) > 0.01
+      || Math.abs(local.wf - 1) > 0.01 || Math.abs(local.hf - 1) > 0.01;
     const chaves = new Set([...Object.keys(cores), ...Object.keys(escalas)]);
-    if (!mudouGeo && chaves.size === 0) { onFechar(); return; }
+    if (!mudouGeo && chaves.size === 0 && temaNovo === null) { onFechar(); return; }
     setAplicando(true);
     const previas = ajuste.palavras || {};
     const mapa = { ...previas };
@@ -171,10 +203,13 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
     });
     try {
       await onAplicar({
-        escala: limitar(+(ajuste.escala * local.s).toFixed(3), 0.5, 1.6),
+        escala: limitar(+((ajuste.escala || 1) * local.s).toFixed(3), 0.5, 1.6),
+        largura: limitar(+((ajuste.largura || 1) * local.wf).toFixed(3), 0.4, 2.5),
+        espaco: limitar(+((ajuste.espaco || 1) * local.hf).toFixed(3), 0.6, 2.2),
         dx: Math.round(ajuste.dx + local.dx),
         dy: Math.round(ajuste.dy + local.dy),
         palavras: mapa,
+        ...(temaNovo !== null ? { tema: temaNovo } : {}),
       });
     } finally {
       onFechar();
@@ -186,6 +221,7 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
     if (e.target.closest("[data-barra]")) return;           // clique nas barras de ferramentas não conta
     e.preventDefault();
     e.stopPropagation();
+    if (raiz.current) raiz.current.focus();
     const p = ponto(e);
     const alca = acharAlca(p);
     if (alca) {
@@ -209,33 +245,97 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
       setLocal({ ...gesto.local0, dx: gesto.local0.dx + ddx, dy: gesto.local0.dy + ddy });
       return;
     }
-    // redimensionar: o lado oposto à alça fica parado
     const b0 = gesto.caixa0;
     const l0 = gesto.local0;
     const a = gesto.alca;
-    const sx = a.includes("e") ? (b0.w + ddx) / b0.w : a.includes("w") ? (b0.w - ddx) / b0.w : null;
-    const sy = a.includes("s") ? (b0.h + ddy) / b0.h : a.includes("n") ? (b0.h - ddy) / b0.h : null;
-    let rel = (sx !== null && sy !== null)
-      ? Math.sqrt(Math.max(0.05, sx) * Math.max(0.05, sy))
-      : (sx !== null ? sx : sy);
-    const sNovo = limitar(l0.s * (rel || 1), 0.5, 2.0);
+
+    if (a === "e" || a === "w") {                           // laterais: só a largura (as linhas se reorganizam ao aplicar)
+      const fator = a === "e" ? (b0.w + ddx) / b0.w : (b0.w - ddx) / b0.w;
+      const wf = limitar(l0.wf * Math.max(0.05, fator), 0.4, 2.5);
+      const novoW = C.w * l0.s * wf;
+      const extraDx = a === "w" ? (b0.x + b0.w - novoW) - b0.x : 0;   // 'w': a borda direita fica parada
+      setLocal({ ...l0, wf, dx: l0.dx + extraDx });
+      return;
+    }
+    if (a === "n" || a === "s") {                           // topo/base: só o espaço entre as linhas
+      const fator = a === "s" ? (b0.h + ddy) / b0.h : (b0.h - ddy) / b0.h;
+      const hf = limitar(l0.hf * Math.max(0.05, fator), 0.6, 2.2);
+      const novoH = C.h * l0.s * hf;
+      const extraDy = a === "n" ? (b0.y + b0.h - novoH) - b0.y : 0;   // 'n': a borda de baixo fica parada
+      setLocal({ ...l0, hf, dy: l0.dy + extraDy });
+      return;
+    }
+    // quinas: aumentam/diminuem o TEXTO; o canto oposto à alça fica parado
+    const sx = a.includes("e") ? (b0.w + ddx) / b0.w : (b0.w - ddx) / b0.w;
+    const sy = a.includes("s") ? (b0.h + ddy) / b0.h : (b0.h - ddy) / b0.h;
+    let rel = Math.sqrt(Math.max(0.05, sx) * Math.max(0.05, sy));
+    const sNovo = limitar(l0.s * rel, 0.5, 2.0);
     rel = sNovo / l0.s;
     const ac0 = { x: A.x + l0.dx, y: A.y + l0.dy };
     const R = b0.x + b0.w;
     const B = b0.y + b0.h;
     const tx = a.includes("w") ? R - (ac0.x + (R - ac0.x) * rel) : 0;
     const ty = a.includes("n") ? B - (ac0.y + (B - ac0.y) * rel) : 0;
-    setLocal({ s: sNovo, dx: l0.dx + tx, dy: l0.dy + ty });
+    setLocal({ ...l0, s: sNovo, dx: l0.dx + tx, dy: l0.dy + ty });
   };
 
   const aoSoltar = (e) => {
     if (!gesto) return;
     const p = ponto(e);
     if (gesto.tipo === "mover" && !gesto.moveu) {            // foi um clique, não um arraste: seleciona a palavra
-      const k = palavraEm(p);
-      setSel(k && k !== sel ? k : "");
+      const i = palavraEm(p);
+      if (i >= 0 && dados.palavras_pos[i].k !== sel) { setSel(dados.palavras_pos[i].k); setSelIdx(i); }
+      else if (i >= 0) { setSelIdx(i); }
+      else { setSel(""); setSelIdx(-1); }
+      setAviso("");
     }
     setGesto(null);
+  };
+
+  // ── linhas: Enter divide, Backspace junta ──
+  const localizar = () => {
+    if (selIdx < 0 || !dados.palavras_pos[selIdx]) { setAviso("Clique numa palavra primeiro."); return null; }
+    const k = dados.palavras_pos[selIdx].k;
+    const rank = dados.palavras_pos.slice(0, selIdx).filter(p => p.k === k).length;
+    const r = acharToken(temaNovo !== null ? temaNovo : tema, k, rank);
+    if (!r) setAviso("Não achei essa palavra no texto do tema.");
+    return r;
+  };
+  const dividirLinha = () => {
+    const r = localizar();
+    if (!r) return;
+    const { linhas, li, ti, toks } = r;
+    if (ti === 0) { setAviso("Essa palavra já começa uma linha."); return; }
+    const ini = (linhas[li].trim()[0]) || "";
+    const simb = (ini === ":" || ini === "*") ? ini : "";
+    const a = toks.slice(0, ti).join(" ");
+    let b = toks.slice(ti).join(" ");
+    if (simb && !/^[:*-]/.test(b)) b = simb + b;               // a nova linha mantém o estilo da anterior
+    linhas.splice(li, 1, a, b);
+    setTemaNovo(linhas.join("\n"));
+    setAviso("Linha dividida — aparece ao aplicar.");
+  };
+  const juntarLinha = () => {
+    const r = localizar();
+    if (!r) return;
+    const { linhas, li, ti } = r;
+    if (ti !== 0) {
+      setAviso("Backspace junta quando a palavra começa uma linha. Para juntar linhas quebradas pela largura, puxe a alça lateral da caixa.");
+      return;
+    }
+    if (li === 0) { setAviso("Essa já é a primeira linha."); return; }
+    const prev = linhas[li - 1].trim();
+    let cur = linhas[li].trim();
+    if ((cur[0] === ":" || cur[0] === "*") && cur[0] === prev[0]) cur = cur.slice(1);
+    linhas.splice(li - 1, 2, `${prev} ${cur}`.trim());
+    setTemaNovo(linhas.join("\n"));
+    setAviso("Linhas juntadas — aparece ao aplicar.");
+  };
+  const aoTeclar = (e) => {
+    if (e.key === "Escape") { onFechar(); return; }
+    if (aplicando) return;
+    if (e.key === "Enter") { e.preventDefault(); dividirLinha(); }
+    else if (e.key === "Backspace") { e.preventDefault(); juntarLinha(); }
   };
 
   const mudarCor = (nome) => { if (sel) setCores(c => ({ ...c, [sel]: nome })); };
@@ -256,9 +356,10 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
   const corSel = sel in cores
     ? cores[sel]
     : ((ajuste.palavras && ajuste.palavras[sel] && ajuste.palavras[sel].cor) || "");
-  const barraEmCima = caixa.y * f - 46 > 4;
-  const topoBarra = barraEmCima ? caixa.y * f - 46 : (caixa.y + caixa.h) * f + 8;
+  const barraEmCima = caixa.y * f - 62 > 4;
+  const topoBarra = barraEmCima ? caixa.y * f - 62 : (caixa.y + caixa.h) * f + 8;
   const esquerdaBarra = limitar(caixa.x * f, 4, Math.max(4, larg - 270));
+  const pendenteReflow = Math.abs(local.wf - 1) > 0.01 || Math.abs(local.hf - 1) > 0.01;
 
   const estiloBtn = (ativo = false) => ({
     fontSize: "0.72rem", padding: "2px 9px", borderRadius: 999, cursor: "pointer",
@@ -274,7 +375,7 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
       onPointerUp={aoSoltar}
       onPointerCancel={() => setGesto(null)}
       onClick={e => e.stopPropagation()}
-      onKeyDown={e => { if (e.key === "Escape") onFechar(); }}
+      onKeyDown={aoTeclar}
       tabIndex={0}
       style={{ position: "absolute", inset: 0, zIndex: 6, touchAction: "none", userSelect: "none", outline: "none",
                cursor: aplicando ? "wait" : "default", overflow: "hidden" }}
@@ -282,27 +383,31 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
       {/* fundo sem título */}
       <img src={dados.base_url} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block" }} />
 
-      {/* título (camada), acompanha mover e redimensionar em tempo real */}
+      {/* título (camada), acompanha mover e o tamanho (quinas) em tempo real */}
       <div style={{ position: "absolute", left: A.x * f, top: A.y * f, width: 0, height: 0,
                     transformOrigin: "0 0",
                     transform: `translate(${local.dx * f}px, ${local.dy * f}px) scale(${local.s})` }}>
         <canvas ref={canvasRef}
           style={{ position: "absolute", left: (dados.origem.x - A.x) * f, top: (dados.origem.y - A.y) * f,
                    width: dados.origem.w * f, height: dados.origem.h * f, pointerEvents: "none" }} />
-        {palavraSel && dados.palavras_pos.filter(w => w.k === sel).map((w, i) => (
+        {palavraSel && dados.palavras_pos.map((w, i) => (w.k === sel ? (
           <div key={i} style={{ position: "absolute", left: (w.x - A.x) * f, top: (w.y - A.y) * f,
-                                width: w.w * f, height: w.h * f, border: "1.5px solid #049DBF",
-                                background: "rgba(4,157,191,0.14)", borderRadius: 4, pointerEvents: "none" }} />
-        ))}
+                                width: w.w * f, height: w.h * f,
+                                border: i === selIdx ? "2px solid #049DBF" : "1px dashed #049DBF",
+                                background: i === selIdx ? "rgba(4,157,191,0.20)" : "rgba(4,157,191,0.08)",
+                                borderRadius: 4, pointerEvents: "none" }} />
+        ) : null))}
       </div>
 
       {/* caixa tracejada com as 8 alças */}
       <div style={{ position: "absolute", left: caixa.x * f, top: caixa.y * f, width: caixa.w * f, height: caixa.h * f,
                     border: "1.5px dashed rgba(249,171,11,0.95)", borderRadius: 6, pointerEvents: "none" }}>
         {ALCAS.map(([id, lx, ly]) => (
-          <div key={id} style={{ position: "absolute", left: `${lx * 100}%`, top: `${ly * 100}%`, width: 12, height: 12,
-                                 transform: "translate(-50%, -50%)", background: "#fff", border: "2px solid #F9AB0B",
-                                 borderRadius: 3, cursor: CURSOR[id] }} />
+          <div key={id} style={{ position: "absolute", left: `${lx * 100}%`, top: `${ly * 100}%`,
+                                 width: id.length === 2 ? 12 : 10, height: id.length === 2 ? 12 : 10,
+                                 transform: "translate(-50%, -50%)", background: id.length === 2 ? "#fff" : "#F9AB0B",
+                                 border: "2px solid #F9AB0B", borderRadius: id.length === 2 ? 3 : 6,
+                                 cursor: CURSOR[id] }} />
         ))}
       </div>
 
@@ -329,8 +434,12 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
             <button type="button" style={estiloBtn()} onClick={() => mudarEscala(0.1)}>A+</button>
             <button type="button" style={estiloBtn()} onClick={limparPalavra}>↩ Limpar</button>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button type="button" style={estiloBtn()} onClick={dividirLinha}>↵ Nova linha aqui</button>
+            <button type="button" style={estiloBtn()} onClick={juntarLinha}>⌫ Juntar com a de cima</button>
+          </div>
           <div style={{ color: "#6b7c85" }}>
-            A cor aparece na hora; o tamanho da palavra aparece ao aplicar.
+            A cor aparece na hora; tamanho da palavra e linhas aparecem ao aplicar. Teclas: Enter / Backspace.
           </div>
         </div>
       )}
@@ -344,9 +453,12 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, onAplicar, onF
           {aplicando ? "Aplicando…" : "✓ Aplicar"}
         </button>
       </div>
-      <div style={{ position: "absolute", left: 6, bottom: 6, fontSize: "0.66rem", color: "#fff",
-                    background: "rgba(2,64,89,0.72)", padding: "2px 8px", borderRadius: 999, pointerEvents: "none" }}>
-        Arraste • puxe as alças • clique numa palavra • clique fora para aplicar
+      <div style={{ position: "absolute", left: 6, bottom: 6, maxWidth: "62%", fontSize: "0.64rem", color: "#fff",
+                    background: "rgba(2,64,89,0.78)", padding: "3px 9px", borderRadius: 10, pointerEvents: "none",
+                    lineHeight: 1.35 }}>
+        {aviso
+          || (pendenteReflow ? "Largura/espaço: as linhas se reorganizam ao aplicar."
+            : "Quinas = tamanho • laterais = largura • topo/base = espaço • clique numa palavra • clique fora aplica")}
       </div>
     </div>
   );

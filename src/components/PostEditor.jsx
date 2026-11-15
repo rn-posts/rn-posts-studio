@@ -209,15 +209,16 @@ export default function PostEditor({ post, onClose, onNotify }) {
   // v76: reenvia o título ao servidor com o ajuste pedido (tamanho/cor/posição) ou sorteia outra composição
   const ajustarCard = async (patch, acao = "ajustar") => {
     if (!dadosCard || loadingAjuste) return;
+    const { tema: temaPatch, ...restoPatch } = patch || {};  // v80: tema editado (Enter/Backspace) vai ao servidor, não fica no ajuste
     const proximo = acao === "novo_texto"
       ? { escala: 1, dx: 0, dy: 0, cor: "", palavras: {} }
-      : { ...ajuste, ...patch };
+      : { ...ajuste, ...restoPatch };
     setLoadingAjuste(true);
     try {
       const res = await fetch(`${RENDER_URL}/ajustar-card`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ card_id: dadosCard.card_id, acao, ...proximo }),
+        body: JSON.stringify({ card_id: dadosCard.card_id, acao, ...proximo, ...(temaPatch ? { tema: temaPatch } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.erro || "Erro ao ajustar o título");
@@ -226,6 +227,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
       setCaixa(data.caixa || null);
       if (data.palavras) setPalavras(data.palavras);
       setAjuste(proximo);
+      if (temaPatch) setTema(temaPatch);
     } catch (e) {
       onNotify(e.message, "error");
     } finally {
@@ -607,6 +609,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
                   renderUrl={RENDER_URL}
                   cardId={dadosCard.card_id}
                   ajuste={ajuste}
+                  tema={tema}
                   onAplicar={ajustarCard}
                   onFechar={() => setEditando(false)}
                   onNotify={onNotify}
@@ -689,7 +692,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
                       onClick={() => ajustarCard({ dx: ajuste.dx + ddx, dy: ajuste.dy + ddy })}>{rot}</button>
                   ))}
                   <button type="button" disabled={loadingAjuste} style={estiloBtnAj()}
-                    onClick={() => ajustarCard({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {} })}>↩ Restaurar</button>
+                    onClick={() => ajustarCard({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {}, largura: 1, espaco: 1 })}>↩ Restaurar</button>
                 </div>
                 {palavras.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>

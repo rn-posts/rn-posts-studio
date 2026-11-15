@@ -1999,7 +1999,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
                     respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None,
                     escala_fonte=1.0, cor_forcada=None, y_forcado=None,
-                    estrategia_fixa=None, forma_fixa=None, palavras_estilo=None):  # v76: ajuste manual (padrões não mudam nada)
+                    estrategia_fixa=None, forma_fixa=None, palavras_estilo=None, largura_px=None):  # v76: ajuste manual (padrões não mudam nada)
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
     _TL.info = None  # v76
@@ -2014,6 +2014,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         if tem_pessoa:
             MAX_PX = max(300, int(W * 0.40) - SAFE_MARGIN)
         MAX_PX = max(240, min(MAX_PX, SAFE_RIGHT - MARGIN))
+    if largura_px:  # v80: largura do texto escolhida no editor (cresce junto com o tamanho para manter as quebras de linha)
+        MAX_PX = max(240, min(int(largura_px), SAFE_RIGHT - MARGIN))
     layout   = seed % 5
 
     # Estratégia de legibilidade da vez
@@ -2484,7 +2486,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
         _TL.info = {"estrategia": estrategia_leg, "forma": forma_fundo, "x": int(MARGIN), "y": int(y),
                     "w": int(largura_titulo), "h": int(h_total), "tam_ag": int(tam_ag),
                     "grupos": _qa_grupos, "y_fim": int(y),
-                    "palavras": _palavras_editaveis(tema),
+                    "palavras": _palavras_editaveis(tema), "max_px": int(MAX_PX),
                     "linhas_pos": _TL.linhas_pos}
     except Exception as _eqa:
         print(f"[qa] geometria nao registrada: {_eqa}")
