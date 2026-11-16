@@ -443,7 +443,7 @@ def f_display_est(t):
 
 def _linha_est(draw, x, y, texto, fonte, cor, stroke_width=0, stroke_fill=None):
     """Renderiza com ligaturas e glifos alternativos via RAQM ou fallback."""
-    _registrar_linha_pos(x, y, texto, fonte, cor, 0)  # v79
+    _registrar_linha_pos(x, y, texto, fonte, cor, 0, True)  # v79 (liga=True: linhas estilizadas medidas com glifos alternativos)
     _pal = _overrides_linha(texto)  # v78: cor/tamanho por palavra vindos do editor
     if _pal is not None:
         try:
@@ -1698,7 +1698,7 @@ def _desenhar_linha_palavras(draw, x, y, texto, fonte, cor, sp, stroke_width, st
             draw.text((cx, yy), parte, **kw)
             cx += f.getlength(parte)
 
-def _registrar_linha_pos(x, y, texto, fonte, cor, sp=0):
+def _registrar_linha_pos(x, y, texto, fonte, cor, sp=0, liga=False):
     """v79: guarda onde cada palavra foi desenhada (só no preenchimento opaco) para o editor local do título."""
     try:
         lst = getattr(_TL, "linhas_pos", None)
@@ -1707,11 +1707,18 @@ def _registrar_linha_pos(x, y, texto, fonte, cor, sp=0):
         import re as _re
         pal = getattr(_TL, "palavras", None) or {}
         asc, desc = fonte.getmetrics()
+        feats = ["+liga", "+aalt", "+calt", "+dlig"] if (liga and _RAQM_OK) else None
+
+        def _gl(s):  # mede com os mesmos recursos de fonte usados no desenho (glifos alternativos/ligaduras)
+            try:
+                return fonte.getlength(s, features=feats) if feats else fonte.getlength(s)
+            except Exception:
+                return fonte.getlength(s)
         palavras = []
         for m in _re.finditer(r"\S+", texto):
             pre = texto[:m.start()]
-            x0 = float(x) + (fonte.getlength(pre) if pre else 0.0) + (sp or 0) * len(pre)
-            x1 = x0 + fonte.getlength(m.group()) + (sp or 0) * len(m.group())
+            x0 = float(x) + (_gl(pre) if pre else 0.0) + (sp or 0) * len(pre)
+            x1 = x0 + _gl(m.group()) + (sp or 0) * len(m.group())
             k = _chave_palavra(m.group())
             c = (pal.get(k) or {}).get("cor") or tuple(cor[:3])
             palavras.append({"k": k, "t": m.group().strip(".,;:!?“”\"()[]"),

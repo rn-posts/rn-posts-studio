@@ -78,8 +78,15 @@ function montarBlocos(dados) {
 }
 
 // ── posição de cada palavra: igual ao original, ou reorganizada pela largura/espaço/quebras/tamanho da palavra ──
-function calcularLayout(blocos, { lim, hf, escalaPal, quebras }) {
+function calcularLayout(blocos, { lim, hf, escalaPal, quebras, limSeguro = Infinity }) {
   const out = [];
+  // O motor limita a largura do texto à zona segura do Instagram; se mover o texto para a direita faz as linhas
+  // originais não caberem mais, elas se reorganizam como o motor fará.
+  let larguraOrig = 0;
+  blocos.forEach(b => { if (b.reflui) b.linhas.forEach(l => { larguraOrig = Math.max(larguraOrig, l.palavras[l.palavras.length - 1].x1 - l.palavras[0].x0); }); });
+  const limEf = Math.min(lim === null ? Infinity : lim, limSeguro);
+  const guloso = lim !== null || limEf < larguraOrig - 1;
+  const limite = guloso ? limEf : null;
   let yCur = null;
   let baseAnt = null;
   blocos.forEach((b, bi) => {
@@ -89,12 +96,17 @@ function calcularLayout(blocos, { lim, hf, escalaPal, quebras }) {
     const gap = baseAnt === null ? 0 : topo0 - baseAnt;
     const topo = yCur === null ? topo0 : yCur + gap;
     let fundo;
-    if (!b.reflui) {                                       // fundos '-palavra' e linhas lado a lado: só acompanham a posição
+    if (!b.reflui) {                                       // fundos '-palavra' e linhas lado a lado: a linha inteira acompanha a posição
       const dy = topo - topo0;
-      b.palavras.forEach((w, i) => out.push({
-        ...w, sx: w.x0, sy: w.y, sw: w.x1 - w.x0, sh: w.h, x: w.x0, y: w.y + dy, w: w.x1 - w.x0, h: w.h,
-        ini: i === 0 || w.li !== b.palavras[i - 1].li, primeiro: i === 0, bi, fixo: true, esp: 20, x0b: w.x0,
-      }));
+      b.linhas.forEach((l, li) => {
+        const lx0 = l.palavras[0].x0;
+        const lx1 = l.palavras[l.palavras.length - 1].x1;
+        out.push({
+          gid: -(bi * 100 + li + 1), k: "", t: "", ed: false, cor: [0, 0, 0],
+          sx: lx0, sy: l.y, sw: lx1 - lx0, sh: l.h, x: lx0, y: l.y + dy, w: lx1 - lx0, h: l.h,
+          ini: true, primeiro: li === 0, bi, fixo: true, esp: 20, x0b: lx0, padX: 40, padY: 16,
+        });
+      });
       fundo = base0 + dy;
     } else {
       const x0 = b.linhas[0].palavras[0].x0;
@@ -113,7 +125,7 @@ function calcularLayout(blocos, { lim, hf, escalaPal, quebras }) {
         let ini = i === 0;
         if (i > 0) {
           const forca = quebras.has(w.gid);
-          const quebra = lim !== null ? (x > 0 && x + ww > lim) : (w.li !== b.palavras[i - 1].li);
+          const quebra = limite !== null ? (x > 0 && x + ww > limite) : (w.li !== b.palavras[i - 1].li);
           if (forca || quebra) { x = 0; linhaN++; ini = true; }
         }
         out.push({
@@ -216,12 +228,14 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
   useEffect(() => { if (dados && raiz.current) raiz.current.focus(); }, [dados]);
 
   const blocos = useMemo(() => (dados ? montarBlocos(dados) : []), [dados]);
+  const limSeguro = dados ? (1046 - (dados.ancora.x + local.dx)) / local.s : Infinity;   // largura máxima que o motor aceita (zona segura)
   const lay = useMemo(
-    () => calcularLayout(blocos, { lim: local.lim, hf: local.hf, escalaPal: wsPal, quebras: new Set(quebras) }),
-    [blocos, local.lim, local.hf, wsPal, quebras],
+    () => calcularLayout(blocos, { lim: local.lim, hf: local.hf, escalaPal: wsPal, quebras: new Set(quebras), limSeguro }),
+    [blocos, local.lim, local.hf, wsPal, quebras, limSeguro],
   );
   const modif = local.lim !== null || Math.abs(local.hf - 1) > 0.005 || quebras.length > 0
-    || Object.values(wsPal).some(v => Math.abs(v - 1) > 0.005);
+    || Object.values(wsPal).some(v => Math.abs(v - 1) > 0.005)
+    || lay.some(p => !p.fixo && (Math.abs(p.x - p.sx) > 1.5 || Math.abs(p.y - p.sy) > 1.5));
 
   // desenha o título: original, ou palavra por palavra nas novas posições; recolore ao vivo
   useEffect(() => {
@@ -242,8 +256,8 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
     }
     const tmp = document.createElement("canvas");
     lay.forEach(p => {
-      const padX = limitar(Math.floor(p.esp / 2) - 1, 3, 20);   // não pega as letras vizinhas
-      const padY = 6;
+      const padX = p.padX !== undefined ? p.padX : limitar(Math.floor(p.esp / 2) - 1, 3, 20);   // não pega as letras vizinhas
+      const padY = p.padY !== undefined ? p.padY : 6;
       const sw = p.sw + 2 * padX;
       const sh = p.sh + 2 * padY;
       tmp.width = sw;
@@ -391,7 +405,8 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
       const hf = limitar(l0.hf * Math.max(0.05, fator), 0.5, 2.5);
       let extraDy = 0;
       if (a === "n") {
-        const lay2 = calcularLayout(blocos, { lim: l0.lim, hf, escalaPal: wsPal, quebras: new Set(quebras) });
+        const lay2 = calcularLayout(blocos, { lim: l0.lim, hf, escalaPal: wsPal, quebras: new Set(quebras),
+                                              limSeguro: (1046 - (A.x + l0.dx)) / l0.s });
         const bb2 = caixaDoLayout(lay2);
         if (bb2) extraDy = b0.h - bb2.h * l0.s;                // 'n': a borda de baixo fica parada
       }
