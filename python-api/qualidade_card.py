@@ -456,6 +456,71 @@ def rota_ajustar_card():
     })
 
 
+@bp.route("/aplicar-manual", methods=["POST"])
+def rota_aplicar_manual():
+    """v83: a edição manual é SOBERANA. O editor compõe a imagem final no navegador (fundo + título exatamente como
+    foi editado) e envia pronta; o servidor só valida e guarda como o card. O motor de título NÃO refaz nada aqui,
+    então posição, tamanho, cor e quebras ficam como o usuário deixou (inclusive sobre o rosto)."""
+    M = _m()
+    data = request.get_json(silent=True) or {}
+    card_id = data.get("card_id", "")
+    with _LOCK:
+        reg = _REG.get(card_id)
+    pend = M._cards_pendentes.get(card_id)
+    if not reg or not pend:
+        return jsonify({"erro": "Esse card saiu da memória do servidor (reinício ou muitos cards novos). Gere novamente."}), 410
+    try:
+        uri = data.get("imagem") or ""
+        if not uri.startswith("data:image/jpeg;base64,") or len(uri) > 12_000_000:
+            return jsonify({"erro": "Imagem da edição inválida."}), 400
+        img = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGB")
+        if img.size != (W, H):
+            return jsonify({"erro": f"Tamanho inesperado da imagem: {img.size[0]}x{img.size[1]}."}), 400
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=93)
+        card_bytes = buf.getvalue()
+
+        # estado do título (onde cada palavra ficou) para a próxima abertura do editor
+        est = data.get("estado") or {}
+        linhas = []
+        for l in (est.get("linhas") or [])[:60]:
+            ps = [{"k": str(p.get("k", ""))[:40], "t": str(p.get("t", ""))[:60],
+                   "x0": float(p["x0"]), "x1": float(p["x1"]),
+                   "cor": [int(c) for c in (p.get("cor") or [0, 0, 0])[:3]]}
+                  for p in (l.get("palavras") or [])[:40]]
+            if ps:
+                linhas.append({"y": float(l["y"]), "h": int(float(l["h"])), "palavras": ps})
+        grupos = [{"y": float(g["y"]), "alt": int(float(g["alt"])), "est": str(g.get("est") or "normal")[:20],
+                   "cores": [[0, 0, 0]] * max(1, int(g.get("n") or 1))}
+                  for g in (est.get("grupos") or [])[:30]]
+        ancora = est.get("ancora") or {}
+        antigo = reg.get("info_atual") or reg.get("info") or {}
+        info_novo = {
+            "estrategia": antigo.get("estrategia"), "forma": antigo.get("forma"),
+            "x": int(float(ancora.get("x", antigo.get("x", 0)))), "y": int(float(ancora.get("y", antigo.get("y", 0)))),
+            "w": 0, "h": 0, "tam_ag": antigo.get("tam_ag", 0), "grupos": grupos,
+            "y_fim": int(max([l["y"] + l["h"] for l in linhas] or [0])),
+            "palavras": antigo.get("palavras", []),
+            "max_px": int(float(est.get("max_px") or antigo.get("max_px") or 0)),
+            "linhas_pos": linhas,
+        }
+        pend["card_bytes"] = card_bytes
+        with _LOCK:
+            if card_id in _REG:
+                _REG[card_id]["info_atual"] = info_novo
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"erro": f"Erro ao guardar a edição manual: {type(e).__name__}: {str(e)[:160]}"}), 500
+    return jsonify({
+        "card_id": card_id,
+        "preview_url": f"data:image/jpeg;base64,{base64.b64encode(card_bytes).decode()}",
+        "qa": {"nota": None, "ok": True, "problemas": [], "tentativas": 1, "manual": True},
+        "caixa": _caixa(info_novo),
+        "palavras": info_novo["palavras"],
+    })
+
+
 @bp.route("/camada-titulo", methods=["POST"])
 def rota_camada_titulo():
     """v79: entrega o card SEM o título (fundo limpo) e o título como camada transparente (recorte em volta da

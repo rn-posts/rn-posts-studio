@@ -132,6 +132,7 @@ function calcularLayout(blocos, { lim, hf, escalaPal, quebras, limSeguro = Infin
           ...w, sx: w.x0, sy: w.y, sw: w.x1 - w.x0, sh: w.h,
           x: x0 + x, y: topo + linhaN * passo + (altLinha - hh), w: ww, h: hh,
           ini, primeiro: i === 0, bi, fixo: false, esp: espaco, x0b: x0,
+          linha: linhaN, ly: topo + linhaN * passo, lh: altLinha,
         });
         x += ww + espaco;
       });
@@ -161,19 +162,20 @@ function recolorir(ctx, x, y, w, h, corOrig, alvo) {
   const img = ctx.getImageData(rx, ry, rw, rh);
   const d = img.data;
   for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] < 100) continue;
+    if (d[i + 3] < 8) continue;                       // inclui as bordas suaves das letras (sem sobrar rastro da cor antiga)
     const dr = d[i] - corOrig[0];
     const dg = d[i + 1] - corOrig[1];
     const db = d[i + 2] - corOrig[2];
-    if (dr * dr + dg * dg + db * db < 90 * 90) { d[i] = alvo[0]; d[i + 1] = alvo[1]; d[i + 2] = alvo[2]; }
+    if (dr * dr + dg * dg + db * db < 45 * 45) { d[i] = alvo[0]; d[i + 1] = alvo[1]; d[i + 2] = alvo[2]; }
   }
   ctx.putImageData(img, rx, ry);
 }
 
-export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplicar, onFechar, onNotify }) {
+export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplicar, onManualAplicado, onFechar, onNotify }) {
   const raiz = useRef(null);
   const canvasRef = useRef(null);
   const imgCamada = useRef(null);
+  const imgBase = useRef(null);
 
   const [larg, setLarg] = useState(420);
   const [dados, setDados] = useState(null);
@@ -212,9 +214,17 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.erro || "Erro ao abrir o editor do título");
-        const im = new Image();
-        im.onload = () => { if (vivo) { imgCamada.current = im; setDados(d); } };
-        im.src = d.camada_url;
+        const carregar = (src) => new Promise((ok, falha) => {
+          const i = new Image();
+          i.onload = () => ok(i);
+          i.onerror = () => falha(new Error("Falha ao carregar a imagem do editor"));
+          i.src = src;
+        });
+        const [im, ib] = await Promise.all([carregar(d.camada_url), carregar(d.base_url)]);
+        if (!vivo) return;
+        imgCamada.current = im;
+        imgBase.current = ib;
+        setDados(d);
       } catch (e) {
         if (!vivo) return;
         if (onNotify) onNotify(e.message, "error");
@@ -318,34 +328,80 @@ export default function TituloEditor({ renderUrl, cardId, ajuste, tema, onAplica
   // alça de tamanho da palavra selecionada (canto inferior direito dela)
   const alcaPalavra = instSel && !instSel.fixo ? paraTela(instSel.x + instSel.w, instSel.y + instSel.h) : null;
 
+  // v83: a edição manual é SOBERANA. A imagem final é composta aqui, exatamente como está na tela (fundo + título
+  // com as posições, tamanhos e cores que você deixou), e o servidor só a guarda: o motor de título não refaz nada.
   const aplicar = async () => {
     if (aplicando) return;
     const mudouGeo = Math.abs(local.dx) > 0.5 || Math.abs(local.dy) > 0.5 || Math.abs(local.s - 1) > 0.01 || modif;
-    const chaves = new Set([...Object.keys(cores), ...Object.keys(wsPal)]);
-    if (!mudouGeo && chaves.size === 0 && temaNovo === null) { onFechar(); return; }
+    if (!mudouGeo && Object.keys(cores).length === 0) { onFechar(); return; }
     setAplicando(true);
-    const previas = ajuste.palavras || {};
-    const mapa = { ...previas };
-    chaves.forEach(k => {
-      const o = { ...(previas[k] || {}) };
-      if (k in cores) o.cor = cores[k];
-      if (k in wsPal) o.escala = limitar(+(((previas[k] && previas[k].escala) || 1) * wsPal[k]).toFixed(3), 0.6, 1.8);
-      if (!o.cor && (!o.escala || Math.abs(o.escala - 1) < 0.01)) delete mapa[k];
-      else mapa[k] = o;
-    });
-    const wf = (local.lim !== null && dados.max_px) ? local.lim / dados.max_px : 1;
     try {
-      await onAplicar({
-        escala: limitar(+((ajuste.escala || 1) * local.s).toFixed(3), 0.5, 1.6),
-        largura: limitar(+((ajuste.largura || 1) * wf).toFixed(3), 0.4, 2.5),
-        espaco: limitar(+((ajuste.espaco || 1) * local.hf).toFixed(3), 0.6, 2.2),
-        dx: Math.round(ajuste.dx + local.dx),
-        dy: Math.round(ajuste.dy + local.dy),
-        palavras: mapa,
-        ...(temaNovo !== null ? { tema: temaNovo } : {}),
+      const cv = document.createElement("canvas");
+      cv.width = W;
+      cv.height = H;
+      const ctx = cv.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(imgBase.current, 0, 0, W, H);
+      ctx.save();
+      ctx.translate(Acur.x, Acur.y);
+      ctx.scale(local.s, local.s);
+      ctx.translate(-A.x, -A.y);
+      ctx.drawImage(canvasRef.current, 0, 0);
+      ctx.restore();
+      const imagem = cv.toDataURL("image/jpeg", 0.93);
+
+      // onde cada palavra ficou (para a próxima abertura do editor)
+      const T = (px, py) => ({ x: Acur.x + (px - A.x) * local.s, y: Acur.y + (py - A.y) * local.s });
+      const linhasFinal = [];
+      const gruposFinal = [];
+      blocos.forEach((b, bi) => {
+        const doBloco = lay.filter(p => p.bi === bi);
+        if (!doBloco.length) return;
+        if (!b.reflui) {
+          b.linhas.forEach((l, li) => {
+            const e = doBloco[li];
+            if (!e) return;
+            const dy = e.y - l.y;
+            linhasFinal.push({
+              y: T(0, l.y + dy).y, h: l.h * local.s,
+              palavras: l.palavras.map(w => ({ k: w.k, t: w.t, x0: T(w.x0, 0).x, x1: T(w.x1, 0).x, cor: w.cor })),
+            });
+          });
+        } else {
+          const porLinha = new Map();
+          doBloco.forEach(p => { if (!porLinha.has(p.linha)) porLinha.set(p.linha, []); porLinha.get(p.linha).push(p); });
+          [...porLinha.keys()].sort((a, c) => a - c).forEach(ln => {
+            const ps = porLinha.get(ln);
+            linhasFinal.push({
+              y: T(0, ps[0].ly).y, h: ps[0].lh * local.s,
+              palavras: ps.map(p => ({
+                k: p.k, t: p.t, x0: T(p.x, 0).x, x1: T(p.x + p.w, 0).x,
+                cor: (cores[p.k] && PALETA[cores[p.k]]) ? PALETA[cores[p.k]].rgb : p.cor,
+              })),
+            });
+          });
+        }
+        const topo = Math.min(...doBloco.map(p => (p.ly !== undefined ? p.ly : p.y)));
+        gruposFinal.push({ y: T(0, topo).y, alt: b.linhas[0].h * local.s, est: b.g.est, n: b.g.n });
       });
-    } finally {
+      const maxPx = (local.lim !== null ? local.lim : (dados.max_px || 0)) * local.s;
+
+      const res = await fetch(`${renderUrl}/aplicar-manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          card_id: cardId, imagem,
+          estado: { ancora: Acur, max_px: maxPx, linhas: linhasFinal, grupos: gruposFinal },
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.erro || "Erro ao aplicar a edição manual");
+      if (onManualAplicado) onManualAplicado(d);
       onFechar();
+    } catch (e) {
+      if (onNotify) onNotify(e.message, "error");
+      setAplicando(false);                                    // mantém o editor aberto para não perder a edição
     }
   };
 

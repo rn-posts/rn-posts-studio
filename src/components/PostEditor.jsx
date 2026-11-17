@@ -300,6 +300,16 @@ export default function PostEditor({ post, onClose, onNotify }) {
                         n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize" };
 
   // v79: clicar na caixa tracejada abre o editor local (mover, alças, cor/tamanho por palavra; aplica ao clicar fora)
+  // v83: o editor local compôs e guardou a imagem final (edição manual soberana): só atualiza a tela
+  const manualAplicado = (d) => {
+    setPreviewUrl(d.preview_url);
+    setQa(d.qa || null);
+    setCaixa(d.caixa || null);
+    if (d.palavras) setPalavras(d.palavras);
+    setAjuste({ escala: 1, dx: 0, dy: 0, cor: "", palavras: {} });
+    setPalavraSel("");
+  };
+
   const abrirEditor = (e) => {
     if (e && e.preventDefault) { e.preventDefault(); e.stopPropagation(); }
     if (ajustavel && !loadingAjuste) setEditando(true);
@@ -611,6 +621,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
                   ajuste={ajuste}
                   tema={tema}
                   onAplicar={ajustarCard}
+                  onManualAplicado={manualAplicado}
                   onFechar={() => setEditando(false)}
                   onNotify={onNotify}
                 />
@@ -639,7 +650,7 @@ export default function PostEditor({ post, onClose, onNotify }) {
                 background: qa.ok ? "rgba(46,125,50,0.10)" : "rgba(249,171,11,0.14)",
                 border: `1px solid ${qa.ok ? "rgba(46,125,50,0.35)" : "rgba(249,171,11,0.55)"}`,
               }}>
-                <strong>{qa.ok ? "✓ Passou na revisão automática" : "⚠ Revise antes de aprovar"}</strong>
+                <strong>{qa.manual ? "✋ Edição manual aplicada — vale exatamente o que você fez" : (qa.ok ? "✓ Passou na revisão automática" : "⚠ Revise antes de aprovar")}</strong>
                 {typeof qa.nota === "number" && (
                   <span style={{ marginLeft: 6, color: "var(--texto-suave)" }}>
                     (nota {qa.nota}/100{qa.tentativas > 1 ? ` · ${qa.tentativas} tentativas` : ""})
