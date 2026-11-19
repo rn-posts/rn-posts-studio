@@ -650,11 +650,29 @@ export default function PostEditor({ post, onClose, onNotify }) {
                 background: qa.ok ? "rgba(46,125,50,0.10)" : "rgba(249,171,11,0.14)",
                 border: `1px solid ${qa.ok ? "rgba(46,125,50,0.35)" : "rgba(249,171,11,0.55)"}`,
               }}>
-                <strong>{qa.manual ? "✋ Edição manual aplicada — vale exatamente o que você fez" : (qa.ok ? "✓ Passou na revisão automática" : "⚠ Revise antes de aprovar")}</strong>
+                <strong>{qa.manual ? "✋ Edição manual aplicada — vale exatamente o que você fez" : (qa.ok ? (qa.parcial ? "✓ Título aprovado (foto e cenário não avaliados)" : "✓ Passou na revisão automática") : "⚠ Revise antes de aprovar")}</strong>
                 {typeof qa.nota === "number" && (
                   <span style={{ marginLeft: 6, color: "var(--texto-suave)" }}>
-                    (nota {qa.nota}/100{qa.tentativas > 1 ? ` · ${qa.tentativas} tentativas` : ""})
+                    (nota {qa.nota}/100{qa.criterios && Object.keys(qa.criterios).length > 0 ? " = menor critério" : ""}{qa.tentativas > 1 ? ` · ${qa.tentativas} tentativas` : ""})
                   </span>
+                )}
+                {qa.criterios && Object.keys(qa.criterios).length > 0 && (
+                  <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
+                    {[["legibilidade", "Legibilidade"], ["tamanho", "Tamanho"], ["destaque", "Destaque"], ["foto", "Foto e cenário"]].map(([k, rot]) => {
+                      const c = qa.criterios[k];
+                      if (!c) return null;
+                      const medido = c.medido !== false && typeof c.nota === "number";
+                      return (
+                        <span key={k} style={{
+                          fontSize: "0.7rem", padding: "1px 8px", borderRadius: 999, fontWeight: 600,
+                          background: !medido ? "rgba(120,120,120,0.15)" : c.ok ? "rgba(46,125,50,0.15)" : "rgba(249,171,11,0.25)",
+                          color: !medido ? "var(--texto-suave, #666)" : "inherit",
+                        }}>
+                          {rot}: {medido ? `${c.nota} ${c.ok ? "✓" : "⚠"}` : "não avaliada"}
+                        </span>
+                      );
+                    })}
+                  </div>
                 )}
                 {qa.problemas && qa.problemas.length > 0 && (
                   <ul style={{ margin: "0.35rem 0 0", paddingLeft: "1.1rem" }}>

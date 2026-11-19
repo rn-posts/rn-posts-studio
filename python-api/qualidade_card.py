@@ -132,12 +132,18 @@ class AvaliadorCard:
             return int(cols.min()), int(cols.max()) + 1
         return int(x_ini), int(min(W, x_ini + largura))
 
-    def avaliar(self, card, info):
+    def avaliar(self, card, info, kw=None):
         """Retorna dict {nota, ok, problemas[], detalhe{}}. Sem `info` do motor, só devolve nota neutra."""
         if not info or not info.get("grupos"):
             return {"nota": None, "ok": True, "problemas": [], "detalhe": {"sem_geometria": True}}
         try:
-            return self._avaliar(card, info)
+            res = self._avaliar(card, info)
+            try:  # v84: tamanho, destaque, contraste por palavra e critérios separados (se falhar, vale a nota do v83)
+                import qualidade_v84 as _v84
+                res = _v84.complementar(self, res, info, kw)
+            except Exception as _e84:
+                print(f"[qa] v84 complementar ignorado: {type(_e84).__name__}: {_e84}")
+            return res
         except Exception as e:  # o portão nunca derruba a geração
             print(f"[qa] avaliacao ignorada: {type(e).__name__}: {e}")
             return {"nota": None, "ok": True, "problemas": [], "detalhe": {"erro": str(e)[:120]}}
@@ -250,24 +256,33 @@ def _render(M, base, tema, seed, kw):
     return card, kw2, info
 
 
-def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS):
+def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_rel=None):
     """Desenha o título; se o portão reprovar, tenta de novo (outra seed, mesmo fundo). A 1ª tentativa é
     idêntica ao comportamento anterior. Devolve o card (PIL) com .qa_relatorio e .qa_registro anexados."""
     av = AvaliadorCard(base)
     inicio = time.time()
     melhor = None
     n = 0
+    kw_i = kw
+    sd = seed
     for i in range(max(1, tentativas)):
+        sd_prev = sd
         sd = seed if i == 0 else (int(seed) + i * 7919) % 999983
+        if i > 0:  # v84: se só tamanho/destaque falharam, a nova tentativa corrige ESSES pontos (fonte maior, palavra em evidência)
+            try:
+                import qualidade_v84 as _v84
+                kw_i, sd = _v84.proxima_tentativa(base, kw_usado, info, rel, sd_prev, sd)
+            except Exception as _e84:
+                print(f"[qa] v84 proxima tentativa ignorada: {type(_e84).__name__}: {_e84}")
         try:
-            card, kw_usado, info = _render(M, base, tema, sd, kw)
+            card, kw_usado, info = _render(M, base, tema, sd, kw_i)
         except Exception as _e:
             if melhor is None:
                 raise
             print(f"[qa] tentativa {i + 1} falhou: {type(_e).__name__}: {_e}")
             break
         n += 1
-        rel = av.avaliar(card, info)
+        rel = av.avaliar(card, info, kw_usado)
         print(f"[qa] tentativa {n}: nota={rel['nota']} ok={rel['ok']} problemas={len(rel['problemas'])} t={time.time() - inicio:.1f}s")
         if melhor is None or (rel["nota"] or 0) > (melhor[1]["nota"] or 0):
             melhor = (card, rel, sd, kw_usado, info)
@@ -279,8 +294,15 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS):
     card, rel, sd, kw_usado, info = melhor
     rel = dict(rel)
     rel["tentativas"] = n
+    try:  # v84: critério "foto e cenário" e nota = menor critério medido (sem foto avaliada, o relatório fica parcial)
+        import qualidade_v84 as _v84
+        rel = _v84.mesclar_foto(rel, foto_rel)
+    except Exception as _e84:
+        print(f"[qa] v84 mesclar foto ignorado: {type(_e84).__name__}: {_e84}")
     card.qa_relatorio = rel
-    card.qa_registro = {"base": base, "kw": kw_usado, "tema": tema, "seed": sd, "info": info}
+    # v84: o registro (base do "Novo texto" e dos ajustes) não congela estratégia/forma da tentativa que corrigiu o tamanho
+    kw_reg = {k: v for k, v in kw_usado.items() if k not in ("estrategia_fixa", "forma_fixa")}
+    card.qa_registro = {"base": base, "kw": kw_reg, "tema": tema, "seed": sd, "info": info, "foto_rel": foto_rel}
     return card
 
 
@@ -289,7 +311,8 @@ def _publico(rel):
     if not rel:
         return None
     return {"nota": rel.get("nota"), "ok": bool(rel.get("ok")), "problemas": list(rel.get("problemas") or []),
-            "tentativas": rel.get("tentativas", 1)}
+            "tentativas": rel.get("tentativas", 1),
+            "criterios": rel.get("criterios") or {}, "parcial": bool(rel.get("parcial"))}  # v84
 
 
 def _caixa(info):
@@ -352,7 +375,8 @@ def registrar(card_id, card):
     reg["base"].convert("RGB").save(buf, format="JPEG", quality=97, subsampling=0)
     with _LOCK:
         _REG[card_id] = {"base_jpg": buf.getvalue(), "kw": reg["kw"], "tema": reg["tema"],
-                         "seed": reg["seed"], "info": reg["info"], "info_atual": reg["info"]}
+                         "seed": reg["seed"], "info": reg["info"], "info_atual": reg["info"],
+                         "foto_rel": reg.get("foto_rel")}  # v84
         while len(_REG) > MAX_REGISTROS:
             _REG.popitem(last=False)
     return {"qa": _publico(getattr(card, "qa_relatorio", None)), "ajustavel": bool(reg.get("info")),
@@ -378,11 +402,12 @@ def rota_ajustar_card():
     try:
         if acao == "novo_texto":
             sd = random.randint(1, 999982)
-            card = renderizar_titulo(M, base, reg["tema"], sd, reg["kw"])
+            card = renderizar_titulo(M, base, reg["tema"], sd, reg["kw"], foto_rel=reg.get("foto_rel"))  # v84
             novo = card.qa_registro
             with _LOCK:
                 _REG[card_id] = {"base_jpg": reg["base_jpg"], "kw": novo["kw"], "tema": reg["tema"],
-                                 "seed": novo["seed"], "info": novo["info"], "info_atual": novo["info"]}
+                                 "seed": novo["seed"], "info": novo["info"], "info_atual": novo["info"],
+                                 "foto_rel": reg.get("foto_rel")}
             info_vis, rel = novo["info"], card.qa_relatorio
         else:
             info = reg["info"] or {}
@@ -393,7 +418,7 @@ def rota_ajustar_card():
             dx = int(_clamp(float(data.get("dx", 0)), -700, 700))
             dy = int(_clamp(float(data.get("dy", 0)), -900, 900))
             if abs(escala - 1.0) > 0.005:
-                kw["escala_fonte"] = escala
+                kw["escala_fonte"] = escala * float(reg["kw"].get("escala_fonte") or 1.0)  # v84: relativo ao tamanho que o portão já corrigiu
             # v80: largura (o texto reflui) e espaçamento entre linhas; a largura acompanha o tamanho para manter as quebras
             largura = _clamp(float(data.get("largura") or 1.0), 0.4, 2.5)
             espaco = _clamp(float(data.get("espaco") or 1.0), 0.6, 2.2)
@@ -432,8 +457,13 @@ def rota_ajustar_card():
             if pal_estilo:
                 kw["palavras_estilo"] = pal_estilo
             card, kw_usado, info_novo = _render(M, base, tema_uso, reg["seed"], kw)
-            rel = AvaliadorCard(base).avaliar(card, info_novo)
+            rel = AvaliadorCard(base).avaliar(card, info_novo, kw_usado)
             rel["tentativas"] = 1
+            try:  # v84: mantém o critério da foto (a foto não muda quando só o título é ajustado)
+                import qualidade_v84 as _v84
+                rel = _v84.mesclar_foto(rel, reg.get("foto_rel"))
+            except Exception as _e84:
+                print(f"[qa] v84 mesclar foto ignorado: {type(_e84).__name__}: {_e84}")
             info_vis = info_novo
             with _LOCK:
                 if card_id in _REG:

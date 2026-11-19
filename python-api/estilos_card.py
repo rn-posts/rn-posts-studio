@@ -2531,6 +2531,7 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
     """Card = cenário por estilo/tema + Ronilson (ronilson_sem_fundo) integrado + título."""
     rotulo = ESTILOS[estilo]["rotulo"] if estilo in ESTILOS else "Automático"
     aviso = None
+    _t_func0 = time.time()  # v84: tempo desde o início da geração (guarda o timeout do Render ao refazer a foto)
     try:
         _ETAPA["v"] = "escolher recorte do Ronilson"
         recorte, pid = _carregar_recorte_neutro()
@@ -2539,6 +2540,31 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         fundo = _clarear_cenario(fundo)
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
         img, em_pe, cabeca, x_esq, lado_x, x_dir = _integrar_v58(fundo, recorte, estilo, seed)
+        foto_rel = None
+        try:  # v84: revisão da foto/cenário (visão do Gemini). Se reprovar, refaz pose + cenário (no máx. 1x e só se houver tempo)
+            import qualidade_v84 as _v84
+            _f_atual = _v84.revisar_foto(M, img, tema, estilo)
+            _melhor_f = (_f_atual, img, em_pe, cabeca, x_esq, lado_x, x_dir, pid, aviso)
+            _n_f = 0
+            while (_f_atual is not None and not _f_atual.get("ok") and _n_f < _v84.MAX_REFAZER_FOTO
+                   and time.time() - _t_func0 < _v84.ORCAMENTO_FOTO_SEG):
+                _n_f += 1
+                print(f"[qa-foto] reprovada (nota {_f_atual['nota']}): refazendo pose e cenario ({_n_f})")
+                _ETAPA["v"] = "refazer cenario/pose (revisao da foto)"
+                _sd2 = (int(seed) + 7919 * _n_f) % 999983
+                _rec2, _pid2 = _carregar_recorte_neutro()
+                _fun2, _av2 = _cenario_ronilson(estilo, tema, _sd2)
+                _fun2 = _clarear_cenario(_fun2)
+                _r2 = _integrar_v58(_fun2, _rec2, estilo, _sd2)
+                _f2 = _v84.revisar_foto(M, _r2[0], tema, estilo)
+                if _f2 is None:
+                    break
+                if _f2["nota"] > _melhor_f[0]["nota"]:
+                    _melhor_f = (_f2, _r2[0], _r2[1], _r2[2], _r2[3], _r2[4], _r2[5], _pid2, _av2)
+                _f_atual = _f2
+            (foto_rel, img, em_pe, cabeca, x_esq, lado_x, x_dir, pid, aviso) = _melhor_f
+        except Exception as _efq:
+            print(f"[qa-foto] revisao da foto ignorada: {type(_efq).__name__}: {_efq}")
         try:
             haar = M._detectar_rosto(img)
             if haar:
@@ -2582,7 +2608,8 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             print(f"[titulo] normalizacao ignorada: {e}")
         try:  # v76: portão de qualidade (se falhar, segue como antes)
             import qualidade_card as _qa
-            card = _qa.renderizar_titulo(M, img, tema, seed, dict(_kw, max_px_pessoa=max_px, escala_pessoa=escala))
+            card = _qa.renderizar_titulo(M, img, tema, seed, dict(_kw, max_px_pessoa=max_px, escala_pessoa=escala),
+                                         foto_rel=foto_rel)  # v84
         except Exception as _eqa:
             print(f"[qa] portao de qualidade indisponivel: {_eqa}")
             card, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
