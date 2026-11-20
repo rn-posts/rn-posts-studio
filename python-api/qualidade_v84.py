@@ -307,19 +307,26 @@ def precisa_escurecer(rel):
     return any(("Contraste" in p) or ("Fundo muito detalhado" in p) for p in (rel.get("problemas") or []))
 
 
-def escurecer_atras(base, info, forca=0.30):
+def _bloco(info, folga=0.0):
+    """Caixa (x0, y0, x1, y1) do bloco do título; `folga` a amplia (o texto muda de lugar quando a fonte cresce)."""
+    lns = info.get("linhas_pos") or []
+    if lns:
+        x0 = min(p["x0"] for l in lns for p in l["palavras"])
+        x1 = max(p["x1"] for l in lns for p in l["palavras"])
+        y0 = min(l["y"] for l in lns)
+        y1 = max(l["y"] + l["h"] for l in lns)
+    else:
+        x0, y0 = info.get("x", 0), info.get("y", 0)
+        x1, y1 = x0 + info.get("w", 0), info.get("y_fim", y0)
+    bw, bh = x1 - x0, y1 - y0
+    return x0, y0 - folga * bh * 0.5, x1 + folga * bw, y1 + folga * bh
+
+
+def escurecer_atras(base, info, forca=0.30, folga=0.0):
     """Correção de último recurso: escurece de forma suave (sem borda visível) a área do título, mais nas partes
     claras, como um ajuste de luz da cena. Devolve uma nova imagem; em qualquer falha devolve a base intacta."""
     try:
-        lns = info.get("linhas_pos") or []
-        if lns:
-            x0 = min(p["x0"] for l in lns for p in l["palavras"])
-            x1 = max(p["x1"] for l in lns for p in l["palavras"])
-            y0 = min(l["y"] for l in lns)
-            y1 = max(l["y"] + l["h"] for l in lns)
-        else:
-            x0, y0 = info.get("x", 0), info.get("y", 0)
-            x1, y1 = x0 + info.get("w", 0), info.get("y_fim", y0)
+        x0, y0, x1, y1 = _bloco(info, folga)
         arr = np.asarray(base.convert("RGB"), dtype=np.float32)
         h, w = arr.shape[:2]
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -335,6 +342,66 @@ def escurecer_atras(base, info, forca=0.30):
     except Exception as e:
         print(f"[qa84] escurecer ignorado: {type(e).__name__}: {e}")
         return base
+
+
+def corrigir_contraste(base, info, kw, permitir_escurecer=True):
+    """Contraste reprovado: em vez de só sortear outro estilo, MEDE o fundo atrás do bloco do título e escolhe a cor
+    do texto que mais contrasta (branco, marinho ou amarelo). Se nenhuma resolve, escurece suave a área e escolhe
+    de novo. Cores por palavra que não contrastam (ou iguais ao texto) perdem a cor e ficam só com o tamanho.
+    Devolve (kw_novo, base_nova); em qualquer falha devolve (kw, base)."""
+    try:
+        kw2 = dict(kw)
+        x0, y0, x1, y1 = _bloco(info, 0.30)
+        W_, H_ = base.size
+        x0, y0 = max(0, int(x0) - 6), max(0, int(y0) - 6)
+        x1, y1 = min(W_, int(x1) + 6), min(H_, int(y1) + 6)
+        if x1 - x0 < 40 or y1 - y0 < 40:
+            return kw, base
+        pal = _paleta()
+        cands = [(n, pal[n]) for n in ("branco", "amarelo", "marinho") if n in pal]   # ordem = preferência no empate
+
+        def _lum_regiao(img):
+            return _lum_rel(np.asarray(img.convert("RGB")))[y0:y1, x0:x1].reshape(-1)
+
+        def _melhor(img):
+            lum = _lum_regiao(img)
+            res = []
+            for i, (n, c) in enumerate(cands):
+                lc = float(_lum_rel(np.array(c, dtype=np.float32)))
+                res.append((round(float((_razao(lum, lc) < RAZAO_MIN_PEQUENA).mean()), 2), i, n, c))
+            return min(res)
+
+        fr, _, nome, cor = _melhor(base)
+        base_i = base
+        if fr > 0.15 and permitir_escurecer:
+            for forca in (0.35, 0.50):
+                b2 = escurecer_atras(base, info, forca, 0.30)
+                f2 = _melhor(b2)
+                if f2[0] < fr:
+                    fr, _, nome, cor = f2
+                    base_i = b2
+                if fr <= 0.15:
+                    break
+        kw2["cor_forcada"] = tuple(int(v) for v in cor)
+        lum_i = _lum_regiao(base_i)
+        pe = {}
+        for k, o in (kw2.get("palavras_estilo") or {}).items():
+            o2 = dict(o or {})
+            c = o2.get("cor")
+            if c is not None:
+                lc = float(_lum_rel(np.array(c, dtype=np.float32)))
+                longe = float(np.linalg.norm(np.array(c, dtype=np.float32) - np.array(cor, dtype=np.float32))) >= 90
+                if (not longe) or float((_razao(lum_i, lc) < RAZAO_MIN_PEQUENA).mean()) > FRAC_RUIM_PALAVRA:
+                    o2.pop("cor", None)
+            pe[k] = o2
+        if pe:
+            kw2["palavras_estilo"] = pe
+        print(f"[qa84] contraste: texto {nome} (fundo ruim {fr:.2f}), "
+              f"{'com' if base_i is not base else 'sem'} escurecimento")
+        return kw2, base_i
+    except Exception as e:
+        print(f"[qa84] corrigir contraste ignorado: {type(e).__name__}: {e}")
+        return kw, base
 
 
 # ───────────────────── 2) nota honesta (mescla com a revisão da foto) ─────────────────────

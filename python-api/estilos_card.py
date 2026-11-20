@@ -432,7 +432,7 @@ _LUGARES_V70 = {
     "parque": "a quiet tree-lined park path in soft early-morning light, tall trees with sun rays through the leaves, "
               "softly blurred green background, a paved or dirt path at the bottom of the frame",
     "jardim": "a lush garden terrace with potted plants, flowering shrubs and a low stone wall, warm morning sun, soft bokeh",
-    "biblioteca": "a warm library wall of tall wooden bookshelves full of books, a soft reading-lamp glow, wooden floor, "
+    "biblioteca": "a warm library wall of tall wooden bookshelves full of books, soft diffuse warm light (no visible lamp or bulb), wooden floor, "
                   "softly out of focus, intellectual and welcoming",
     "cafe": "a cozy cafe terrace or cafe interior softly out of focus: warm string lights, wooden tables far in the "
             "background, plants, golden bokeh",
@@ -445,8 +445,8 @@ _LUGARES_V70 = {
     "patio": "a calm university or clinic courtyard with trees, a light stone walkway and soft daylight",
     "estufa": "a bright botanical greenhouse with lush tropical plants and glass-roof diffused light",
     "galeria": "a minimalist art gallery wall with large soft abstract paintings, polished floor, gentle spotlights",
-    "consultorio": "a professional psychologist's study: wall of bookshelves with books and a framed diploma, warm lamp "
-                   "light, wooden floor, softly out of focus",
+    "consultorio": "a professional psychologist's study: wall of bookshelves with books and a framed diploma, soft diffuse warm "
+                   "light (no visible lamp or bulb), wooden floor, softly out of focus",
     "outono": "an alley of trees with golden autumn leaves, soft low sun, leaves on the ground",
     "escadaria": "an outdoor stone staircase with greenery on both sides and warm morning light",
 }
@@ -1114,10 +1114,11 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
 _CLINICO_V85 = (
     " PROFESSIONAL CLINIC LOOK (overrides any dramatic or cinematic wording above): the place must look like a sober, "
     "credible, welcoming environment for a psychologist's practice (consulting room, study, library, gallery, calm "
-    "interior, or a calm urban or garden edge), never a wild landscape; soft, even, diffuse daylight or warm lamp "
+    "interior, or a calm urban or garden edge), never a wild landscape; soft, even, diffuse daylight or soft warm "
     "light coming gently from the left or front; absolutely NO god rays, light shafts, sunbeams, lens flare, "
     "volumetric haze or strong backlight; no dense foliage; natural neutral colors with no strong green, orange or "
-    "blue color cast over the scene; the LEFT 45% of the frame is a calm, plain, softly blurred area."
+    "blue color cast over the scene; no visible lamp, light bulb, bright window or other bright hotspot anywhere in the "
+    "frame; the LEFT 45% of the frame is a calm, plain, softly blurred area."
 )
 
 

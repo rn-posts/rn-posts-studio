@@ -34,7 +34,7 @@ MAX_TENTATIVAS = 3
 ORCAMENTO_SEG = 40.0          # tempo máximo (contado desde o início do portão) para tentar de novo
 NOTA_OK = 72                  # abaixo disso o card é considerado "com problema"
 MAX_REGISTROS = 8             # quantos cards ficam disponíveis para ajuste
-SCRIM_CORRETIVO = True        # v85: na 3ª tentativa, se o que reprova é o fundo, escurece suave a área do título (False desliga)
+SCRIM_CORRETIVO = True        # v86: se nenhuma cor de texto contrasta com o fundo, escurece suave a área do título (False desliga só isso)
 
 PALETA_AJUSTE = {             # mesmas cores da identidade (main.py)
     "branco":  (244, 246, 248),
@@ -274,9 +274,9 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
             try:
                 import qualidade_v84 as _v84
                 kw_i, sd = _v84.proxima_tentativa(base, kw_usado, info, rel, sd_prev, sd)
-                if SCRIM_CORRETIVO and i >= 2 and _v84.precisa_escurecer(rel):  # v85: o fundo é o problema; trocar de estilo não basta
-                    base_i = _v84.escurecer_atras(base, info, 0.30 + 0.06 * (i - 2))
-                    av_i = AvaliadorCard(base_i)
+                if _v84.precisa_escurecer(rel):  # v86: o fundo é o problema: mede o fundo, escolhe a cor do texto que contrasta e, se preciso, escurece suave
+                    kw_i, base_i = _v84.corrigir_contraste(base, info, kw_i, SCRIM_CORRETIVO)
+                    av_i = AvaliadorCard(base_i) if base_i is not base else av
             except Exception as _e84:
                 print(f"[qa] v84 proxima tentativa ignorada: {type(_e84).__name__}: {_e84}")
         try:
