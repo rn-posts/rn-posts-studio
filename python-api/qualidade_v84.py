@@ -31,7 +31,7 @@ NOTA_OK = 72                    # mesmo corte do qualidade_card.py
 # ── título ─────────────────────────────────────────────────────────────────────
 TAM_MIN_TITULO = 66             # px da fonte principal (tam_ag) abaixo do qual o título é "pequeno para o feed"
 TAM_ALVO_TITULO = 72            # tamanho que a nova tentativa procura
-ALT_MIN_SUB = 38                # altura de linha (medida "Ag") mínima de uma linha secundária
+ALT_MIN_SUB = 44                # altura de linha (medida "Ag") mínima de uma linha secundária
 HERO_ESCALA = 1.25              # quanto a palavra-chave cresce quando o título não tem destaque
 RAZAO_MIN_PEQUENA = 3.2         # contraste WCAG mínimo (palavra em linha pequena)
 RAZAO_MIN_GRANDE = 2.4          # contraste WCAG mínimo (palavra em linha grande)
@@ -39,8 +39,8 @@ FRAC_RUIM_PALAVRA = 0.35        # fração do fundo atrás da palavra abaixo do 
 ESCALA_MAX = 1.6                # mesmo teto do ajuste manual
 
 # ── foto e cenário ─────────────────────────────────────────────────────────────
-MAX_REFAZER_FOTO = 1            # quantas vezes refazer cenário/pose se a foto reprovar
-ORCAMENTO_FOTO_SEG = 38.0       # só começa um refazer se a geração ainda estiver abaixo disto (timeout do Render = 120s)
+MAX_REFAZER_FOTO = 2            # quantas vezes refazer cenário/pose se a foto reprovar (limitado pelo orçamento de tempo)
+ORCAMENTO_FOTO_SEG = 45.0       # só começa um refazer se a geração ainda estiver abaixo disto (timeout do Render = 120s)
 NOTA_FOTO_OK = 7                # cada critério precisa de 7/10 ou mais
 FOTO_MODELOS = ("gemini-2.5-flash", "gemini-3.5-flash")
 FOTO_TIMEOUT = 14
@@ -195,14 +195,18 @@ def palavra_destaque(base, info):
         arr = np.asarray(base.convert("RGB"))
         lum = _lum_rel(arr)
         caixa, cor_atual = None, None
+        xs0, xs1, ys0, ys1 = [], [], [], []
         for l in (info.get("linhas_pos") or []):
             for p in l["palavras"]:
+                xs0.append(int(p["x0"]))
+                xs1.append(int(p["x1"]))
+                ys0.append(int(l["y"]))
+                ys1.append(int(l["y"] + l["h"]))
                 if p["k"] == alvo["id"]:
-                    caixa = (int(p["x0"]), int(l["y"]), int(p["x1"]), int(l["y"] + l["h"]))
                     cor_atual = p["cor"]
-                    break
-            if caixa:
-                break
+        if xs0:   # v85: o bloco inteiro, com folga (a palavra muda de lugar quando a fonte cresce)
+            bw, bh = max(xs1) - min(xs0), max(ys1) - min(ys0)
+            caixa = (min(xs0), min(ys0) - int(bh * 0.35), max(xs1) + int(bw * 0.15), max(ys1) + int(bh * 0.55))
         melhor = None
         for nome, cor in _paleta().items():
             if cor_atual is not None and float(np.linalg.norm(
@@ -257,6 +261,80 @@ def proxima_tentativa(base, kw_usado, info, rel, sd_atual, sd_novo):
         print(f"[qa84] próxima tentativa: escala_fonte={kw2.get('escala_fonte')} "
               f"destaque={'sim' if kw2.get('palavras_estilo') else 'não'} seed_mantida={sd == sd_atual}")
     return kw2, sd
+
+
+# ───────────────────── 1b) correções que o portão faz sozinho (v85) ─────────────────────
+LUGARES_CLINICOS = ("consultorio", "biblioteca", "galeria", "patio")
+
+_PEDIDO_FOTO = {
+    "coerencia": "The place must clearly be a sober professional environment for a psychologist (consulting room, "
+                 "study, library, gallery or calm clinic courtyard), never a wild landscape.",
+    "espaco_texto": "The LEFT 45% of the frame is plain and calm (wall, soft blur or empty space) with no bright "
+                    "light shafts, foliage or objects.",
+    "cor_roupa_pele": "Neutral, color-balanced light with no strong green, blue or orange color cast anywhere in the "
+                      "scene (warm wood, cream and soft white tones), so a white shirt and skin keep their natural color.",
+    "integracao": "Soft, even light from the front-left at standing eye level, a clear floor plane and shallow depth "
+                  "of field, so a standing person fits the scene naturally.",
+    "profissionalismo": "Sober, calm, premium and credible psychology-office look; nothing dramatic, spooky, kitschy "
+                        "or like a tourist landscape.",
+}
+
+
+def lugar_clinico(n, evitar=None):
+    """Lugar de aparência clínica/profissional para refazer o cenário (rodízio, evitando o último usado)."""
+    lista = [k for k in LUGARES_CLINICOS if k != evitar] or list(LUGARES_CLINICOS)
+    return lista[(int(n) - 1) % len(lista)]
+
+
+def instrucoes_da_revisao(foto):
+    """Transforma o que a revisão da foto reprovou em instruções para o próximo cenário."""
+    partes = [_PEDIDO_FOTO["coerencia"], _PEDIDO_FOTO["espaco_texto"]]
+    itens = (foto or {}).get("criterios") or {}
+    for k, v in itens.items():
+        try:
+            if float(v) < NOTA_FOTO_OK and k in _PEDIDO_FOTO and _PEDIDO_FOTO[k] not in partes:
+                partes.append(_PEDIDO_FOTO[k])
+        except (TypeError, ValueError):
+            pass
+    notas = " ".join(((foto or {}).get("problemas") or [])[:3]).strip()
+    if notas:
+        partes.append(f"Reviewer notes about the previous image, fix them: {notas}")
+    return " ".join(partes)
+
+
+def precisa_escurecer(rel):
+    """True se o que reprovou o título foi o fundo (contraste ou detalhe), o caso em que só trocar de estilo não basta."""
+    return any(("Contraste" in p) or ("Fundo muito detalhado" in p) for p in (rel.get("problemas") or []))
+
+
+def escurecer_atras(base, info, forca=0.30):
+    """Correção de último recurso: escurece de forma suave (sem borda visível) a área do título, mais nas partes
+    claras, como um ajuste de luz da cena. Devolve uma nova imagem; em qualquer falha devolve a base intacta."""
+    try:
+        lns = info.get("linhas_pos") or []
+        if lns:
+            x0 = min(p["x0"] for l in lns for p in l["palavras"])
+            x1 = max(p["x1"] for l in lns for p in l["palavras"])
+            y0 = min(l["y"] for l in lns)
+            y1 = max(l["y"] + l["h"] for l in lns)
+        else:
+            x0, y0 = info.get("x", 0), info.get("y", 0)
+            x1, y1 = x0 + info.get("w", 0), info.get("y_fim", y0)
+        arr = np.asarray(base.convert("RGB"), dtype=np.float32)
+        h, w = arr.shape[:2]
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        dx = np.maximum(np.maximum(x0 - 20 - xx, xx - (x1 + 20)), 0)
+        dy = np.maximum(np.maximum(y0 - 20 - yy, yy - (y1 + 20)), 0)
+        m = np.clip(1.0 - np.sqrt(dx * dx + dy * dy) / 140.0, 0, 1)
+        m = m * m * (3 - 2 * m)                                   # transição suave
+        lum01 = np.clip(arr.mean(axis=2) / 255.0, 0, 1)
+        fator = 1.0 - float(forca) * m * (0.55 + 0.45 * lum01)    # mexe mais onde está claro
+        out = np.clip(arr * fator[..., None], 0, 255).astype(np.uint8)
+        print(f"[qa84] escurecendo atras do titulo (forca {forca:.2f})")
+        return Image.fromarray(out)
+    except Exception as e:
+        print(f"[qa84] escurecer ignorado: {type(e).__name__}: {e}")
+        return base
 
 
 # ───────────────────── 2) nota honesta (mescla com a revisão da foto) ─────────────────────
@@ -316,7 +394,8 @@ def revisar_foto(M, img, tema="", estilo=""):
             "in a dress shirt in a rough forest trail, jungle, beach or ruins looks incoherent; score low when "
             "clothing, pose and place do not belong together or the place looks like a random stock landscape.\n"
             "3. integracao: he looks physically present in the scene (scale, light direction, soft clean edges "
-            "without halo or fringe, feet grounded) instead of pasted on top.\n"
+            "without halo or fringe, feet grounded) instead of pasted on top. If he leans on or sits on a chair or "
+            "furniture that came with the cut-out and does not belong to the scene, score low.\n"
             "4. profissionalismo: overall credible, calm, welcoming and sober for a psychologist's feed; not "
             "dramatic, kitschy, spooky or advertising-like.\n"
             "5. espaco_texto: the left ~45% of the frame is calm and uncluttered (no bright light rays, strong "

@@ -453,12 +453,28 @@ _LUGARES_V70 = {
 _fila_lugares_v70 = []
 
 
+import threading as _th85
+
+# v85: peso dos lugares no rodízio do Com Ronilson. Ambientes de consultório, estudo e galeria vêm primeiro; natureza só de vez
+# em quando (trilha, campo, estufa, outono e escadaria ficam fora do rodízio; continuam definidos acima, só sem peso)
+_PESOS_LUGARES_V85 = {"consultorio": 3, "biblioteca": 2, "galeria": 2, "patio": 1, "cafe": 1, "varanda": 1,
+                      "rua": 1, "parque": 1, "jardim": 1}
+_ctx_v85 = _th85.local()   # lugar e instruções forçados ao refazer a foto (por thread)
+
+
 def _proximo_lugar_v70():
     global _fila_lugares_v70
+    forcado = getattr(_ctx_v85, "lugar", None)  # v85: a revisão da foto pede um lugar clínico
+    if forcado in _LUGARES_V70:
+        _ctx_v85.ultimo = forcado
+        print(f"[cenario] lugar forcado pela revisao: {forcado}")
+        return _LUGARES_V70[forcado]
     if not _fila_lugares_v70:
-        _fila_lugares_v70 = list(_LUGARES_V70.keys())
+        _fila_lugares_v70 = [k for k, n in _PESOS_LUGARES_V85.items() if k in _LUGARES_V70 for _ in range(int(n))] \
+            or list(_LUGARES_V70.keys())
         random.shuffle(_fila_lugares_v70)
     chave = _fila_lugares_v70.pop()
+    _ctx_v85.ultimo = chave
     print(f"[cenario] lugar da vez: {chave}")
     return _LUGARES_V70[chave]
 
@@ -1093,9 +1109,27 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
     )
 
 
+# v85: o Cinematic/Showcase/Automático pedem "luz dramática e volumétrica", que vira raios de luz e floresta; no Com Ronilson
+# o cenário precisa parecer um ambiente profissional de psicologia, com luz suave e a esquerda calma para o título
+_CLINICO_V85 = (
+    " PROFESSIONAL CLINIC LOOK (overrides any dramatic or cinematic wording above): the place must look like a sober, "
+    "credible, welcoming environment for a psychologist's practice (consulting room, study, library, gallery, calm "
+    "interior, or a calm urban or garden edge), never a wild landscape; soft, even, diffuse daylight or warm lamp "
+    "light coming gently from the left or front; absolutely NO god rays, light shafts, sunbeams, lens flare, "
+    "volumetric haze or strong backlight; no dense foliage; natural neutral colors with no strong green, orange or "
+    "blue color cast over the scene; the LEFT 45% of the frame is a calm, plain, softly blurred area."
+)
+
+
+def _texto_clinico_v85(estilo):
+    extra = getattr(_ctx_v85, "extra", "") or ""
+    base = _CLINICO_V85 if estilo in ("auto", "cinematic", "showcase") else ""
+    return base + ((" REVIEWER FIXES (apply all of them): " + extra) if extra else "")
+
+
 def _cenario_ronilson(estilo, tema, seed):
     M = _m()
-    img, motivo = _gerar_imagem_ia(_prompt_cenario_ronilson(estilo, tema, seed))
+    img, motivo = _gerar_imagem_ia(_prompt_cenario_ronilson(estilo, tema, seed) + _texto_clinico_v85(estilo))  # v85
     aviso = None
     if img is None:
         print(f"[ronilson] cenario IA falhou ({motivo}); gradiente da paleta")
@@ -2553,7 +2587,13 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
                 _ETAPA["v"] = "refazer cenario/pose (revisao da foto)"
                 _sd2 = (int(seed) + 7919 * _n_f) % 999983
                 _rec2, _pid2 = _carregar_recorte_neutro()
-                _fun2, _av2 = _cenario_ronilson(estilo, tema, _sd2)
+                try:  # v85: a revisão orienta o novo cenário (lugar clínico + o que ela reprovou)
+                    _ctx_v85.lugar = _v84.lugar_clinico(_n_f, getattr(_ctx_v85, "ultimo", None))
+                    _ctx_v85.extra = _v84.instrucoes_da_revisao(_f_atual)
+                    _fun2, _av2 = _cenario_ronilson(estilo, tema, _sd2)
+                finally:
+                    _ctx_v85.lugar = None
+                    _ctx_v85.extra = ""
                 _fun2 = _clarear_cenario(_fun2)
                 _r2 = _integrar_v58(_fun2, _rec2, estilo, _sd2)
                 _f2 = _v84.revisar_foto(M, _r2[0], tema, estilo)

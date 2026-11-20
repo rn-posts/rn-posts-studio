@@ -34,6 +34,7 @@ MAX_TENTATIVAS = 3
 ORCAMENTO_SEG = 40.0          # tempo máximo (contado desde o início do portão) para tentar de novo
 NOTA_OK = 72                  # abaixo disso o card é considerado "com problema"
 MAX_REGISTROS = 8             # quantos cards ficam disponíveis para ajuste
+SCRIM_CORRETIVO = True        # v85: na 3ª tentativa, se o que reprova é o fundo, escurece suave a área do título (False desliga)
 
 PALETA_AJUSTE = {             # mesmas cores da identidade (main.py)
     "branco":  (244, 246, 248),
@@ -265,6 +266,7 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
     n = 0
     kw_i = kw
     sd = seed
+    base_i, av_i, melhor_base = base, av, base  # v85: base usada em cada tentativa (pode ganhar um ajuste de luz)
     for i in range(max(1, tentativas)):
         sd_prev = sd
         sd = seed if i == 0 else (int(seed) + i * 7919) % 999983
@@ -272,20 +274,24 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
             try:
                 import qualidade_v84 as _v84
                 kw_i, sd = _v84.proxima_tentativa(base, kw_usado, info, rel, sd_prev, sd)
+                if SCRIM_CORRETIVO and i >= 2 and _v84.precisa_escurecer(rel):  # v85: o fundo é o problema; trocar de estilo não basta
+                    base_i = _v84.escurecer_atras(base, info, 0.30 + 0.06 * (i - 2))
+                    av_i = AvaliadorCard(base_i)
             except Exception as _e84:
                 print(f"[qa] v84 proxima tentativa ignorada: {type(_e84).__name__}: {_e84}")
         try:
-            card, kw_usado, info = _render(M, base, tema, sd, kw_i)
+            card, kw_usado, info = _render(M, base_i, tema, sd, kw_i)
         except Exception as _e:
             if melhor is None:
                 raise
             print(f"[qa] tentativa {i + 1} falhou: {type(_e).__name__}: {_e}")
             break
         n += 1
-        rel = av.avaliar(card, info, kw_usado)
+        rel = av_i.avaliar(card, info, kw_usado)
         print(f"[qa] tentativa {n}: nota={rel['nota']} ok={rel['ok']} problemas={len(rel['problemas'])} t={time.time() - inicio:.1f}s")
         if melhor is None or (rel["nota"] or 0) > (melhor[1]["nota"] or 0):
             melhor = (card, rel, sd, kw_usado, info)
+            melhor_base = base_i
         if rel["ok"] or rel["nota"] is None:
             break
         if time.time() - inicio > ORCAMENTO_SEG:
@@ -302,7 +308,7 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
     card.qa_relatorio = rel
     # v84: o registro (base do "Novo texto" e dos ajustes) não congela estratégia/forma da tentativa que corrigiu o tamanho
     kw_reg = {k: v for k, v in kw_usado.items() if k not in ("estrategia_fixa", "forma_fixa")}
-    card.qa_registro = {"base": base, "kw": kw_reg, "tema": tema, "seed": sd, "info": info, "foto_rel": foto_rel}
+    card.qa_registro = {"base": melhor_base, "kw": kw_reg, "tema": tema, "seed": sd, "info": info, "foto_rel": foto_rel}
     return card
 
 
