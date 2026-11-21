@@ -2006,7 +2006,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     cabeca_bbox=None, max_px_pessoa=None, escala_pessoa=0.72,
                     respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None,
                     escala_fonte=1.0, cor_forcada=None, y_forcado=None,
-                    estrategia_fixa=None, forma_fixa=None, palavras_estilo=None, largura_px=None):  # v76: ajuste manual (padrões não mudam nada)
+                    estrategia_fixa=None, forma_fixa=None, palavras_estilo=None, largura_px=None,
+                    altura_min_sub=None):  # v76: ajuste manual (padrões não mudam nada); v87: altura_min_sub = piso da linha secundária
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
     _TL.info = None  # v76
@@ -2206,6 +2207,16 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     # agilera_est é 20% maior — garante destaque claro sobre normal
     # malgun é 52% de tam_ag — hierarquia clara
     tam_ml = max(36, int(tam_ag * 0.52))
+    _ml_piso = 0
+    if altura_min_sub:  # v87: piso da linha secundária (MALGUN), medido igual ao portão de qualidade (altura de "Ag")
+        try:
+            _t_ml = tam_ml
+            while _t_ml < 96 and _altura_linha(f_bold(_t_ml)) < float(altura_min_sub):
+                _t_ml += 2
+            _ml_piso = _t_ml
+            tam_ml = max(tam_ml, _t_ml)
+        except Exception as _eml:
+            print(f"[titulo] piso da linha secundaria ignorado: {_eml}")
     # O bloco "fundo" (-palavra) usa o mesmo tamanho-base do título. A fonte
     # concreta é atribuída abaixo, depois do modo tipográfico, para que o
     # destaque não fique maior por trocar AGILERA por MALGUN bold.
@@ -2374,7 +2385,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             _lns_ml, _fb_blk = _quebrar(txt, fb, MAX_PX), fb
             if len(_lns_ml) > 1 and len(txt) <= 40:  # v75: uma linha do usuario = uma linha no card (reduz antes de quebrar)
                 for _kf in (0.92, 0.85, 0.78, 0.72, 0.66, 0.60):
-                    _t = max(24, int(tam_ml * _kf))
+                    _t = max(24, _ml_piso, int(tam_ml * _kf))  # v87: nunca abaixo do piso da linha secundária
                     _f = (f_bold(_t) if estrategia_leg == "peso_fonte"
                           else [f_bold, f_corpo, f_light][(seed // 6) % 3](_t))
                     _l = _quebrar(txt, _f, MAX_PX)

@@ -89,6 +89,21 @@ def _paleta():
 
 
 # ───────────────────── 1) tamanho, destaque, contraste por palavra ─────────────────────
+def _preenchimento_da_linha(grupos, y):
+    """v87: cor do preenchimento ("-palavra", pílula/retângulo) se a linha em `y` pertence a um grupo de fundo simples;
+    senão None. O texto dessas linhas se lê contra o preenchimento, não contra a foto que fica atrás dele."""
+    try:
+        alvo = None
+        for g in grupos:
+            if float(g["y"]) <= float(y) + 6:
+                alvo = g
+        if alvo is not None and str(alvo.get("est")) == "fundo" and len(alvo.get("cores") or []) == 1:
+            return tuple(int(v) for v in alvo["cores"][0])
+    except Exception:
+        pass
+    return None
+
+
 def complementar(av, res, info, kw=None):
     """Recebe o resultado do portão v76/v83 (`res`) e devolve um novo dict com critérios separados.
     `av` é o AvaliadorCard (fundo, luminância); `info` é a geometria do título; `kw` são os parâmetros do render."""
@@ -114,6 +129,13 @@ def complementar(av, res, info, kw=None):
                     x0 = max(0, int(p["x0"]) - 4)
                     x1 = min(av.w, int(p["x1"]) + 4)
                     if x1 - x0 < 12:
+                        continue
+                    _fill = _preenchimento_da_linha(grupos, l["y"])  # v87
+                    if _fill is not None:   # palavra sobre fundo preenchido: lê-se contra o preenchimento, não contra a foto
+                        _lf = float(_lum_rel(np.array(_fill, dtype=np.float32)))
+                        _lt = float(_lum_rel(np.array(p["cor"], dtype=np.float32)))
+                        if float(_razao(np.float32(_lf), np.float32(_lt))) < RAZAO_MIN_PEQUENA:
+                            pior.append((1.0, p.get("t") or p.get("k") or "?"))
                         continue
                     lc = float(_lum_rel(np.array(p["cor"], dtype=np.float32)))
                     reg = lum[y0:y1, x0:x1].reshape(-1)
@@ -141,7 +163,7 @@ def complementar(av, res, info, kw=None):
     if alts and min(alts) < ALT_MIN_SUB:
         nota_tam -= 12.0
         problemas.append(f"Há uma linha secundária pequena demais para ler no celular (menos de {ALT_MIN_SUB}px de altura).")
-        sug.setdefault("escala", 1.2)
+        sug["sub_min"] = True   # v87: o motor passa a garantir o tamanho mínimo só dessa linha (antes inflava o título todo e não resolvia)
     detalhe["tam_ag"] = tam
     detalhe["alturas_linhas"] = alts
 
@@ -244,6 +266,12 @@ def proxima_tentativa(base, kw_usado, info, rel, sd_atual, sd_novo):
         nova = float(min(ESCALA_MAX, atual * float(sug["escala"])))
         if nova > atual + 0.01:
             kw2["escala_fonte"] = nova
+            mudou = True
+    if sug.get("sub_min"):  # v87: piso da linha secundária (sobe a cada tentativa se ainda ficar abaixo do mínimo)
+        _cur = float(kw2.get("altura_min_sub") or 0)
+        _novo = float(ALT_MIN_SUB + 4) if _cur <= 0 else min(72.0, _cur * 1.12)
+        if _novo > _cur + 0.5:
+            kw2["altura_min_sub"] = int(round(_novo))
             mudou = True
     if sug.get("destaque") and info:
         pe = palavra_destaque(base, info)
@@ -396,6 +424,40 @@ def corrigir_contraste(base, info, kw, permitir_escurecer=True):
             pe[k] = o2
         if pe:
             kw2["palavras_estilo"] = pe
+        try:  # v87: cor POR LINHA — a cor única do bloco pode falhar numa linha que cai sobre outra parte da foto
+            _lum_full = _lum_rel(np.asarray(base_i.convert("RGB")))
+            _pe2 = dict(kw2.get("palavras_estilo") or {})
+            _n_lin = 0
+            for _l in (info.get("linhas_pos") or []):
+                if _preenchimento_da_linha(info.get("grupos") or [], _l["y"]) is not None:
+                    continue   # linha sobre fundo preenchido: o contraste é com o próprio preenchimento
+                _ya, _yb = max(0, int(_l["y"]) - 4), min(H_, int(_l["y"] + _l["h"]) + 4)
+                _pl = _l.get("palavras") or []
+                if _yb - _ya < 8 or not _pl:
+                    continue
+                _xa = max(0, int(min(p["x0"] for p in _pl)) - 6)
+                _xb = min(W_, int(max(p["x1"] for p in _pl)) + 6)
+                if _xb - _xa < 20:
+                    continue
+                _reg = _lum_full[_ya:_yb, _xa:_xb].reshape(-1)
+
+                def _fr(_c, _reg=_reg):
+                    return float((_razao(_reg, float(_lum_rel(np.array(_c, dtype=np.float32)))) < RAZAO_MIN_PEQUENA).mean())
+                _atual = _fr(cor)
+                if _atual <= FRAC_RUIM_PALAVRA:
+                    continue
+                _melhor_l = min((_fr(_c), _i, _n, _c) for _i, (_n, _c) in enumerate(cands))
+                if _melhor_l[0] + 0.05 < _atual:
+                    for _p in _pl:
+                        _o = dict(_pe2.get(_p["k"]) or {})
+                        _o["cor"] = tuple(int(v) for v in _melhor_l[3])
+                        _pe2[_p["k"]] = _o
+                    _n_lin += 1
+            if _n_lin:
+                kw2["palavras_estilo"] = _pe2
+                print(f"[qa84] contraste por linha: {_n_lin} linha(s) com cor propria")
+        except Exception as _e87:
+            print(f"[qa84] cor por linha ignorada: {type(_e87).__name__}: {_e87}")
         print(f"[qa84] contraste: texto {nome} (fundo ruim {fr:.2f}), "
               f"{'com' if base_i is not base else 'sem'} escurecimento")
         return kw2, base_i
@@ -514,3 +576,69 @@ def revisar_foto(M, img, tema="", estilo=""):
     except Exception as e:
         print(f"[qa-foto] revisão ignorada: {type(e).__name__}: {e}")
         return None
+
+
+# ───────────────────── 4) correção local da zona do título (v87) ─────────────────────
+def acalmar_zona_titulo(img, lado_x="dir", x_esq=None, x_dir=None):
+    """v87: a revisão reprovou o espaço do título (luz forte, sombra dura, estante/objetos). Em vez de gastar outra geração de IA,
+    acalma só a zona oposta à pessoa: desfoque de profundidade de campo, menos contraste local e luzes estouradas contidas,
+    com transição suave (sem borda, sem retângulo). A pessoa não é tocada. Em qualquer falha devolve a mesma imagem."""
+    try:
+        import cv2
+        arr = np.asarray(img.convert("RGB"))
+        h, w = arr.shape[:2]
+        if lado_x == "esq":
+            xa, xb = int(min(w, (x_dir if x_dir is not None else int(w * 0.5)) + 24)), w
+        else:
+            xa, xb = 0, int(max(0, (x_esq if x_esq is not None else int(w * 0.5)) - 24))
+        if xb - xa < 120:
+            return img
+        reg = arr[:, xa:xb].astype(np.float32)
+        lw = xb - xa
+        mx = np.ones(lw, np.float32)
+        fe = min(110, lw // 2)
+        if lado_x == "esq":
+            mx[:fe] = np.linspace(0.0, 1.0, fe, dtype=np.float32)      # lado voltado para a pessoa: transição suave
+        else:
+            mx[lw - fe:] = np.linspace(1.0, 0.0, fe, dtype=np.float32)
+        my = np.ones(h, np.float32)
+        y_fade = int(h * 0.80)
+        my[y_fade:] = np.linspace(1.0, 0.0, h - y_fade, dtype=np.float32)   # o chão perto dos pés fica como está
+        m = (my[:, None] * mx[None, :])[..., None]
+        borrada = cv2.GaussianBlur(reg, (0, 0), 9)
+        media = borrada.reshape(-1, 3).mean(axis=0)
+        calma = media + (borrada - media) * 0.55                    # menos contraste local (sombra dura, faixa de luz)
+        lum = calma.mean(axis=2, keepdims=True)
+        exc = np.clip(lum - (float(media.mean()) + 28.0), 0, None)
+        calma = calma - exc * 0.6                                   # contenção de luzes estouradas
+        calma = calma + np.random.RandomState(87).normal(0, 2.0, (h, lw, 1)).astype(np.float32)   # grão igual ao do resto
+        out = arr.copy()
+        out[:, xa:xb] = np.clip(reg * (1 - m) + calma * m, 0, 255).astype(np.uint8)
+        print(f"[qa-foto] zona do titulo acalmada (x {xa}-{xb})")
+        return Image.fromarray(out)
+    except Exception as e:
+        print(f"[qa-foto] acalmar zona do titulo ignorado: {type(e).__name__}: {e}")
+        return img
+
+
+def corrigir_foto_local(M, img, foto, tema, estilo, lado_x, x_esq, x_dir):
+    """v87: se a revisão reprovou o espaço do título, aplica a correção local e revisa de novo (1 chamada). Só mantém a correção
+    se a nota não piorar. Retorna (imagem, relatório_da_foto, corrigiu)."""
+    try:
+        if not foto or foto.get("ok"):
+            return img, foto, False
+        esp = (foto.get("criterios") or {}).get("espaco_texto")
+        if esp is None or float(esp) >= NOTA_FOTO_OK:
+            return img, foto, False
+        novo = acalmar_zona_titulo(img, lado_x, x_esq, x_dir)
+        if novo is img:
+            return img, foto, False
+        nova = revisar_foto(M, novo, tema, estilo)
+        if nova is not None and int(nova["nota"]) >= int(foto["nota"]):
+            print(f"[qa-foto] correcao local mantida: nota {foto['nota']} -> {nova['nota']}")
+            return novo, nova, True
+        print("[qa-foto] correcao local descartada (nao melhorou ou sem nova revisao)")
+        return img, foto, False
+    except Exception as e:
+        print(f"[qa-foto] correcao local ignorada: {type(e).__name__}: {e}")
+        return img, foto, False

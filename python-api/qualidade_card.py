@@ -242,6 +242,7 @@ def _info_motor(M):
 def _render(M, base, tema, seed, kw):
     """Uma chamada ao motor de título. cor_dest/cor_fundo_txt acompanham a seed quando o chamador os passou."""
     kw2 = dict(kw)
+    kw2.setdefault("altura_min_sub", 46)  # v87: linha secundária nunca abaixo do mínimo de leitura no celular (já na 1ª tentativa)
     if kw2.get("cor_dest") is not None:
         kw2["cor_dest"], kw2["cor_fundo_txt"] = M._escolher_cor_destaque(seed)
     try:

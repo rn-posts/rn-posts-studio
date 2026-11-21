@@ -1616,6 +1616,19 @@ def _integrar_v58(fundo, recorte, estilo, seed):
         sub = sub * 0.93 + cv2.GaussianBlur(bg, (0, 0), 20) * 0.07  # v74: luz de preenchimento do ambiente
     except Exception as e:
         print(f"[ronilson] cor do ambiente ignorada: {e}")
+    try:  # v87: a roupa não pode ficar "tingida" pelo ambiente: o desvio de matiz fica limitado ao da foto original (rosto/mãos são restaurados abaixo)
+        _yc, _xc = np.where(solido > 0)
+        if len(_yc):
+            _ya, _yb, _xa, _xb = int(_yc.min()), int(_yc.max()) + 1, int(_xc.min()), int(_xc.max()) + 1
+            _s87, _o87 = sub[_ya:_yb, _xa:_xb], orig[_ya:_yb, _xa:_xb]
+            _ln87 = np.maximum(_s87.mean(axis=2, keepdims=True), 1.0)
+            _lo87 = np.maximum(_o87.mean(axis=2, keepdims=True), 1.0)
+            _d87 = _s87 / _ln87 - _o87 / _lo87
+            _k87 = np.minimum(1.0, 0.045 / np.maximum(np.abs(_d87).max(axis=2, keepdims=True), 1e-4))
+            sub[_ya:_yb, _xa:_xb] = (_o87 / _lo87 + _d87 * _k87) * _ln87
+            del _s87, _o87, _ln87, _lo87, _d87, _k87
+    except Exception as e:
+        print(f"[ronilson] limite de tingimento da roupa ignorado: {e}")
 
     # 2) luz direcional suave
     X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
@@ -2579,6 +2592,10 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         try:  # v84: revisão da foto/cenário (visão do Gemini). Se reprovar, refaz pose + cenário (no máx. 1x e só se houver tempo)
             import qualidade_v84 as _v84
             _f_atual = _v84.revisar_foto(M, img, tema, estilo)
+            try:  # v87: espaço do título reprovado -> corrige localmente (rápido) antes de gastar outra geração de cenário
+                img, _f_atual, _ = _v84.corrigir_foto_local(M, img, _f_atual, tema, estilo, lado_x, x_esq, x_dir)
+            except Exception as _e87a:
+                print(f"[qa-foto] correcao local ignorada: {type(_e87a).__name__}: {_e87a}")
             _melhor_f = (_f_atual, img, em_pe, cabeca, x_esq, lado_x, x_dir, pid, aviso)
             _n_f = 0
             while (_f_atual is not None and not _f_atual.get("ok") and _n_f < _v84.MAX_REFAZER_FOTO
@@ -2600,6 +2617,13 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
                 _f2 = _v84.revisar_foto(M, _r2[0], tema, estilo)
                 if _f2 is None:
                     break
+                try:  # v87: mesma correção local do espaço do título no cenário refeito
+                    _img2c, _f2c, _ok2c = _v84.corrigir_foto_local(M, _r2[0], _f2, tema, estilo, _r2[4], _r2[3], _r2[5])
+                    if _ok2c:
+                        _r2 = (_img2c,) + tuple(_r2[1:])
+                        _f2 = _f2c
+                except Exception as _e87b:
+                    print(f"[qa-foto] correcao local ignorada: {type(_e87b).__name__}: {_e87b}")
                 if _f2["nota"] > _melhor_f[0]["nota"]:
                     _melhor_f = (_f2, _r2[0], _r2[1], _r2[2], _r2[3], _r2[4], _r2[5], _pid2, _av2)
                 _f_atual = _f2
