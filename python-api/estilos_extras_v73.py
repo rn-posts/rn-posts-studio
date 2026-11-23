@@ -43,8 +43,8 @@ EXTRAS_FAMILIAS = {
     },
     "portal": {
         "aberturas_de_luz": {"g": "recomeco novo_dia vazio tristeza", "s": (
-            "a gap in a dense green hedge revealing golden dawn light, a small stone path leading into it",
-            "an opening between two large smooth rocks revealing a soft sunrise",
+            "a plain doorway-shaped opening in a limewashed wall with a soft sunrise glowing through it onto a stone floor",
+            "an opening between two smooth stone pillars revealing a soft sunrise",
             "a rectangle of dawn light projected on a dark wall like a door of light, the floor in shadow",
             "a break in the clouds above a quiet field forming a doorway of light",
         )},

@@ -59,7 +59,10 @@ _ROTULOS = (
 _REGRA_GERAL = (
     "Premium editorial campaign quality: physically plausible materials, rich micro-texture, natural light "
     "falloff, no stock-photo look, no clip-art, no CGI sheen. No people, faces, hands or body parts anywhere in "
-    "the frame. Keep generous calm negative space, especially in the upper-left third."
+    "the frame. Keep generous calm negative space, especially in the upper-left third. Make it specific, not generic: one "
+    "clear focal subject in a precise, believable setting, with concrete materials (grain, wear, dust, steam, small "
+    "imperfections) and one small detail that suggests a quiet human story; no stock-photo filler, no random plants, "
+    "foliage or props added just to fill space, no obvious centered cliche; every element must have a reason to be there."
 )
 
 ESTILOS_V71 = {
@@ -257,7 +260,7 @@ ESTILOS_V71 = {
                 "g": "recomeco visto novo_dia vinculo",
                 "s": (
                     "a wooden door slightly ajar, bright golden dawn spilling through the gap onto a dark floor",
-                    "a tall double door half-open onto a sage-green garden",
+                    "a tall double door half-open onto a bright stone terrace and open dawn sky",
                     "a weathered blue door open onto a sunlit courtyard",
                     "a glass door with a sheer curtain, light blooming through it",
                     "a heavy arched wooden door open on a path of light across old stone",
@@ -268,17 +271,17 @@ ESTILOS_V71 = {
                 "s": (
                     "a tall window thrown open, the curtain lifting, a luminous sky beyond",
                     "a small round window like a disc of light in a dark wall",
-                    "an open wooden shutter revealing a garden at sunrise",
+                    "an open wooden shutter revealing a bright dawn sky and soft rooftops",
                     "a skylight above a quiet room pouring a column of dawn light onto the floor",
                 ),
             },
-            "arcos_naturais": {
+            "arcos_e_passagens": {
                 "g": "recomeco autoestima novo_dia",
                 "s": (
-                    "a tunnel of arching green branches opening onto a bright clearing",
-                    "an arch of climbing plants framing a stone path toward sunrise",
-                    "a natural gap between two large leafy shrubs revealing golden light",
-                    "bamboo stalks parting into a bright corridor",
+                    "a plain whitewashed plaster archway framing a pale stone path that leads toward soft sunrise light",
+                    "three receding stone arches in a row, each one brighter than the last, ending in warm dawn light",
+                    "a simple rounded opening in a thick limewashed wall, its deep reveal glowing with sunrise",
+                    "a narrow stone passage between two plaster walls opening into a bright, empty square",
                 ),
             },
             "limiares_urbanos": {
@@ -312,8 +315,12 @@ ESTILOS_V71 = {
             "seen from a cozy room with a rug", "seen from a stairwell landing", "seen from a softly dark interior with wooden floor",
         ),
         "fora": (
-            "a sunrise garden with sage plants", "a soft pastel sunrise sky above green hills", "a stone path across dewy grass",
-            "tall plants glowing in backlight", "a warm golden haze with soft shapes of trees", "a quiet courtyard with a small tree",
+            "a calm sunlit stone courtyard with pale paving and a plain warm-white wall in the distance",
+            "an open pastel dawn sky glowing gold at the horizon above a quiet low skyline of rooftops",
+            "a soft golden haze of pure light with no recognisable objects, calm and empty",
+            "a quiet street of pale stone and plaster houses bathed in first sun",
+            "a bright empty terrace with a simple stone parapet and a clear sky beyond",
+            "a luminous plain room beyond, warm light on a wooden floor and a pale wall",
         ),
         "comp": (
             "seen straight on", "from a low angle", "from a gentle diagonal", "a wide shot with the ceiling visible",
@@ -321,6 +328,13 @@ ESTILOS_V71 = {
         ),
         "atmo": (
             "calm, safe and inviting", "a hushed, expectant quiet", "warm light against cool shade", "gentle morning stillness",
+        ),
+        "regra": (
+            _REGRA_GERAL + " PORTAL RULES: the opening itself (door, arch, gate or window) is the one clear hero, a believable "
+            "architectural element with real materials (wood grain, plaster, stone, metal hinges). What lies beyond it is only "
+            "soft golden dawn light, open sky, a calm stone courtyard or a quiet room. NO jungle, bushes, hedges, bamboo, "
+            "ferns, overgrown vegetation, tall grass or random plants filling or crowding the frame; at most one small potted "
+            "plant or a single tree, only if it clearly belongs to the place."
         ),
     },
 
@@ -716,7 +730,15 @@ def montar(estilo, grupo, leitura, seed):
         f"Make this image clearly different from other generations of the same style (variation {int(seed) % 997})."
     )
     print(f"[v71] estilo={estilo} grupo={grupo} familia={fam}")
-    return d["conceito"], luz, " ".join(partes)
+    conceito = d["conceito"]
+    try:  # v88: bloco de acabamento fotografico detalhado (lente, profundidade, textura, tons, realismo), so acrescenta
+        from estilos_acabamento_v88 import acabamento as _acab88
+        _t88 = _acab88(estilo)
+        if _t88:
+            conceito = conceito + ", " + _t88
+    except Exception as _e88:
+        print(f"[v88] acabamento ignorado: {_e88}")
+    return conceito, luz, " ".join(partes)
 
 
 # v72: estilos novos (estilos_novos_v72.py) entram no mesmo sistema de rodizio

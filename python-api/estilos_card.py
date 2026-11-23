@@ -93,8 +93,8 @@ ESTILOS = {
         "luz": "golden-orange sunrise light flooding in from outside the doorway",
         "cena": (
             "an open wooden doorway seen from a quiet dark interior, bright dawn light "
-            "and soft sage plants at the threshold, an invitation to take the first step, "
-            "no one in frame"
+            "and nothing but light, open sky or a calm stone courtyard beyond it, an invitation to take the first step, "
+            "no one in frame, no bushes, hedges, bamboo, ferns or overgrown vegetation anywhere"
         ),
     },
     "ice": {
@@ -300,8 +300,8 @@ _VAR = {
                     "a tall window opening onto a garden like a door"),
         "onde": ("from a quiet dark living room", "from a simple warm hallway", "from a cozy room with a rug and an armchair",
                  "from a stairwell landing"),
-        "fora": ("a sunrise garden with sage plants", "a soft pastel sunrise sky above green hills",
-                 "a stone path across dewy grass", "tall plants glowing in backlight"),
+        "fora": ("a calm sunlit stone courtyard with a plain warm wall", "a soft pastel sunrise sky above a quiet skyline",
+                 "a pale stone terrace with a clear sky beyond", "a soft golden haze of pure light"),
         "luz": ("golden-orange light flooding in", "long soft rays through dusty air", "gentle haze lit from behind"),
         "comp": ("seen straight on", "from a low angle", "from a gentle diagonal", "a wide shot with the ceiling visible"),
     },
@@ -586,6 +586,18 @@ except Exception as _ex72:
 
 # v73: Cinematic e Showcase tambem entram no rodizio de variacoes (estilos_extras_v73.py)
 _ESTILOS_V71 = _ESTILOS_V71 + ("cinematic", "showcase")
+
+# v88: os outros 20 estilos ganham o mesmo bloco de acabamento fotografico detalhado do Cinematic/Showcase
+# (lente, profundidade de campo, textura, tons, realismo). So acrescenta ao texto da cena; vale para o Com Ronilson e para o
+# fallback (o caminho v71 recebe o mesmo bloco em estilos_prompts_v71.montar). Falha = prompts como antes.
+try:
+    import estilos_acabamento_v88 as _ac88
+    for _k88, _d88 in ESTILOS.items():
+        _t88 = _ac88.acabamento(_k88)
+        if _t88:
+            _d88["cena"] = _d88["cena"] + ", " + _t88
+except Exception as _ex88:
+    print(f"[v88] acabamento dos estilos nao carregado: {_ex88}")
 
 
 def _prompt(estilo, tema="", variante=None, seed=None):
