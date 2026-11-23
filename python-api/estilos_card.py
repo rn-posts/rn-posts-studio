@@ -1624,7 +1624,7 @@ def _integrar_v58(fundo, recorte, estilo, seed):
             _ln87 = np.maximum(_s87.mean(axis=2, keepdims=True), 1.0)
             _lo87 = np.maximum(_o87.mean(axis=2, keepdims=True), 1.0)
             _d87 = _s87 / _ln87 - _o87 / _lo87
-            _k87 = np.minimum(1.0, 0.045 / np.maximum(np.abs(_d87).max(axis=2, keepdims=True), 1e-4))
+            _k87 = np.minimum(1.0, 0.075 / np.maximum(np.abs(_d87).max(axis=2, keepdims=True), 1e-4))
             sub[_ya:_yb, _xa:_xb] = (_o87 / _lo87 + _d87 * _k87) * _ln87
             del _s87, _o87, _ln87, _lo87, _d87, _k87
     except Exception as e:

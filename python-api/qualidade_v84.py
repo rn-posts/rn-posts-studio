@@ -499,7 +499,7 @@ def _json_de(txt):
     return json.loads(txt)
 
 
-def revisar_foto(M, img, tema="", estilo=""):
+def revisar_foto(M, img, tema="", estilo="", _tentativa=1):
     """Nota a foto/cenário SEM o título (pessoa recortada + cenário). Retorna
     {"nota": 0-100 (menor critério x10), "ok": bool, "problemas": [...], "criterios": {nome: 0-10}} ou None."""
     try:
@@ -572,6 +572,11 @@ def revisar_foto(M, img, tema="", estilo=""):
                 return out
             except Exception as e:
                 print(f"[qa-foto] {modelo} falhou: {type(e).__name__}: {e}")
+        if _tentativa < 2:  # v87: sem resposta de nenhum modelo (timeout/limite) -> uma segunda tentativa antes de deixar "não avaliada"
+            print("[qa-foto] sem resposta; tentando de novo")
+            import time as _tm87
+            _tm87.sleep(1.5)
+            return revisar_foto(M, img, tema, estilo, _tentativa=2)
         return None
     except Exception as e:
         print(f"[qa-foto] revisão ignorada: {type(e).__name__}: {e}")

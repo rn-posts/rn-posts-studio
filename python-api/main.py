@@ -2007,7 +2007,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                     respiro=1.10, gap_fator=0.06, x_texto=None, zona_teto=None,
                     escala_fonte=1.0, cor_forcada=None, y_forcado=None,
                     estrategia_fixa=None, forma_fixa=None, palavras_estilo=None, largura_px=None,
-                    altura_min_sub=None):  # v76: ajuste manual (padrões não mudam nada); v87: altura_min_sub = piso da linha secundária
+                    altura_min_sub=None, zona_livre=False):  # v76: ajuste manual (padrões não mudam nada); v87: altura_min_sub = piso da linha secundária; zona_livre = pessoa em pé não impede o título na área livre do alto
     img_rgba = img.convert("RGBA")
     MARGIN   = int(x_texto) if x_texto else SAFE_MARGIN  # v68: origem do texto (padrao inalterado)
     _TL.info = None  # v76
@@ -2038,7 +2038,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     print(f"[titulo] layout={layout} lum_overlay={lum_overlay:.2f} MAX_PX={MAX_PX}")
 
     # Para pessoa em pé, o título deve ficar na metade inferior esquerda para não cruzar peito/pescoço
-    Y_MIN_GLOBAL = int(H * 0.38) if (tem_pessoa and em_pe) else int(H * 0.10)
+    Y_MIN_GLOBAL = int(H * 0.38) if (tem_pessoa and em_pe and not zona_livre) else int(H * 0.10)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -2086,6 +2086,9 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
                 (int(H * 0.56), int(H * 0.86)),
                 (int(H * 0.40), int(H * 0.70)),
             ]
+            if zona_livre:  # v87: faixas altas (céu/parede livre do lado oposto à pessoa); a pontuação ainda escolhe a mais limpa
+                _candidatas_zona = [(int(H * 0.12), int(H * 0.40)), (int(H * 0.20), int(H * 0.48)),
+                                    (int(H * 0.30), int(H * 0.58))] + _candidatas_zona
         else:
             _zona_default = (int(H * 0.15), int(H * 0.45))
             _candidatas_zona = [
