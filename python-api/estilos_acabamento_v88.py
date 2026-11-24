@@ -161,3 +161,41 @@ ACABAMENTO_V88 = {
 def acabamento(estilo):
     """Texto de acabamento do estilo (ou None se o estilo não tem / já tem o seu, como Cinematic e Showcase)."""
     return ACABAMENTO_V88.get(estilo)
+
+
+# v89: no "Com Ronilson" o cenário é FUNDO de um retrato (ele em pé, ~1,75 m). O acabamento acima fala em lente macro e foco
+# ultrafino, o que faz o modelo desenhar o objeto em close e gigante (tigela maior que o tronco). Aqui só entram material,
+# textura e luz do estilo, mais perspectiva natural e ESCALA REAL; nada de macro.
+MATERIAL_RONILSON_V89 = {
+    "gold": "realistic metallic lacquer sheen on the gold seams with tiny natural irregularities, authentic matte ceramic glaze texture",
+    "smoke": "convincing fluid mist with delicate translucent edges and soft realistic light scattering",
+    "portal": "realistic wood grain, plaster and stone texture, believable soft light entering the opening",
+    "ice": "crisp realistic ice and condensation detail with believable transparency and refraction",
+    "floating": "authentic materials and micro-texture, believable soft shadows, no visible wires or supports",
+    "macro": "authentic fine natural detail melting into soft bokeh",
+    "museum": "refined plaster and stone texture, controlled soft gallery light with gentle falloff",
+    "sprout": "translucent leaf detail with natural dew, authentic soil and stone texture",
+    "roots": "rich authentic bark, moss and soil texture under soft diffused light",
+    "stone": "matte mineral texture with realistic grain and tiny imperfections",
+    "bluehour": "smooth natural sky gradient without banding, realistic soft atmospheric glow",
+    "shadow": "soft-edged natural shadow shapes with detail kept in both light and shade, authentic plaster and wood texture",
+    "lamp": "realistic soft warm lamp light with natural falloff and no blown-out highlights, authentic wood and linen texture",
+    "thread": "every fibre and weave visible, a subtle realistic sheen on the gold thread",
+    "mirror": "controlled reflections that show only light, sky and plants, clean highlights without glare",
+    "paper": "visible paper fibre, grain and fold detail, no legible text",
+    "mosaic": "authentic glaze, glass and ceramic texture with tiny natural irregularities",
+    "shelter": "authentic knitted, linen and wood texture, warm gentle light with natural falloff, never staged or catalogue-like",
+    "path": "authentic stone, earth and leaf texture, a softly misted far background",
+    "watercolor": "real wet pigment on paper, natural pooling and feathered edges, not a flat digital gradient",
+}
+_CAUDA_RONILSON_V89 = (
+    "natural 35mm perspective at standing eye level, true real-world scale, soft depth of field only in the far background, "
+    "elegant tones, soft shadows, balanced contrast, premium photographic appearance, high definition, authentic "
+    "photographic realism, without artificial appearance"
+)
+
+
+def acabamento_ronilson(estilo):
+    """Acabamento seguro para cenário-fundo de retrato (material + luz + escala real, sem macro). None se o estilo não tem."""
+    mat = MATERIAL_RONILSON_V89.get(estilo)
+    return (mat + ", " + _CAUDA_RONILSON_V89) if mat else None

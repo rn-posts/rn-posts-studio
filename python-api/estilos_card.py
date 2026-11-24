@@ -593,7 +593,7 @@ _ESTILOS_V71 = _ESTILOS_V71 + ("cinematic", "showcase")
 try:
     import estilos_acabamento_v88 as _ac88
     for _k88, _d88 in ESTILOS.items():
-        _t88 = _ac88.acabamento(_k88)
+        _t88 = _ac88.acabamento_ronilson(_k88)  # v89: versao sem lente macro/foco ultrafino (causava objeto gigante atras dele)
         if _t88:
             _d88["cena"] = _d88["cena"] + ", " + _t88
 except Exception as _ex88:
@@ -1085,6 +1085,16 @@ def _carregar_recorte_ronilson():
 
 
 # ── Cenário (sem pessoas) conforme tema + paleta + estilo ─────────────────────
+# v89: escala real dos objetos no cenario-fundo (o modelo desenhava a tigela do Kintsugi maior que o tronco dele)
+_ESCALA_REAL_V89 = (
+    " TRUE REAL-WORLD SCALE (very important): every object appears at its real-life size next to a 1.75 m tall adult who "
+    "will stand in the right-hand foreground: a bowl is about 20 cm wide, a vase about 30 cm tall, a cup 8 cm, a lamp "
+    "40 cm, a mirror under 1 m, a door about 2 m. Small objects rest on a believable surface (wall shelf, plinth, ledge, "
+    "windowsill, niche or the floor) in a real place seen from a normal distance of 2 to 4 metres, so they look small and "
+    "distant: never enlarged, never a macro close-up, never larger than a person's torso and never filling the frame."
+)
+
+
 def _prompt_cenario_ronilson(estilo, tema, seed):
     M = _m()
     if estilo == "auto":
@@ -1093,6 +1103,7 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
             + " The scene needs a believable floor or ground plane and clear depth; keep the right side plain, "
               "calm and empty; soft key light from the upper left. "
             + _enriquecer("auto", tema, seed, sem_pessoas=True)  # v61
+            + _ESCALA_REAL_V89  # v89
         )
     e = ESTILOS[estilo]
     tema_limpo = M._texto_tema_limpo(tema) if hasattr(M, "_texto_tema_limpo") else (tema or "")
@@ -1118,6 +1129,7 @@ def _prompt_cenario_ronilson(estilo, tema, seed):
         "Soft key light coming from the upper left. "
         "Absolutely no people, no faces, no hands, no mannequins, no silhouettes, no text, no letters, "
         "no logos, no watermark, no borders, high definition, authentic photographic texture."
+        + _ESCALA_REAL_V89  # v89
     )
 
 
@@ -2658,14 +2670,27 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         else:
             x_texto = int(_margem * 0.8)  # v69: texto um pouco mais a esquerda, cabe fonte maior
             disponivel = int(max(300, x_esq - x_texto - 22))
-        max_px = int(max(340 if x_texto is None else 300, min(520, disponivel)))
+            if cabeca:  # v89: so o ROSTO limita o texto (o motor o protege); o titulo pode cobrir a camisa se ficar bom
+                disponivel = int(max(disponivel, min(_W * 0.66, _W - 110) - x_texto))
+        _teto_px = 600 if (cabeca and lado_x != "esq") else 520  # v89
+        max_px = int(max(340 if x_texto is None else 300, min(_teto_px, disponivel)))
         escala = max(0.72, min(1.05, 0.72 * max_px / 352.0))  # v69: teto 0.95 -> 1.05
         _kw = dict(cor_dest=cor_dest, cor_fundo_txt=cor_fundo_txt, cor_overlay=None, tem_pessoa=True,
                    em_pe=em_pe, cabeca_bbox=cabeca, respiro=1.30, gap_fator=0.30, x_texto=x_texto,
-                   zona_teto=(None if em_pe else (int(_H * 0.42), int(_H * 0.68))))  # v69: mais respiro; sobe o titulo se caiu baixo
+                   zona_teto=(None if em_pe else (int(_H * 0.42), int(_H * 0.68))),  # v69: mais respiro; sobe o titulo se caiu baixo
+                   zona_livre=True, altura_min_sub=46)  # v89: a medicao usa o MESMO modo do render final (antes so o portao ligava isso)
         try:  # passada de medicao: o motor desenha, medimos a largura real do bloco e corrigimos a escala
-            alvo = min(int(_W * 0.47), disponivel)  # v69: 0.44 -> 0.47
+            alvo = min(int(_W * (0.52 if (cabeca and lado_x != "esq") else 0.47)), disponivel)  # v69: 0.44 -> 0.47; v89: 0.52 com rosto conhecido
             teste, _ = M.desenhar_titulo(img, tema, seed, max_px_pessoa=max_px, escala_pessoa=escala, **_kw)
+            _larg_txt = None
+            try:  # v89: mede SO O TEXTO (palavras realmente desenhadas), nao o retangulo do destaque (-palavra) nem a faixa da zona
+                _lp = (getattr(getattr(M, "_TL", None), "info", None) or {}).get("linhas_pos") or []
+                _x0s = [p["x0"] for _l in _lp for p in _l["palavras"]]
+                _x1s = [p["x1"] for _l in _lp for p in _l["palavras"]]
+                if _x0s and _x1s:
+                    _larg_txt = int(max(_x1s) - min(_x0s))
+            except Exception as _e89:
+                print(f"[titulo] largura so do texto indisponivel: {_e89}")
             dif = np.abs(np.asarray(teste.convert("RGB"), dtype=np.int16)
                          - np.asarray(img.convert("RGB"), dtype=np.int16)).max(axis=2) > 45
             if lado_x == "esq":
@@ -2674,11 +2699,11 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
                 dif[:, max(0, x_esq - 10):] = False  # so a area do texto, nunca o corpo
             cols = np.where(dif.any(axis=0))[0]
             del teste, dif
-            if len(cols) > 20:
-                largura = int(cols.max() - cols.min())
+            if _larg_txt or len(cols) > 20:
+                largura = int(_larg_txt) if _larg_txt else int(cols.max() - cols.min())
                 fator = alvo / max(largura, 1)
                 if fator < 0.88 or fator > 1.10:
-                    escala = float(np.clip(escala * fator, 0.55, 1.12))
+                    escala = float(np.clip(escala * fator, 0.55, 1.30 if (cabeca and lado_x != "esq") else 1.12))
                     max_px = int(min(disponivel, max(300, alvo + 40)))
                     print(f"[titulo] bloco {largura}px -> alvo {alvo}px; escala {escala:.2f}")
         except Exception as e:

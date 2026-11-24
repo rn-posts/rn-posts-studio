@@ -213,8 +213,10 @@ _ESCALA_RETRATO = {
     "watercolor": ("Render it as an abstract soft backdrop of translucent washes, calmer and emptier toward the right."),
     "smoke": ("Render it as soft drifting forms in the left half, thinning to clear calm air on the right."),
 }
-_ESCALA_PADRAO = ("It is a softly out-of-focus element of the BACKGROUND, small to medium in size and at mid-distance in "
-                  "the lower-left or centre-left, never a macro close-up, never filling the frame and never placed on a "
+_ESCALA_PADRAO = ("It is an element of the BACKGROUND shown at its TRUE real-life size (a bowl is about 20 cm wide, a vase about "
+                  "30 cm tall), resting on a believable surface (wall shelf, plinth, ledge, windowsill, niche or the floor) at "
+                  "mid-distance in the lower-left or centre-left, softly out of focus, so it looks small next to a standing "
+                  "adult; never a macro close-up, never enlarged, never filling the frame and never placed on a "
                   "bed, table or any soft furnishing; a visible ground plane or a smooth soft backdrop lies below it.")
 
 

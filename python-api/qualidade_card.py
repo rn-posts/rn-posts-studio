@@ -291,7 +291,7 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
         n += 1
         rel = av_i.avaliar(card, info, kw_usado)
         print(f"[qa] tentativa {n}: nota={rel['nota']} ok={rel['ok']} problemas={len(rel['problemas'])} t={time.time() - inicio:.1f}s")
-        if melhor is None or (rel["nota"] or 0) > (melhor[1]["nota"] or 0):
+        if melhor is None or (rel["nota"] or 0) >= (melhor[1]["nota"] or 0) + 4:  # v89: só troca a 1ª tentativa por uma claramente melhor (antes: qualquer +1 mudava a composição toda)
             melhor = (card, rel, sd, kw_usado, info)
             melhor_base = base_i
         if rel["ok"] or rel["nota"] is None:

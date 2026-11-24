@@ -2039,6 +2039,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
 
     # Para pessoa em pé, o título deve ficar na metade inferior esquerda para não cruzar peito/pescoço
     Y_MIN_GLOBAL = int(H * 0.38) if (tem_pessoa and em_pe and not zona_livre) else int(H * 0.10)
+    # v89: com a cabeça conhecida (modo zona_livre), só o ROSTO limita o texto; camisa/braços podem ser cobertos
+    _so_rosto = bool(zona_livre and tem_pessoa and cabeca_bbox)
 
     def _avaliar_zona(y_ini_raw, y_fim_raw):
         y_ini = max(Y_MIN_GLOBAL, max(SAFE_TOP, y_ini_raw))
@@ -2124,10 +2126,14 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
             vies_posicao = ((total_zonas - 1 - _i_c) / max(1, total_zonas - 1)) * 0.10
         score = _comp * 0.55 + _lum * 0.30 - vies - vies_posicao
         if _intersecta_cabeca(MARGIN, yi, MARGIN + MAX_PX, yf):
-            score += 10.0
+            _w_cab = (cabeca_bbox[0] - 35 - MARGIN - 24) if cabeca_bbox else 0
+            if _so_rosto and _w_cab >= 380:  # v89: o texto cabe ao lado do rosto (a largura é reduzida depois): penalidade pequena, proporcional
+                score += 0.35 * max(0.0, float(MAX_PX - _w_cab)) / max(float(MAX_PX), 1.0)
+            else:
+                score += 10.0
         try:  # v75: prefere zonas com largura livre (o sujeito pode nao ter sido detectado como rosto)
             import titulo_inteligente_v75 as _t75
-            score += _t75.penalidade_largura(_t75.limite_sujeito_x(img_rgba, yi, yf) - MARGIN, W)
+            score += (0.4 if _so_rosto else 1.0) * _t75.penalidade_largura(_t75.limite_sujeito_x(img_rgba, yi, yf) - MARGIN, W)  # v89: com so_rosto a preferência por zona livre fica leve
         except Exception as _e75:
             print(f"[titulo75] penalidade ignorada: {_e75}")
         if melhor is None or score < melhor_score:
@@ -2148,7 +2154,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     if _intersecta_cabeca(MARGIN, Y_INI, MARGIN + MAX_PX, Y_FIM):
         cbx0, cby0, cbx1, cby1 = cabeca_bbox
         if cbx0 - MARGIN >= 220:
-            MAX_PX = min(MAX_PX, cbx0 - MARGIN - 24)
+            MAX_PX = min(MAX_PX, cbx0 - MARGIN - (44 if _so_rosto else 24))  # v89: folga maior do rosto no modo so_rosto
             print(f"[titulo] MAX_PX reduzido pra nao cruzar a cabeca: {MAX_PX}")
         else:
             Y_INI = min(SAFE_BOTTOM - 150, max(Y_INI, cby1 + 10))
@@ -2158,7 +2164,7 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     try:  # v75: o texto nunca invade o sujeito (rosto/silhueta), mesmo sem deteccao de rosto
         import titulo_inteligente_v75 as _t75b
         _lim_x = _t75b.limite_sujeito_x(img_rgba, Y_INI, Y_FIM)
-        if _lim_x - MARGIN >= 300 and _lim_x - MARGIN - 24 < MAX_PX:
+        if (not _so_rosto) and _lim_x - MARGIN >= 300 and _lim_x - MARGIN - 24 < MAX_PX:
             MAX_PX = _lim_x - MARGIN - 24
             print(f"[titulo75] MAX_PX limitado pelo sujeito: {MAX_PX}")
     except Exception as _e75b:
