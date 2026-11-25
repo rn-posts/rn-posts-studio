@@ -1522,8 +1522,8 @@ def _recolorir_roupa(sub, a_f, protege, amb, seed, corpo):
         return sub
 
 
-def _integrar_v58(fundo, recorte, estilo, seed):
-    """Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca, x_esquerdo_do_corpo)."""
+def _integrar_v58(fundo, recorte, estilo, seed, reforco=1.0):
+    """Retorna (imagem RGB, corpo_inteiro, caixa_da_cabeca, x_esquerdo_do_corpo). v90: reforco > 1 intensifica luz, contorno e sombras (pessoa "colada"); 1.0 = como antes."""
     import cv2
     rgb_r, a_r = _limpar_borda_v58(recorte)
     ys, xs = np.where(a_r > 0.04)
@@ -1637,7 +1637,8 @@ def _integrar_v58(fundo, recorte, estilo, seed):
         _med_c = sub[solido > 0].mean(axis=0)
         _gc = (amb / max(float(amb.mean()), 1.0)) / (_med_c / max(float(_med_c.mean()), 1.0))
         sub = sub * np.clip(1 + 0.28 * (_gc - 1), 0.88, 1.12).astype(np.float32)
-        sub = sub * 0.93 + cv2.GaussianBlur(bg, (0, 0), 20) * 0.07  # v74: luz de preenchimento do ambiente
+        _pf90 = min(0.20, 0.07 * reforco)
+        sub = sub * (1 - _pf90) + cv2.GaussianBlur(bg, (0, 0), 20) * _pf90  # v74: luz de preenchimento do ambiente (v90: reforco)
     except Exception as e:
         print(f"[ronilson] cor do ambiente ignorada: {e}")
     try:  # v87: a roupa não pode ficar "tingida" pelo ambiente: o desvio de matiz fica limitado ao da foto original (rosto/mãos são restaurados abaixo)
@@ -1648,7 +1649,7 @@ def _integrar_v58(fundo, recorte, estilo, seed):
             _ln87 = np.maximum(_s87.mean(axis=2, keepdims=True), 1.0)
             _lo87 = np.maximum(_o87.mean(axis=2, keepdims=True), 1.0)
             _d87 = _s87 / _ln87 - _o87 / _lo87
-            _k87 = np.minimum(1.0, 0.075 / np.maximum(np.abs(_d87).max(axis=2, keepdims=True), 1e-4))
+            _k87 = np.minimum(1.0, 0.075 * reforco / np.maximum(np.abs(_d87).max(axis=2, keepdims=True), 1e-4))
             sub[_ya:_yb, _xa:_xb] = (_o87 / _lo87 + _d87 * _k87) * _ln87
             del _s87, _o87, _ln87, _lo87, _d87, _k87
     except Exception as e:
@@ -1658,17 +1659,18 @@ def _integrar_v58(fundo, recorte, estilo, seed):
     X = np.linspace(0, 1, _W, dtype=np.float32)[None, :]
     t = np.clip((X - x0 / _W) / max(nw / _W, 1e-3), 0, 1)
     t = t if luz_x > 0 else 1 - t
-    sub *= (1.04 - 0.12 * t)[..., None]
+    sub *= (1.0 + 0.04 * reforco - 0.12 * reforco * t)[..., None]  # v90: reforco (1.0 = 1.04 - 0.12*t, como antes)
     sub *= (1.0 - 0.05 * np.linspace(0, 1, _H, dtype=np.float32))[:, None, None]
 
     # 3) light wrap e contorno de luz discretos (sem halo)
     bg_suave = cv2.GaussianBlur(bg, (0, 0), 20)
     nucleo = cv2.GaussianBlur(cv2.erode(a_f, np.ones((9, 9), np.uint8)), (0, 0), 2)
     borda = np.clip(a_f - nucleo, 0, 1)[..., None]
-    sub = sub * (1 - 0.20 * borda) + bg_suave * 0.20 * borda
+    _lw90 = min(0.45, 0.20 * reforco)  # v90: light wrap e contorno mais fortes quando a integração foi reprovada
+    sub = sub * (1 - _lw90 * borda) + bg_suave * _lw90 * borda
     lado = np.clip(1 - t * 2.0, 0, 1)[..., None]
     rim = np.array([255, 205, 130], np.float32) * 0.5 + amb * 0.6
-    sub = sub + 0.20 * borda * lado * rim * (1 - sub / 255.0)
+    sub = sub + (0.20 * reforco) * borda * lado * rim * (1 - sub / 255.0)
 
     # rosto/mãos: pixels originais, sem nenhum ajuste
     sub = sub * (1 - protege) + orig * protege
@@ -1700,15 +1702,15 @@ def _integrar_v58(fundo, recorte, estilo, seed):
             cx = x0 + nw // 2
             cv2.ellipse(chao, (cx, base_y), (int(nw * 0.4), int(_H * 0.012) + 5), 0, 0, 360, 1.0, -1)
         chao = cv2.GaussianBlur(chao, (0, 0), 10)
-        sombra = np.clip(sombra + 1.5 * chao, 0, 1)
+        sombra = np.clip(sombra + 1.5 * min(1.4, reforco) * chao, 0, 1)
         try:  # v74: sombra projetada no chao, oposta a luz da cena (antes so havia sombra de contato nos pes)
             import integracao_v74 as _i74
-            sombra = np.clip(sombra + 0.9 * _i74.sombra_projetada(a_f, base_y, luz_x, lum), 0, 1)
+            sombra = np.clip(sombra + 0.9 * reforco * _i74.sombra_projetada(a_f, base_y, luz_x, lum), 0, 1)
         except Exception as e:
             print(f"[ronilson] sombra projetada ignorada: {e}")
         degrade = np.clip((np.arange(_H, dtype=np.float32) - (base_y - 30)) / 160.0, 0, 1)
         bg = bg * (1 - 0.18 * degrade)[:, None, None]
-    s = (0.32 * sombra)[..., None]
+    s = (0.32 * min(1.5, reforco) * sombra)[..., None]
     bg = bg * (1 - s) + (amb * 0.20) * s
 
     # 5) composição; grão e correção de cor da cena NÃO entram no rosto/mãos
@@ -2610,14 +2612,25 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
         _ETAPA["v"] = "gerar cenario"
         fundo, aviso = _cenario_ronilson(estilo, tema, seed)
         fundo = _clarear_cenario(fundo)
+        try:  # v90: luz dramática (raios de sol, janela estourada) não combina com a luz suave do recorte e denuncia a colagem: suaviza antes de integrar
+            import qualidade_v84 as _v84s
+            fundo = _v84s.suavizar_luz_dramatica(fundo)
+        except Exception as _e90a:
+            print(f"[cenario] suavizar luz ignorado: {type(_e90a).__name__}: {_e90a}")
         _ETAPA["v"] = "integrar o Ronilson ao cenario"
         img, em_pe, cabeca, x_esq, lado_x, x_dir = _integrar_v58(fundo, recorte, estilo, seed)
         foto_rel = None
         try:  # v84: revisão da foto/cenário (visão do Gemini). Se reprovar, refaz pose + cenário (no máx. 1x e só se houver tempo)
             import qualidade_v84 as _v84
             _f_atual = _v84.revisar_foto(M, img, tema, estilo)
-            try:  # v87: espaço do título reprovado -> corrige localmente (rápido) antes de gastar outra geração de cenário
-                img, _f_atual, _ = _v84.corrigir_foto_local(M, img, _f_atual, tema, estilo, lado_x, x_esq, x_dir)
+            try:  # v87/v90: integração ou espaço do título reprovados -> corrige localmente (rápido) antes de gastar outra geração de cenário
+                _est90 = {}
+                img, _f_atual, _ = _v84.corrigir_foto_local(
+                    M, img, _f_atual, tema, estilo, lado_x, x_esq, x_dir,
+                    reintegrar=lambda _r: _integrar_v58(fundo, recorte, estilo, seed, reforco=_r), estado=_est90)
+                if _est90.get("geom"):  # reintegração reforçada mantida: a geometria (cabeça, corpo, lados) é a dela
+                    _g90 = _est90["geom"]
+                    em_pe, cabeca, x_esq, lado_x, x_dir = _g90[1], _g90[2], _g90[3], _g90[4], _g90[5]
             except Exception as _e87a:
                 print(f"[qa-foto] correcao local ignorada: {type(_e87a).__name__}: {_e87a}")
             _melhor_f = (_f_atual, img, em_pe, cabeca, x_esq, lado_x, x_dir, pid, aviso)
@@ -2637,14 +2650,21 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
                     _ctx_v85.lugar = None
                     _ctx_v85.extra = ""
                 _fun2 = _clarear_cenario(_fun2)
+                try:  # v90: mesma suavização da luz dramática no cenário refeito
+                    _fun2 = _v84.suavizar_luz_dramatica(_fun2)
+                except Exception as _e90b:
+                    print(f"[cenario] suavizar luz ignorado: {type(_e90b).__name__}: {_e90b}")
                 _r2 = _integrar_v58(_fun2, _rec2, estilo, _sd2)
                 _f2 = _v84.revisar_foto(M, _r2[0], tema, estilo)
                 if _f2 is None:
                     break
-                try:  # v87: mesma correção local do espaço do título no cenário refeito
-                    _img2c, _f2c, _ok2c = _v84.corrigir_foto_local(M, _r2[0], _f2, tema, estilo, _r2[4], _r2[3], _r2[5])
+                try:  # v87/v90: mesma correção local (integração e espaço do título) no cenário refeito
+                    _est2 = {}
+                    _img2c, _f2c, _ok2c = _v84.corrigir_foto_local(
+                        M, _r2[0], _f2, tema, estilo, _r2[4], _r2[3], _r2[5],
+                        reintegrar=lambda _r: _integrar_v58(_fun2, _rec2, estilo, _sd2, reforco=_r), estado=_est2)
                     if _ok2c:
-                        _r2 = (_img2c,) + tuple(_r2[1:])
+                        _r2 = (_img2c,) + tuple((_est2.get("geom") or _r2)[1:])
                         _f2 = _f2c
                 except Exception as _e87b:
                     print(f"[qa-foto] correcao local ignorada: {type(_e87b).__name__}: {_e87b}")

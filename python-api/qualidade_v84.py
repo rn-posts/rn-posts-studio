@@ -188,7 +188,7 @@ def complementar(av, res, info, kw=None):
 
     criterios = {
         "legibilidade": {"nota": int(round(max(0.0, nota_leg))),
-                         "ok": bool(res.get("ok")) and nota_leg >= NOTA_OK, "medido": True},
+                         "ok": bool(res.get("ok")) and nota_leg >= NOTA_OK and not pior, "medido": True},  # v90: palavra com contraste fraco reprova (antes passava com 76 e ficava só no aviso)
         "tamanho": {"nota": int(round(max(0.0, nota_tam))), "ok": nota_tam >= NOTA_OK, "medido": True},
         "destaque": {"nota": int(round(max(0.0, nota_des))), "ok": nota_des >= NOTA_OK, "medido": True},
     }
@@ -458,6 +458,50 @@ def corrigir_contraste(base, info, kw, permitir_escurecer=True):
                 print(f"[qa84] contraste por linha: {_n_lin} linha(s) com cor propria")
         except Exception as _e87:
             print(f"[qa84] cor por linha ignorada: {type(_e87).__name__}: {_e87}")
+        try:  # v90: palavras em DESTAQUE (cor diferente do texto principal) são medidas pela cor REAL que têm (o laranja de "aparecer" sobre um raio de sol)
+            _lum90 = _lum_rel(np.asarray(base_i.convert("RGB")))
+            _lns90 = [l for l in (info.get("linhas_pos") or [])
+                      if _preenchimento_da_linha(info.get("grupos") or [], l["y"]) is None]
+            _cores90 = [tuple(int(v) for v in p["cor"]) for l in _lns90 for p in (l.get("palavras") or [])]
+            if _cores90:
+                _principal90 = max(set(_cores90), key=_cores90.count)
+                _pe90 = dict(kw2.get("palavras_estilo") or {})
+                _n90 = 0
+                for _l in _lns90:
+                    _ya, _yb = max(0, int(_l["y"]) - 4), min(H_, int(_l["y"] + _l["h"]) + 4)
+                    if _yb - _ya < 8:
+                        continue
+                    for _p in (_l.get("palavras") or []):
+                        _c_real = tuple(int(v) for v in _p["cor"])
+                        if _c_real == _principal90:
+                            continue
+                        _xa, _xb = max(0, int(_p["x0"]) - 4), min(W_, int(_p["x1"]) + 4)
+                        if _xb - _xa < 12:
+                            continue
+                        _rg = _lum90[_ya:_yb, _xa:_xb].reshape(-1)
+                        _lc0 = float(_lum_rel(np.array(_c_real, dtype=np.float32)))
+                        _atual90 = float((_razao(_rg, _lc0) < RAZAO_MIN_PEQUENA).mean())
+                        if _atual90 <= FRAC_RUIM_PALAVRA:
+                            continue
+                        _opc = []
+                        for _i, _nm in enumerate(ORDEM_DESTAQUE):
+                            if _nm in pal:
+                                _lcn = float(_lum_rel(np.array(pal[_nm], dtype=np.float32)))
+                                _opc.append((round(float((_razao(_rg, _lcn) < RAZAO_MIN_PEQUENA).mean()), 2), _i, _nm, pal[_nm]))
+                        if not _opc:
+                            continue
+                        _bom = [o for o in _opc if o[0] <= 0.25]
+                        _esc = min(_bom, key=lambda o: o[1]) if _bom else min(_opc)   # prefere a cor de destaque que passa; senão a que mais contrasta
+                        if _esc[0] + 0.05 < _atual90:
+                            _o = dict(_pe90.get(_p["k"]) or {})
+                            _o["cor"] = tuple(int(v) for v in _esc[3])
+                            _pe90[_p["k"]] = _o
+                            _n90 += 1
+                if _n90:
+                    kw2["palavras_estilo"] = _pe90
+                    print(f"[qa84] contraste do destaque: {_n90} palavra(s) com cor propria")
+        except Exception as _e90:
+            print(f"[qa84] cor do destaque ignorada: {type(_e90).__name__}: {_e90}")
         print(f"[qa84] contraste: texto {nome} (fundo ruim {fr:.2f}), "
               f"{'com' if base_i is not base else 'sem'} escurecimento")
         return kw2, base_i
@@ -626,24 +670,79 @@ def acalmar_zona_titulo(img, lado_x="dir", x_esq=None, x_dir=None):
         return img
 
 
-def corrigir_foto_local(M, img, foto, tema, estilo, lado_x, x_esq, x_dir):
-    """v87: se a revisão reprovou o espaço do título, aplica a correção local e revisa de novo (1 chamada). Só mantém a correção
-    se a nota não piorar. Retorna (imagem, relatório_da_foto, corrigiu)."""
+def corrigir_foto_local(M, img, foto, tema, estilo, lado_x, x_esq, x_dir, reintegrar=None, estado=None):
+    """v87/v90: o que a revisão reprovou e dá para corrigir SEM gerar outro cenário é corrigido aqui:
+      - integração ("pessoa colada"): refaz a integração com luz, contorno e sombras reforçados (`reintegrar(reforço)`);
+      - espaço do título (luz forte, objetos): acalma a zona do título.
+    Depois revisa de novo (1 chamada) e só mantém a correção se a nota não piorar. Retorna (imagem, relatório_da_foto, corrigiu).
+    Se a reintegração foi mantida, a nova geometria fica em estado["geom"] = (img, corpo, cabeça, x_esq, lado, x_dir)."""
     try:
         if not foto or foto.get("ok"):
             return img, foto, False
-        esp = (foto.get("criterios") or {}).get("espaco_texto")
-        if esp is None or float(esp) >= NOTA_FOTO_OK:
-            return img, foto, False
-        novo = acalmar_zona_titulo(img, lado_x, x_esq, x_dir)
-        if novo is img:
+        crit = foto.get("criterios") or {}
+
+        def _ruim(k):
+            try:
+                return crit.get(k) is not None and float(crit[k]) < NOTA_FOTO_OK
+            except (TypeError, ValueError):
+                return False
+
+        novo, geom, feito = img, None, []
+        if reintegrar is not None and _ruim("integracao"):
+            try:
+                import gc
+                gc.collect()
+                geom = reintegrar(1.8)
+                novo = geom[0]
+                lado_x, x_esq, x_dir = geom[4], geom[3], geom[5]
+                feito.append("integracao")
+            except Exception as e:
+                geom, novo = None, img
+                print(f"[qa-foto] reintegracao reforcada ignorada: {type(e).__name__}: {e}")
+        if _ruim("espaco_texto"):
+            calmo = acalmar_zona_titulo(novo, lado_x, x_esq, x_dir)
+            if calmo is not novo:
+                novo = calmo
+                feito.append("zona_titulo")
+        if not feito:
             return img, foto, False
         nova = revisar_foto(M, novo, tema, estilo)
         if nova is not None and int(nova["nota"]) >= int(foto["nota"]):
-            print(f"[qa-foto] correcao local mantida: nota {foto['nota']} -> {nova['nota']}")
+            print(f"[qa-foto] correcao local mantida ({'+'.join(feito)}): nota {foto['nota']} -> {nova['nota']}")
+            if estado is not None and geom is not None:
+                estado["geom"] = geom
             return novo, nova, True
         print("[qa-foto] correcao local descartada (nao melhorou ou sem nova revisao)")
         return img, foto, False
     except Exception as e:
         print(f"[qa-foto] correcao local ignorada: {type(e).__name__}: {e}")
         return img, foto, False
+
+
+def suavizar_luz_dramatica(img):
+    """v90: cenário com luz dramática (raios de sol, janela estourada, sombra dura) não combina com a luz suave de estúdio do
+    recorte: é a causa nº 1 de "pessoa colada" e de texto ilegível sobre um raio de luz. Mede o drama (distância entre as luzes
+    altas e o meio-tom) e, só se houver, comprime as luzes altas, reduz o contraste local e dessatura levemente.
+    Cenário calmo: devolve a mesma imagem. Em qualquer falha também."""
+    try:
+        import cv2
+        a = np.asarray(img.convert("RGB"), dtype=np.float32)
+        lum = a.mean(axis=2) / 255.0
+        p60, p98 = np.percentile(lum[::4, ::4], [60, 98])
+        drama = float(np.clip((float(p98) - float(p60) - 0.22) / 0.28, 0.0, 1.0))
+        if drama < 0.12:
+            return img
+        joelho = float(p60) + 0.06
+        exc = np.clip(lum - joelho, 0.0, None)
+        ganho = ((lum - exc * (0.55 * drama)) + 1e-3) / (lum + 1e-3)
+        a = a * ganho[..., None]
+        k = 0.30 * drama
+        a = a * (1.0 - k) + cv2.GaussianBlur(a, (0, 0), 18) * k
+        cz = a.mean(axis=2, keepdims=True)
+        d = 0.12 * drama
+        a = a * (1.0 - d) + cz * d
+        print(f"[cenario] luz dramatica (drama {drama:.2f}): suavizada")
+        return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+    except Exception as e:
+        print(f"[cenario] suavizar luz dramatica ignorado: {type(e).__name__}: {e}")
+        return img
