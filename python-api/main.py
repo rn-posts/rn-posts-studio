@@ -2473,7 +2473,8 @@ def desenhar_titulo(img, tema, seed, cor_dest=None, cor_fundo_txt=None,
     h_total = 0
     for grupo in grupos:
         alt = max(int(_altura_linha(f) * respiro) for _, f, *_ in grupo)
-        h_total += alt
+        # v91: um bloco que quebrou em N linhas ocupa N alturas (antes contava 1): subestimava o título e o texto estourava o card
+        h_total += alt * (max(1, len(grupo[0][0])) if len(grupo) == 1 else 1)
     h_total += gap_bloco * max(0, len(grupos) - 1)
 
     zona = Y_FIM - Y_INI

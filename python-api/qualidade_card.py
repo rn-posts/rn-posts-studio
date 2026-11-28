@@ -226,7 +226,7 @@ class AvaliadorCard:
                 break
 
         nota = max(0.0, min(100.0, nota))
-        grave = any("rosto" in p for p in problemas) or pior_frac >= 0.55
+        grave = any("rosto" in p or "zona segura" in p for p in problemas) or pior_frac >= 0.55  # v91: texto fora da zona segura também reprova
         detalhe["pior_fracao"] = round(pior_frac, 2)
         return {"nota": int(round(nota)), "ok": (nota >= NOTA_OK and not grave),
                 "problemas": problemas, "detalhe": detalhe}
@@ -239,8 +239,28 @@ def _info_motor(M):
     return dict(info) if info else None
 
 
-def _render(M, base, tema, seed, kw):
-    """Uma chamada ao motor de título. cor_dest/cor_fundo_txt acompanham a seed quando o chamador os passou."""
+ALT_MAX_TITULO = 0.40  # v91: altura máxima do bloco do título (fração da altura do card) quando há pessoa: acima disso vira parede de texto
+
+
+def _fator_encaixe(info, H, tem_pessoa):
+    """v91: quanto o título precisa encolher (<1) para caber na zona segura e, com pessoa, no teto de altura. 1.0 se já cabe.
+    Usa a altura REAL desenhada (y_fim do motor), não a estimada."""
+    try:
+        topo, fim = int(info["y"]), int(info["y_fim"])
+        h = max(1, fim - topo)
+        f = 1.0
+        if fim > SAFE_BOTTOM - 4 or topo < SAFE_TOP - 10:
+            f = min(f, max(0.3, ((SAFE_BOTTOM - 4) - (SAFE_TOP + 20)) / h))
+        if tem_pessoa and h > ALT_MAX_TITULO * H:
+            f = min(f, ALT_MAX_TITULO * H / h)
+        return f
+    except Exception:
+        return 1.0
+
+
+def _render(M, base, tema, seed, kw, encaixar=False):
+    """Uma chamada ao motor de título. cor_dest/cor_fundo_txt acompanham a seed quando o chamador os passou.
+    v91: encaixar=True (só na geração, não nos ajustes manuais) encolhe a fonte até o título caber."""
     kw2 = dict(kw)
     kw2.setdefault("altura_min_sub", 46)  # v87: linha secundária nunca abaixo do mínimo de leitura no celular (já na 1ª tentativa)
     kw2.setdefault("zona_livre", True)  # v87: com pessoa em pé, o título pode usar a área limpa do alto (a pontuação escolhe a zona)
@@ -249,6 +269,39 @@ def _render(M, base, tema, seed, kw):
     try:
         card, _ = M.desenhar_titulo(base, tema, seed, **kw2)
         info = _info_motor(M)
+        if encaixar and info and kw2.get("y_forcado") is None:  # v91: encaixe do título (altura real x zona segura x teto)
+            chave = "escala_pessoa" if (kw2.get("tem_pessoa") and kw2.get("escala_pessoa")) else "escala_fonte"
+            alt_card, tp = int(base.size[1]), bool(kw2.get("tem_pessoa"))
+            f0 = _fator_encaixe(info, alt_card, tp)
+            if f0 < 0.995:
+                # busca a MAIOR escala que cabe: a altura não varia de forma contínua (ao cruzar o limite da quebra de linha ela despenca)
+                h0 = int(info["y_fim"]) - int(info["y"])
+                esc0 = float(kw2.get(chave) or 1.0)
+                hi, lo, melhor_t, ultimo = esc0, None, None, None   # hi = escala que NÃO cabe; lo = maior que cabe
+                s = max(0.45, hi * (f0 ** 0.5) * 0.97)
+                for _it in range(6):
+                    kw3 = dict(kw2)
+                    kw3[chave] = s
+                    card_t, _ = M.desenhar_titulo(base, tema, seed, **kw3)
+                    info_t = _info_motor(M)
+                    ultimo = (card_t, info_t, kw3)
+                    if _fator_encaixe(info_t, alt_card, tp) >= 0.995:      # cabe
+                        lo, melhor_t = s, ultimo
+                        if hi - lo <= 0.05 * hi:
+                            break
+                        s = (lo + hi) / 2.0                                # tenta crescer de volta até o limite
+                    else:
+                        hi = s
+                        if lo is None:
+                            if s <= 0.46:
+                                break
+                            s = max(0.45, s * min(0.85, _fator_encaixe(info_t, alt_card, tp) ** 0.5 * 0.97))
+                        else:
+                            if hi - lo <= 0.05 * hi:
+                                break
+                            s = (lo + hi) / 2.0
+                card, info, kw2 = melhor_t if melhor_t else ultimo
+                print(f"[qa] encaixe do titulo: altura {h0}px -> {int(info['y_fim']) - int(info['y'])}px (topo {int(info['y'])}, fim {int(info['y_fim'])}); escala {esc0:.2f} -> {float(kw2.get(chave)):.2f}")
     finally:  # v78: o estilo por palavra vale só para este render (não vaza para outros desenhos na mesma thread)
         try:
             M._TL.palavras = {}
@@ -282,7 +335,7 @@ def renderizar_titulo(M, base, tema, seed, kw, tentativas=MAX_TENTATIVAS, foto_r
             except Exception as _e84:
                 print(f"[qa] v84 proxima tentativa ignorada: {type(_e84).__name__}: {_e84}")
         try:
-            card, kw_usado, info = _render(M, base_i, tema, sd, kw_i)
+            card, kw_usado, info = _render(M, base_i, tema, sd, kw_i, encaixar=True)  # v91: encaixe só na geração
         except Exception as _e:
             if melhor is None:
                 raise

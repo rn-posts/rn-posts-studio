@@ -590,6 +590,13 @@ def revisar_foto(M, img, tema="", estilo="", _tentativa=1):
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={chave}",
                     json=payload, timeout=FOTO_TIMEOUT)
+                if r.status_code in (429, 503):  # v91: limite de uso / sobrecarga momentânea: espera e tenta o mesmo modelo de novo antes de desistir
+                    print(f"[qa-foto] {modelo} HTTP {r.status_code}; aguardando 3s e tentando de novo")
+                    import time as _tm91
+                    _tm91.sleep(3.0)
+                    r = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={chave}",
+                        json=payload, timeout=FOTO_TIMEOUT)
                 if r.status_code >= 400:
                     print(f"[qa-foto] {modelo} HTTP {r.status_code}")
                     continue
@@ -645,7 +652,7 @@ def acalmar_zona_titulo(img, lado_x="dir", x_esq=None, x_dir=None):
         reg = arr[:, xa:xb].astype(np.float32)
         lw = xb - xa
         mx = np.ones(lw, np.float32)
-        fe = min(110, lw // 2)
+        fe = min(240, lw // 2)  # v91: transição bem larga (antes 110px: a borda da zona calma aparecia)
         if lado_x == "esq":
             mx[:fe] = np.linspace(0.0, 1.0, fe, dtype=np.float32)      # lado voltado para a pessoa: transição suave
         else:
@@ -654,9 +661,9 @@ def acalmar_zona_titulo(img, lado_x="dir", x_esq=None, x_dir=None):
         y_fade = int(h * 0.80)
         my[y_fade:] = np.linspace(1.0, 0.0, h - y_fade, dtype=np.float32)   # o chão perto dos pés fica como está
         m = (my[:, None] * mx[None, :])[..., None]
-        borrada = cv2.GaussianBlur(reg, (0, 0), 9)
+        borrada = cv2.GaussianBlur(reg, (0, 0), 3.5)  # v91: só suaviza o detalhe fino (antes sigma 9: a revisão apontou desfoque "artificial e excessivo")
         media = borrada.reshape(-1, 3).mean(axis=0)
-        calma = media + (borrada - media) * 0.55                    # menos contraste local (sombra dura, faixa de luz)
+        calma = media + (borrada - media) * 0.68                    # menos contraste local (sombra dura, faixa de luz)
         lum = calma.mean(axis=2, keepdims=True)
         exc = np.clip(lum - (float(media.mean()) + 28.0), 0, None)
         calma = calma - exc * 0.6                                   # contenção de luzes estouradas

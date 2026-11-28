@@ -2722,6 +2722,13 @@ def _responder_com_ronilson(M, tema, legenda, erros_leg, estilo, seed):
             if _larg_txt or len(cols) > 20:
                 largura = int(_larg_txt) if _larg_txt else int(cols.max() - cols.min())
                 fator = alvo / max(largura, 1)
+                try:  # v91: título que já está alto demais não cresce (texto longo quebra em mais linhas ao crescer, não fica mais largo)
+                    _inf91 = getattr(getattr(M, "_TL", None), "info", None) or {}
+                    _h91 = int(_inf91.get("y_fim") or 0) - int(_inf91.get("y") or 0)
+                    if _h91 > 0.40 * _H:
+                        fator = min(fator, 0.40 * _H / _h91)
+                except Exception:
+                    pass
                 if fator < 0.88 or fator > 1.10:
                     escala = float(np.clip(escala * fator, 0.55, 1.30 if (cabeca and lado_x != "esq") else 1.12))
                     max_px = int(min(disponivel, max(300, alvo + 40)))
